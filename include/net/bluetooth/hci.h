@@ -277,8 +277,8 @@ enum {
 
 	/*
 	 * When this quirk is set, the HCI_OP_LE_SET_EXT_SCAN_ENABLE command is
-	 * disabled. This is required for some Broadcom controllers which
-	 * erroneously claim to support extended scanning.
+	 * disabled. This is required for some Broadcom and Actions Semi
+	 * controllers which erroneously claim to support extended scanning.
 	 *
 	 * This quirk can be set before hci_register_dev is called or
 	 * during the hdev->setup vendor callback.
@@ -294,6 +294,15 @@ enum {
 	 * during the hdev->setup vendor callback.
 	 */
 	HCI_QUIRK_BROKEN_MWS_TRANSPORT_CONFIG,
+
+	/* When this quirk is set, the Resolvable Private Address Timeout will not
+	 * be set. This is mainly due to the fact that the HCI Set Resolvable
+	 * Private Address Timeout command is advertised, but not supported.
+	 *
+	 * This quirk can be set before hci_register_dev is called or
+	 * during the hdev->setup vendor callback.
+	 */
+	HCI_QUIRK_BROKEN_SET_RPA_TIMEOUT,
 };
 
 /* HCI device flags */
