@@ -4463,6 +4463,7 @@ static void hci_num_comp_pkts_evt(struct hci_dev *hdev, void *data,
 		struct hci_comp_pkts_info *info = &ev->handles[i];
 		struct hci_conn *conn;
 		__u16  handle, count;
+		unsigned int i;
 
 		handle = __le16_to_cpu(info->handle);
 		count  = __le16_to_cpu(info->count);
@@ -4472,6 +4473,9 @@ static void hci_num_comp_pkts_evt(struct hci_dev *hdev, void *data,
 			continue;
 
 		conn->sent -= count;
+
+		for (i = 0; i < count; ++i)
+			hci_conn_tx_dequeue(conn);
 
 		switch (conn->type) {
 		case ACL_LINK:
@@ -4567,16 +4571,21 @@ static void hci_num_comp_blocks_evt(struct hci_dev *hdev, void *data,
 	for (i = 0; i < ev->num_hndl; i++) {
 		struct hci_comp_blocks_info *info = &ev->handles[i];
 		struct hci_conn *conn = NULL;
-		__u16  handle, block_count;
+		__u16  handle, block_count, pkt_count;
+		unsigned int i;
 
 		handle = __le16_to_cpu(info->handle);
 		block_count = __le16_to_cpu(info->blocks);
+		pkt_count = __le16_to_cpu(info->pkts);
 
 		conn = __hci_conn_lookup_handle(hdev, handle);
 		if (!conn)
 			continue;
 
 		conn->sent -= block_count;
+
+		for (i = 0; i < pkt_count; ++i)
+			hci_conn_tx_dequeue(conn);
 
 		switch (conn->type) {
 		case ACL_LINK:
