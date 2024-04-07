@@ -242,6 +242,8 @@ struct bt_codecs {
 
 #define BT_ISO_BASE		20
 
+#define BT_POLL_ERRQUEUE	21
+
 __printf(1, 2)
 void bt_info(const char *fmt, ...);
 __printf(1, 2)
@@ -389,7 +391,8 @@ struct bt_sock {
 enum {
 	BT_SK_DEFER_SETUP,
 	BT_SK_SUSPEND,
-	BT_SK_PKT_STATUS
+	BT_SK_PKT_STATUS,
+	BT_SK_NO_POLL_ERRQUEUE
 };
 
 struct bt_sock_list {
@@ -412,6 +415,10 @@ int  bt_sock_stream_recvmsg(struct socket *sock, struct msghdr *msg,
 			    size_t len, int flags);
 __poll_t bt_sock_poll(struct file *file, struct socket *sock, poll_table *wait);
 int  bt_sock_ioctl(struct socket *sock, unsigned int cmd, unsigned long arg);
+int bt_sock_setsockopt(struct socket *sock, int level, int optname,
+		       sockptr_t optval, unsigned int optlen);
+int bt_sock_getsockopt(struct socket *sock, int level, int optname,
+		       char __user *optval, int __user *optlen);
 int  bt_sock_wait_state(struct sock *sk, int state, unsigned long timeo);
 int  bt_sock_wait_ready(struct sock *sk, unsigned int msg_flags);
 
@@ -660,5 +667,8 @@ void mgmt_exit(void);
 void mgmt_cleanup(struct sock *sk);
 
 void bt_sock_reclassify_lock(struct sock *sk, int proto);
+
+int bt_poll_errqueue_set_enabled(bool enabled);
+bool bt_poll_errqueue_enabled(void);
 
 #endif /* __BLUETOOTH_H */

@@ -68,6 +68,9 @@ static const char *const bt_slock_key_strings[BT_MAX_PROTO] = {
 	"slock-AF_BLUETOOTH-BTPROTO_ISO",
 };
 
+static bool poll_errqueue_enabled;
+static DEFINE_SPINLOCK(poll_errqueue_enabled_lock);
+
 void bt_sock_reclassify_lock(struct sock *sk, int proto)
 {
 	BUG_ON(!sk);
@@ -500,6 +503,43 @@ static inline __poll_t bt_accept_poll(struct sock *parent)
 	return 0;
 }
 
+int bt_poll_errqueue_set_enabled(bool enabled)
+{
+	int err = 0;
+
+	spin_lock(&poll_errqueue_enabled_lock);
+	if (enabled != poll_errqueue_enabled)
+		poll_errqueue_enabled = enabled;
+	else
+		err = -EALREADY;
+	spin_unlock(&poll_errqueue_enabled_lock);
+	return err;
+}
+
+bool bt_poll_errqueue_enabled(void)
+{
+	bool ret;
+
+	spin_lock(&poll_errqueue_enabled_lock);
+	ret = poll_errqueue_enabled;
+	spin_unlock(&poll_errqueue_enabled_lock);
+	return ret;
+}
+
+static bool bt_sock_error_queue_poll(struct sock *sk)
+{
+	if (skb_queue_empty_lockless(&sk->sk_error_queue))
+		return false;
+
+	/* Prevent probably impossible in practice race where NO_POLL_ERRQUEUE
+	 * is set before TX timestamping is enabled (ordered by lock), but this
+	 * propagates to us after (reordered) test_bit but before queue_empty.
+	 */
+	smp_rmb();
+
+	return !test_bit(BT_SK_NO_POLL_ERRQUEUE, &bt_sk(sk)->flags);
+}
+
 __poll_t bt_sock_poll(struct file *file, struct socket *sock,
 		      poll_table *wait)
 {
@@ -511,7 +551,7 @@ __poll_t bt_sock_poll(struct file *file, struct socket *sock,
 	if (sk->sk_state == BT_LISTEN)
 		return bt_accept_poll(sk);
 
-	if (sk->sk_err || !skb_queue_empty_lockless(&sk->sk_error_queue))
+	if (sk->sk_err || bt_sock_error_queue_poll(sk))
 		mask |= EPOLLERR |
 			(sock_flag(sk, SOCK_SELECT_ERR_QUEUE) ? EPOLLPRI : 0);
 
@@ -581,6 +621,83 @@ int bt_sock_ioctl(struct socket *sock, unsigned int cmd, unsigned long arg)
 	return err;
 }
 EXPORT_SYMBOL(bt_sock_ioctl);
+
+int bt_sock_setsockopt(struct socket *sock, int level, int optname,
+		       sockptr_t optval, unsigned int optlen)
+{
+	struct sock *sk = sock->sk;
+	u32 opt;
+	int err;
+
+	if (level != SOL_BLUETOOTH)
+		return -ENOPROTOOPT;
+
+	switch (optname) {
+	case BT_POLL_ERRQUEUE:
+		if (!bt_poll_errqueue_enabled())
+			return -ENOPROTOOPT;
+
+		if (optlen < sizeof(opt))
+			return -EINVAL;
+
+		err = bt_copy_from_sockptr(&opt, sizeof(opt), optval, optlen);
+		if (err)
+			return err;
+
+		lock_sock(sk);
+
+		if (opt)
+			clear_bit(BT_SK_NO_POLL_ERRQUEUE, &bt_sk(sk)->flags);
+		else
+			set_bit(BT_SK_NO_POLL_ERRQUEUE, &bt_sk(sk)->flags);
+
+		release_sock(sk);
+		break;
+
+	default:
+		return -ENOPROTOOPT;
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL(bt_sock_setsockopt);
+
+int bt_sock_getsockopt(struct socket *sock, int level, int optname,
+		       char __user *optval, int __user *optlen)
+{
+	struct sock *sk = sock->sk;
+	int len;
+	u32 opt;
+
+	if (level != SOL_BLUETOOTH)
+		return -ENOPROTOOPT;
+
+	if (get_user(len, optlen))
+		return -EFAULT;
+
+	switch (optname) {
+	case BT_POLL_ERRQUEUE:
+		if (!bt_poll_errqueue_enabled())
+			return -ENOPROTOOPT;
+		if (len < sizeof(opt))
+			return -EINVAL;
+
+		len = sizeof(opt);
+		opt = !test_bit(BT_SK_NO_POLL_ERRQUEUE, &bt_sk(sk)->flags);
+
+		if (put_user(opt, (u32 __user *)optval))
+			return -EFAULT;
+		if (put_user(len, optlen))
+			return -EFAULT;
+		break;
+
+	default:
+		return -ENOPROTOOPT;
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL(bt_sock_getsockopt);
 
 /* This function expects the sk lock to be held when called */
 int bt_sock_wait_state(struct sock *sk, int state, unsigned long timeo)

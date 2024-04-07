@@ -4339,6 +4339,12 @@ static const u8 mgmt_mesh_uuid[16] = {
 	0x8d, 0x4d, 0x03, 0x7a, 0xd7, 0x63, 0xe4, 0x2c,
 };
 
+/* 69518c4c-b69f-4679-8bc1-c021b47b5733 */
+static const u8 poll_errqueue_uuid[16] = {
+	0x33, 0x57, 0x7b, 0xb4, 0x21, 0xc0, 0xc1, 0x8b,
+	0x79, 0x46, 0x9f, 0xb6, 0x4c, 0x8c, 0x51, 0x69,
+};
+
 static int read_exp_features_info(struct sock *sk, struct hci_dev *hdev,
 				  void *data, u16 data_len)
 {
@@ -4350,8 +4356,8 @@ static int read_exp_features_info(struct sock *sk, struct hci_dev *hdev,
 
 	bt_dev_dbg(hdev, "sock %p", sk);
 
-	/* Enough space for 7 features */
-	len = sizeof(*rp) + (sizeof(rp->features[0]) * 7);
+	/* Enough space for 8 features */
+	len = sizeof(*rp) + (sizeof(rp->features[0]) * 8);
 	rp = kzalloc(len, GFP_KERNEL);
 	if (!rp)
 		return -ENOMEM;
@@ -4425,6 +4431,13 @@ static int read_exp_features_info(struct sock *sk, struct hci_dev *hdev,
 			flags = 0;
 
 		memcpy(rp->features[idx].uuid, mgmt_mesh_uuid, 16);
+		rp->features[idx].flags = cpu_to_le32(flags);
+		idx++;
+	}
+
+	if (!hdev) {
+		flags = bt_poll_errqueue_enabled() ? BIT(0) : 0;
+		memcpy(rp->features[idx].uuid, poll_errqueue_uuid, 16);
 		rp->features[idx].flags = cpu_to_le32(flags);
 		idx++;
 	}
@@ -4926,6 +4939,53 @@ static int set_iso_socket_func(struct sock *sk, struct hci_dev *hdev,
 }
 #endif
 
+static int set_poll_errqueue_func(struct sock *sk, struct hci_dev *hdev,
+				  struct mgmt_cp_set_exp_feature *cp,
+				  u16 data_len)
+{
+	struct mgmt_rp_set_exp_feature rp;
+	bool val, changed = false;
+	int err;
+
+	/* Command requires to use the non-controller index */
+	if (hdev)
+		return mgmt_cmd_status(sk, hdev->id,
+				       MGMT_OP_SET_EXP_FEATURE,
+				       MGMT_STATUS_INVALID_INDEX);
+
+	/* Parameters are limited to a single octet */
+	if (data_len != MGMT_SET_EXP_FEATURE_SIZE + 1)
+		return mgmt_cmd_status(sk, MGMT_INDEX_NONE,
+				       MGMT_OP_SET_EXP_FEATURE,
+				       MGMT_STATUS_INVALID_PARAMS);
+
+	/* Only boolean on/off is supported */
+	if (cp->param[0] != 0x00 && cp->param[0] != 0x01)
+		return mgmt_cmd_status(sk, MGMT_INDEX_NONE,
+				       MGMT_OP_SET_EXP_FEATURE,
+				       MGMT_STATUS_INVALID_PARAMS);
+
+	val = cp->param[0] ? true : false;
+
+	err = bt_poll_errqueue_set_enabled(val);
+	if (!err)
+		changed = true;
+
+	memcpy(rp.uuid, poll_errqueue_uuid, 16);
+	rp.flags = cpu_to_le32(val ? BIT(0) : 0);
+
+	hci_sock_set_flag(sk, HCI_MGMT_EXP_FEATURE_EVENTS);
+
+	err = mgmt_cmd_complete(sk, MGMT_INDEX_NONE,
+				MGMT_OP_SET_EXP_FEATURE, 0,
+				&rp, sizeof(rp));
+
+	if (changed)
+		exp_feature_changed(hdev, poll_errqueue_uuid, val, sk);
+
+	return err;
+}
+
 static const struct mgmt_exp_feature {
 	const u8 *uuid;
 	int (*set_func)(struct sock *sk, struct hci_dev *hdev,
@@ -4943,6 +5003,7 @@ static const struct mgmt_exp_feature {
 #ifdef CONFIG_BT_LE
 	EXP_FEAT(iso_socket_uuid, set_iso_socket_func),
 #endif
+	EXP_FEAT(poll_errqueue_uuid, set_poll_errqueue_func),
 
 	/* end with a null feature */
 	EXP_FEAT(NULL, NULL)
