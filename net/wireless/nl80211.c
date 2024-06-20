@@ -315,8 +315,7 @@ nl80211_pmsr_ftm_req_attr_policy[NL80211_PMSR_FTM_REQ_ATTR_MAX + 1] = {
 	[NL80211_PMSR_FTM_REQ_ATTR_BURST_PERIOD] = { .type = NLA_U16 },
 	[NL80211_PMSR_FTM_REQ_ATTR_BURST_DURATION] =
 		NLA_POLICY_MAX(NLA_U8, 15),
-	[NL80211_PMSR_FTM_REQ_ATTR_FTMS_PER_BURST] =
-		NLA_POLICY_MAX(NLA_U8, 31),
+	[NL80211_PMSR_FTM_REQ_ATTR_FTMS_PER_BURST] = { .type = NLA_U8 },
 	[NL80211_PMSR_FTM_REQ_ATTR_NUM_FTMR_RETRIES] = { .type = NLA_U8 },
 	[NL80211_PMSR_FTM_REQ_ATTR_REQUEST_LCI] = { .type = NLA_FLAG },
 	[NL80211_PMSR_FTM_REQ_ATTR_REQUEST_CIVICLOC] = { .type = NLA_FLAG },
@@ -466,6 +465,10 @@ nl80211_sta_wme_policy[NL80211_STA_WME_MAX + 1] = {
 static const struct netlink_range_validation nl80211_punct_bitmap_range = {
 	.min = 0,
 	.max = 0xffff,
+};
+
+static const struct netlink_range_validation q_range = {
+	.max = INT_MAX,
 };
 
 static const struct nla_policy nl80211_policy[NUM_NL80211_ATTR] = {
@@ -754,7 +757,7 @@ static const struct nla_policy nl80211_policy[NUM_NL80211_ATTR] = {
 
 	[NL80211_ATTR_TXQ_LIMIT] = { .type = NLA_U32 },
 	[NL80211_ATTR_TXQ_MEMORY_LIMIT] = { .type = NLA_U32 },
-	[NL80211_ATTR_TXQ_QUANTUM] = { .type = NLA_U32 },
+	[NL80211_ATTR_TXQ_QUANTUM] = NLA_POLICY_FULL_RANGE(NLA_U32, &q_range),
 	[NL80211_ATTR_HE_CAPABILITY] =
 		NLA_POLICY_VALIDATE_FN(NLA_BINARY, validate_he_capa,
 				       NL80211_HE_MAX_CAPABILITY_LEN),
@@ -1203,6 +1206,12 @@ static int nl80211_msg_put_channel(struct sk_buff *msg, struct wiphy *wiphy,
 			goto nla_put_failure;
 		if ((chan->flags & IEEE80211_CHAN_NO_6GHZ_AFC_CLIENT) &&
 		    nla_put_flag(msg, NL80211_FREQUENCY_ATTR_NO_6GHZ_AFC_CLIENT))
+			goto nla_put_failure;
+		if ((chan->flags & IEEE80211_CHAN_CAN_MONITOR) &&
+		    nla_put_flag(msg, NL80211_FREQUENCY_ATTR_CAN_MONITOR))
+			goto nla_put_failure;
+		if ((chan->flags & IEEE80211_CHAN_ALLOW_6GHZ_VLP_AP) &&
+		    nla_put_flag(msg, NL80211_FREQUENCY_ATTR_ALLOW_6GHZ_VLP_AP))
 			goto nla_put_failure;
 	}
 
@@ -3344,7 +3353,7 @@ static int _nl80211_parse_chandef(struct cfg80211_registered_device *rdev,
 
 	if (!_cfg80211_chandef_usable(&rdev->wiphy, chandef,
 				      IEEE80211_CHAN_DISABLED,
-				      monitor)) {
+				      monitor ? IEEE80211_CHAN_CAN_MONITOR : 0)) {
 		NL_SET_ERR_MSG(extack, "(extension) channel is disabled");
 		return -EINVAL;
 	}
@@ -3414,6 +3423,33 @@ static int __nl80211_set_channel(struct cfg80211_registered_device *rdev,
 			cur_chan = wdev->links[link_id].ap.chandef.chan;
 			if (chandef.chan != cur_chan)
 				return -EBUSY;
+
+			/* only allow this for regular channel widths */
+			switch (wdev->links[link_id].ap.chandef.width) {
+			case NL80211_CHAN_WIDTH_20_NOHT:
+			case NL80211_CHAN_WIDTH_20:
+			case NL80211_CHAN_WIDTH_40:
+			case NL80211_CHAN_WIDTH_80:
+			case NL80211_CHAN_WIDTH_80P80:
+			case NL80211_CHAN_WIDTH_160:
+			case NL80211_CHAN_WIDTH_320:
+				break;
+			default:
+				return -EINVAL;
+			}
+
+			switch (chandef.width) {
+			case NL80211_CHAN_WIDTH_20_NOHT:
+			case NL80211_CHAN_WIDTH_20:
+			case NL80211_CHAN_WIDTH_40:
+			case NL80211_CHAN_WIDTH_80:
+			case NL80211_CHAN_WIDTH_80P80:
+			case NL80211_CHAN_WIDTH_160:
+			case NL80211_CHAN_WIDTH_320:
+				break;
+			default:
+				return -EINVAL;
+			}
 
 			result = rdev_set_ap_chanwidth(rdev, dev, link_id,
 						       &chandef);
@@ -5924,6 +5960,7 @@ static int nl80211_validate_ap_phy_operation(struct cfg80211_ap_settings *params
 static int nl80211_start_ap(struct sk_buff *skb, struct genl_info *info)
 {
 	struct cfg80211_registered_device *rdev = info->user_ptr[0];
+	struct cfg80211_beaconing_check_config beacon_check = {};
 	unsigned int link_id = nl80211_link_id(info->attrs);
 	struct net_device *dev = info->user_ptr[1];
 	struct wireless_dev *wdev = dev->ieee80211_ptr;
@@ -5936,6 +5973,9 @@ static int nl80211_start_ap(struct sk_buff *skb, struct genl_info *info)
 
 	if (!rdev->ops->start_ap)
 		return -EOPNOTSUPP;
+
+	if (wdev->cac_started)
+		return -EBUSY;
 
 	if (wdev->links[link_id].ap.beacon_interval)
 		return -EALREADY;
@@ -6070,8 +6110,13 @@ static int nl80211_start_ap(struct sk_buff *skb, struct genl_info *info)
 		goto out;
 	}
 
-	if (!cfg80211_reg_can_beacon_relax(&rdev->wiphy, &params->chandef,
-					   wdev->iftype)) {
+	beacon_check.iftype = wdev->iftype;
+	beacon_check.relax = true;
+	beacon_check.reg_power =
+		cfg80211_get_6ghz_power_type(params->beacon.tail,
+					     params->beacon.tail_len);
+	if (!cfg80211_reg_check_beaconing(&rdev->wiphy, &params->chandef,
+					  &beacon_check)) {
 		err = -EINVAL;
 		goto out;
 	}
@@ -6228,6 +6273,7 @@ out:
 static int nl80211_set_beacon(struct sk_buff *skb, struct genl_info *info)
 {
 	struct cfg80211_registered_device *rdev = info->user_ptr[0];
+	struct cfg80211_beaconing_check_config beacon_check = {};
 	unsigned int link_id = nl80211_link_id(info->attrs);
 	struct net_device *dev = info->user_ptr[1];
 	struct wireless_dev *wdev = dev->ieee80211_ptr;
@@ -6253,6 +6299,19 @@ static int nl80211_set_beacon(struct sk_buff *skb, struct genl_info *info)
 				   info->extack);
 	if (err)
 		goto out;
+
+	/* recheck beaconing is permitted with possibly changed power type */
+	beacon_check.iftype = wdev->iftype;
+	beacon_check.relax = true;
+	beacon_check.reg_power =
+		cfg80211_get_6ghz_power_type(params->beacon.tail,
+					     params->beacon.tail_len);
+	if (!cfg80211_reg_check_beaconing(&rdev->wiphy,
+					  &wdev->links[link_id].ap.chandef,
+					  &beacon_check)) {
+		err = -EINVAL;
+		goto out;
+	}
 
 	attr = info->attrs[NL80211_ATTR_FILS_DISCOVERY];
 	if (attr) {
@@ -9929,6 +9988,17 @@ static int nl80211_start_radar_detection(struct sk_buff *skb,
 
 	flush_delayed_work(&rdev->dfs_update_channels_wk);
 
+	switch (wdev->iftype) {
+	case NL80211_IFTYPE_AP:
+	case NL80211_IFTYPE_P2P_GO:
+	case NL80211_IFTYPE_MESH_POINT:
+	case NL80211_IFTYPE_ADHOC:
+		break;
+	default:
+		/* caution - see cfg80211_beaconing_iface_active() below */
+		return -EINVAL;
+	}
+
 	wiphy_lock(wiphy);
 
 	dfs_region = reg_get_dfs_region(wiphy);
@@ -9959,12 +10029,7 @@ static int nl80211_start_radar_detection(struct sk_buff *skb,
 		goto unlock;
 	}
 
-	if (netif_carrier_ok(dev)) {
-		err = -EBUSY;
-		goto unlock;
-	}
-
-	if (wdev->cac_started) {
+	if (cfg80211_beaconing_iface_active(wdev) || wdev->cac_started) {
 		err = -EBUSY;
 		goto unlock;
 	}
@@ -13861,9 +13926,8 @@ nla_put_failure:
 	return -ENOBUFS;
 }
 
-void cfg80211_rdev_free_coalesce(struct cfg80211_registered_device *rdev)
+void cfg80211_free_coalesce(struct cfg80211_coalesce *coalesce)
 {
-	struct cfg80211_coalesce *coalesce = rdev->coalesce;
 	int i, j;
 	struct cfg80211_coalesce_rules *rule;
 
@@ -13872,13 +13936,13 @@ void cfg80211_rdev_free_coalesce(struct cfg80211_registered_device *rdev)
 
 	for (i = 0; i < coalesce->n_rules; i++) {
 		rule = &coalesce->rules[i];
+		if (!rule)
+			continue;
 		for (j = 0; j < rule->n_patterns; j++)
 			kfree(rule->patterns[j].mask);
 		kfree(rule->patterns);
 	}
-	kfree(coalesce->rules);
 	kfree(coalesce);
-	rdev->coalesce = NULL;
 }
 
 static int nl80211_parse_coalesce_rule(struct cfg80211_registered_device *rdev,
@@ -13976,17 +14040,16 @@ static int nl80211_set_coalesce(struct sk_buff *skb, struct genl_info *info)
 {
 	struct cfg80211_registered_device *rdev = info->user_ptr[0];
 	const struct wiphy_coalesce_support *coalesce = rdev->wiphy.coalesce;
-	struct cfg80211_coalesce new_coalesce = {};
-	struct cfg80211_coalesce *n_coalesce;
-	int err, rem_rule, n_rules = 0, i, j;
+	struct cfg80211_coalesce *new_coalesce;
+	int err, rem_rule, n_rules = 0, i;
 	struct nlattr *rule;
-	struct cfg80211_coalesce_rules *tmp_rule;
 
 	if (!rdev->wiphy.coalesce || !rdev->ops->set_coalesce)
 		return -EOPNOTSUPP;
 
 	if (!info->attrs[NL80211_ATTR_COALESCE_RULE]) {
-		cfg80211_rdev_free_coalesce(rdev);
+		cfg80211_free_coalesce(rdev->coalesce);
+		rdev->coalesce = NULL;
 		rdev_set_coalesce(rdev, NULL);
 		return 0;
 	}
@@ -13997,47 +14060,34 @@ static int nl80211_set_coalesce(struct sk_buff *skb, struct genl_info *info)
 	if (n_rules > coalesce->n_rules)
 		return -EINVAL;
 
-	new_coalesce.rules = kcalloc(n_rules, sizeof(new_coalesce.rules[0]),
-				     GFP_KERNEL);
-	if (!new_coalesce.rules)
+	new_coalesce = kzalloc(struct_size(new_coalesce, rules, n_rules),
+			       GFP_KERNEL);
+	if (!new_coalesce)
 		return -ENOMEM;
 
-	new_coalesce.n_rules = n_rules;
+	new_coalesce->n_rules = n_rules;
 	i = 0;
 
 	nla_for_each_nested(rule, info->attrs[NL80211_ATTR_COALESCE_RULE],
 			    rem_rule) {
 		err = nl80211_parse_coalesce_rule(rdev, rule,
-						  &new_coalesce.rules[i]);
+						  &new_coalesce->rules[i]);
 		if (err)
 			goto error;
 
 		i++;
 	}
 
-	err = rdev_set_coalesce(rdev, &new_coalesce);
+	err = rdev_set_coalesce(rdev, new_coalesce);
 	if (err)
 		goto error;
 
-	n_coalesce = kmemdup(&new_coalesce, sizeof(new_coalesce), GFP_KERNEL);
-	if (!n_coalesce) {
-		err = -ENOMEM;
-		goto error;
-	}
-	cfg80211_rdev_free_coalesce(rdev);
-	rdev->coalesce = n_coalesce;
+	cfg80211_free_coalesce(rdev->coalesce);
+	rdev->coalesce = new_coalesce;
 
 	return 0;
 error:
-	for (i = 0; i < new_coalesce.n_rules; i++) {
-		tmp_rule = &new_coalesce.rules[i];
-		if (!tmp_rule)
-			continue;
-		for (j = 0; j < tmp_rule->n_patterns; j++)
-			kfree(tmp_rule->patterns[j].mask);
-		kfree(tmp_rule->patterns);
-	}
-	kfree(new_coalesce.rules);
+	cfg80211_free_coalesce(new_coalesce);
 
 	return err;
 }

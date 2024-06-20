@@ -857,12 +857,6 @@ int iwl_mvm_tvqm_enable_txq(struct iwl_mvm *mvm,
 		size = iwl_mvm_get_queue_size(sta);
 	}
 
-	/* take the min with bc tbl entries allowed */
-	size = min_t(u32, size, mvm->trans->txqs.bc_tbl_size / sizeof(u16));
-
-	/* size needs to be power of 2 values for calculating read/write pointers */
-	size = rounddown_pow_of_two(size);
-
 	if (sta) {
 		struct iwl_mvm_sta *mvmsta = iwl_mvm_sta_from_mac80211(sta);
 		struct ieee80211_link_sta *link_sta;
@@ -887,22 +881,13 @@ int iwl_mvm_tvqm_enable_txq(struct iwl_mvm *mvm,
 	if (!sta_mask)
 		return -EINVAL;
 
-	do {
-		queue = iwl_trans_txq_alloc(mvm->trans, 0, sta_mask,
-					    tid, size, timeout);
+	queue = iwl_trans_txq_alloc(mvm->trans, 0, sta_mask,
+				    tid, size, timeout);
 
-		if (queue < 0)
-			IWL_DEBUG_TX_QUEUES(mvm,
-					    "Failed allocating TXQ of size %d for sta mask %x tid %d, ret: %d\n",
-					    size, sta_mask, tid, queue);
-		size /= 2;
-	} while (queue < 0 && size >= 16);
-
-	if (queue < 0)
-		return queue;
-
-	IWL_DEBUG_TX_QUEUES(mvm, "Enabling TXQ #%d for sta mask 0x%x tid %d\n",
-			    queue, sta_mask, tid);
+	if (queue >= 0)
+		IWL_DEBUG_TX_QUEUES(mvm,
+				    "Enabling TXQ #%d for sta mask 0x%x tid %d\n",
+				    queue, sta_mask, tid);
 
 	return queue;
 }
@@ -4433,6 +4418,7 @@ void iwl_mvm_count_mpdu(struct iwl_mvm_sta *mvm_sta, u8 fw_sta_id, u32 count,
 			bool tx, int queue)
 {
 	struct iwl_mvm_vif *mvmvif = iwl_mvm_vif_from_mac80211(mvm_sta->vif);
+	struct iwl_mvm *mvm = mvmvif->mvm;
 	struct iwl_mvm_tpt_counter *queue_counter;
 	struct iwl_mvm_mpdu_counter *link_counter;
 	u32 total_mpdus = 0;
@@ -4469,6 +4455,8 @@ void iwl_mvm_count_mpdu(struct iwl_mvm_sta *mvm_sta, u8 fw_sta_id, u32 count,
 		memset(queue_counter->per_link, 0,
 		       sizeof(queue_counter->per_link));
 		queue_counter->window_start = jiffies;
+
+		IWL_DEBUG_STATS(mvm, "MPDU counters are cleared\n");
 	}
 
 	for (int i = 0; i < IWL_MVM_FW_MAX_LINK_ID; i++)
