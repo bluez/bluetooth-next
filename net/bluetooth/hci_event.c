@@ -3783,6 +3783,81 @@ static inline void handle_cmd_cnt_and_timer(struct hci_dev *hdev, u8 ncmd)
 	rcu_read_unlock();
 }
 
+static u8 hci_cc_le_read_iso_tx_sync(struct hci_dev *hdev, void *data,
+				     struct sk_buff *skb)
+{
+	struct hci_rp_le_read_iso_tx_sync *rp = data;
+	struct skb_shared_hwtstamps ssh;
+	struct hci_conn *conn;
+	u32 offset;
+
+	bt_dev_dbg(hdev, "status 0x%2.2x", rp->status);
+
+	if (rp->status)
+		return rp->status;
+
+	offset = rp->offset[0] | (rp->offset[1] << 8) | (rp->offset[2] << 16);
+	bt_dev_dbg(hdev, "ts %u to %u", __le32_to_cpu(rp->timestamp), offset);
+
+	hci_dev_lock(hdev);
+
+	conn = hci_conn_hash_lookup_handle(hdev, __le16_to_cpu(rp->handle));
+	if (!conn)
+		goto unlock;
+
+	if (!conn->tx_q.iso_last_tx)
+		goto unlock;
+
+	/* Report SDU synchronization reference as the timestamp. This value is
+	 * most useful for userspace, as it is the Time_Stamp field in sent
+	 * packets. See Fig. 3.1 and 3.2 in Core v6.2 Vol 6 Part G Sec. 3.
+	 *
+	 * Unfortunately, the ISO-over-HCI transport is poorly described in the
+	 * specification.
+	 *
+	 * The HCI specification contradicts itself which packet timestamp is
+	 * reported by Le Read ISO TX Sync: "scheduled for transmission" in Core
+	 * v6.2 Vol 4 Part E Sec 4.7 vs. "transmitted" in Sec. 7.8.96.
+	 * The specification is also unclear on what these words mean.
+	 *
+	 * We assume here it means "transmitted", and additionally that
+	 * "transmitted" means the last packet reported in Number of Completed
+	 * Packets.
+	 *
+	 * The specification is also unclear what sequence number is returned by
+	 * this command. We assume it is a sequence number assigned by the
+	 * controller. These are equivalent to the controller clock, so they are
+	 * useless for generic Host (which we are) with no direct access to
+	 * controller clock.
+	 *
+	 * Userspace application that handle these timestamps must then be
+	 * prepared that the ISO timestamp is reported on the wrong packet
+	 * depending on controller. Actual packet TX must rely on backpressure
+	 * (monitoring packet completion via COMPLETION tstamp), and the
+	 * timestamps are useful only for aligning the playback of multiple ISO
+	 * streams.
+	 */
+
+	memset(&ssh, 0, sizeof(ssh));
+
+	/* SDU Reference = BIG/CIG Reference - Time_Offset */
+	ssh.hwtstamp = us_to_ktime(__le32_to_cpu(rp->timestamp) - offset);
+
+	/* The value may be 0, but skb_tstamp_tx() does not allow reporting zero
+	 * HW timestamp. Offset by 1 ns as a workaround.
+	 */
+	ssh.hwtstamp += 1;
+
+	skb_tstamp_tx(conn->tx_q.iso_last_tx, &ssh);
+
+	kfree_skb(conn->tx_q.iso_last_tx);
+	conn->tx_q.iso_last_tx = NULL;
+
+unlock:
+	hci_dev_unlock(hdev);
+	return rp->status;
+}
+
 static u8 hci_cc_le_read_buffer_size_v2(struct hci_dev *hdev, void *data,
 					struct sk_buff *skb)
 {
@@ -4230,6 +4305,8 @@ static const struct hci_cc {
 	HCI_CC(HCI_OP_LE_READ_TRANSMIT_POWER, hci_cc_le_read_transmit_power,
 	       sizeof(struct hci_rp_le_read_transmit_power)),
 	HCI_CC_STATUS(HCI_OP_LE_SET_PRIVACY_MODE, hci_cc_le_set_privacy_mode),
+	HCI_CC(HCI_OP_LE_READ_ISO_TX_SYNC, hci_cc_le_read_iso_tx_sync,
+	       sizeof(struct hci_rp_le_read_iso_tx_sync)),
 	HCI_CC(HCI_OP_LE_READ_BUFFER_SIZE_V2, hci_cc_le_read_buffer_size_v2,
 	       sizeof(struct hci_rp_le_read_buffer_size_v2)),
 	HCI_CC_VL(HCI_OP_LE_SET_CIG_PARAMS, hci_cc_le_set_cig_params,
@@ -4515,7 +4592,7 @@ static void hci_num_comp_pkts_evt(struct hci_dev *hdev, void *data,
 		}
 
 		for (i = 0; i < count; ++i)
-			hci_conn_tx_dequeue(conn);
+			hci_conn_tx_dequeue(conn, (i == count - 1));
 
 		switch (conn->type) {
 		case ACL_LINK:

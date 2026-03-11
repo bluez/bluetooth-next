@@ -1232,6 +1232,9 @@ void hci_conn_del(struct hci_conn *conn)
 	skb_queue_purge(&conn->data_q);
 	skb_queue_purge(&conn->tx_q.queue);
 
+	kfree_skb(conn->tx_q.iso_last_tx);
+	conn->tx_q.iso_last_tx = NULL;
+
 	/* Remove the connection from the list and cleanup its remaining
 	 * state. This is a separate function since for some cases like
 	 * BT_CONNECT_SCAN we *only* want the cleanup part without the
@@ -2394,6 +2397,20 @@ struct hci_conn *hci_connect_cis(struct hci_dev *hdev, bdaddr_t *dst,
 	return cis;
 }
 
+static int hci_conn_le_read_iso_tx_sync(struct hci_conn *conn)
+{
+	struct hci_cp_le_read_iso_tx_sync cp;
+
+	if (!(conn->hdev->commands[41] & 0x40))
+		return -EOPNOTSUPP;
+
+	memset(&cp, 0, sizeof(cp));
+	cp.handle = cpu_to_le16(conn->handle);
+
+	return hci_send_cmd(conn->hdev, HCI_OP_LE_READ_ISO_TX_SYNC,
+			    sizeof(cp), &cp);
+}
+
 /* Check link security requirement */
 int hci_conn_check_link_mode(struct hci_conn *conn)
 {
@@ -3164,6 +3181,18 @@ void hci_conn_tx_queue(struct hci_conn *conn, struct sk_buff *skb)
 	struct tx_queue *comp = &conn->tx_q;
 	bool track = false;
 
+	/* Check for HW timestamping */
+	switch (conn->type) {
+	case CIS_LINK:
+	case BIS_LINK:
+		if (skb->sk &&
+		    (skb_shinfo(skb)->tx_flags & SKBTX_HW_TSTAMP_NOBPF)) {
+			skb_shinfo(skb)->tx_flags |= SKBTX_IN_PROGRESS;
+			track = true;
+		}
+		break;
+	}
+
 	/* Emit SND now, ie. just before sending to driver */
 	if (skb_shinfo(skb)->tx_flags & SKBTX_SW_TSTAMP)
 		__skb_tstamp_tx(skb, NULL, NULL, skb->sk, SCM_TSTAMP_SND);
@@ -3222,7 +3251,7 @@ count_only:
 	skb_queue_purge(&comp->queue);
 }
 
-void hci_conn_tx_dequeue(struct hci_conn *conn)
+void hci_conn_tx_dequeue(struct hci_conn *conn, bool last)
 {
 	struct tx_queue *comp = &conn->tx_q;
 	struct sk_buff *skb;
@@ -3242,8 +3271,24 @@ void hci_conn_tx_dequeue(struct hci_conn *conn)
 
 	if (skb->sk) {
 		comp->tracked--;
-		__skb_tstamp_tx(skb, NULL, NULL, skb->sk,
-				SCM_TSTAMP_COMPLETION);
+
+		if (skb_shinfo(skb)->tx_flags & SKBTX_COMPLETION_TSTAMP)
+			__skb_tstamp_tx(skb, NULL, NULL, skb->sk,
+					SCM_TSTAMP_COMPLETION);
+
+		switch (conn->type) {
+		case CIS_LINK:
+		case BIS_LINK:
+			if (!last)
+				break;
+			if (skb_shinfo(skb)->tx_flags & SKBTX_HW_TSTAMP_NOBPF) {
+				kfree_skb(conn->tx_q.iso_last_tx);
+				conn->tx_q.iso_last_tx = skb;
+				hci_conn_le_read_iso_tx_sync(conn);
+				return;
+			}
+			break;
+		}
 	}
 
 	kfree_skb(skb);
@@ -3291,6 +3336,8 @@ int hci_ethtool_ts_info(unsigned int index, int sk_proto,
 
 	switch (sk_proto) {
 	case BTPROTO_ISO:
+		info->so_timestamping |= SOF_TIMESTAMPING_TX_HARDWARE;
+		fallthrough;
 	case BTPROTO_L2CAP:
 		info->so_timestamping |= SOF_TIMESTAMPING_TX_SOFTWARE;
 		info->so_timestamping |= SOF_TIMESTAMPING_TX_COMPLETION;

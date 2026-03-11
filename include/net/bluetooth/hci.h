@@ -2146,7 +2146,7 @@ struct hci_rp_le_read_iso_tx_sync {
 	__u8    status;
 	__le16  handle;
 	__le16  seq;
-	__le32  imestamp;
+	__le32  timestamp;
 	__u8    offset[3];
 } __packed;
 
