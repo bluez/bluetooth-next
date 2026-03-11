@@ -647,10 +647,9 @@
 		vddrfa1p2-supply = <&vreg_wcn_1p9>;
 		vddrfa1p8-supply = <&vreg_wcn_1p9>;
 
-		bt-enable-gpios = <&tlmm 116 GPIO_ACTIVE_HIGH>;
 		wlan-enable-gpios = <&tlmm 117 GPIO_ACTIVE_HIGH>;
 
-		pinctrl-0 = <&wcn_bt_en>, <&wcn_wlan_en>;
+		pinctrl-0 = <&wcn_wlan_en>;
 		pinctrl-names = "default";
 
 		regulators {
@@ -1400,11 +1399,12 @@
 		output-low;
 	};
 
-	wcn_bt_en: wcn-bt-en-state {
-		pins = "gpio116";
-		function = "gpio";
-		drive-strength = <2>;
-		bias-disable;
+	wcn_bt_en_hog: wcn-bt-en-state-hog {
+		gpio-hog;
+		gpios = <116 GPIO_ACTIVE_HIGH>;
+		output-high;
+		input-disable;
+		link-name = "BT_EN";
 	};
 
 	wcn_wlan_en: wcn-wlan-en-state {
