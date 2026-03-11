@@ -73,6 +73,9 @@ struct iso_pinfo {
 	__u8			base_len;
 	__u8			base[BASE_MAX_LENGTH];
 	struct iso_conn		*conn;
+	bool			ts_flag;
+	__u32			ts;
+
 };
 
 static struct bt_iso_qos default_qos;
@@ -542,6 +545,7 @@ static int iso_send_frame(struct sock *sk, struct sk_buff *skb,
 	struct iso_conn *conn = iso_pi(sk)->conn;
 	struct bt_iso_qos *qos = iso_sock_get_qos(sk);
 	struct hci_iso_data_hdr *hdr;
+	struct hci_iso_ts_data_hdr *hdr_ts;
 	int len = 0;
 
 	BT_DBG("sk %p len %d", sk, skb->len);
@@ -552,13 +556,20 @@ static int iso_send_frame(struct sock *sk, struct sk_buff *skb,
 	len = skb->len;
 
 	/* Push ISO data header */
-	hdr = skb_push(skb, HCI_ISO_DATA_HDR_SIZE);
-	hdr->sn = cpu_to_le16(conn->tx_sn++);
-	hdr->slen = cpu_to_le16(hci_iso_data_len_pack(len,
-						      HCI_ISO_STATUS_VALID));
+	if (iso_pi(sk)->ts_flag) {
+		hdr_ts = skb_push(skb, HCI_ISO_TS_DATA_HDR_SIZE);
+		hdr_ts->ts = cpu_to_le32(iso_pi(sk)->ts);
+		hdr_ts->sn = cpu_to_le16(conn->tx_sn++);
+		hdr_ts->slen = cpu_to_le16(hci_iso_data_len_pack(len, HCI_ISO_STATUS_VALID));
+	} else {
+		hdr = skb_push(skb, HCI_ISO_DATA_HDR_SIZE);
+		hdr->sn = cpu_to_le16(conn->tx_sn++);
+		hdr->slen = cpu_to_le16(hci_iso_data_len_pack(len, HCI_ISO_STATUS_VALID));
+	}
 
 	if (sk->sk_state == BT_CONNECTED) {
 		hci_setup_tx_timestamp(skb, 1, sockc);
+		conn->hcon->iso_pkt_ts = iso_pi(sk)->ts_flag;
 		hci_send_iso(conn->hcon, skb);
 	} else {
 		len = -ENOTCONN;
@@ -1471,7 +1482,8 @@ static int iso_sock_sendmsg(struct socket *sock, struct msghdr *msg,
 	struct sock *sk = sock->sk;
 	struct sk_buff *skb, **frag;
 	struct sockcm_cookie sockc;
-	size_t mtu;
+	struct cmsghdr *cm;
+	size_t mtu, hlen;
 	int err;
 
 	BT_DBG("sock %p, sk %p", sock, sk);
@@ -1485,10 +1497,23 @@ static int iso_sock_sendmsg(struct socket *sock, struct msghdr *msg,
 
 	hci_sockcm_init(&sockc, sk);
 
+	iso_pi(sk)->ts_flag = false;
 	if (msg->msg_controllen) {
 		err = sock_cmsg_send(sk, msg, &sockc);
 		if (err)
 			return err;
+
+		for (cm = CMSG_FIRSTHDR(msg); cm; cm = CMSG_NXTHDR(msg, cm)) {
+			if (cm->cmsg_level != SOL_BLUETOOTH)
+				continue;
+			if (test_bit(BT_SK_PKT_ISO_TIMESTAMP, &bt_sk(sk)->flags) &&
+			    cm->cmsg_type == BT_SCM_PKT_ISO_TIMESTAMP &&
+			    cm->cmsg_len == CMSG_LEN(sizeof(u32))) {
+				iso_pi(sk)->ts_flag = true;
+				iso_pi(sk)->ts = *(u32 *)CMSG_DATA(cm);
+				break;
+			}
+		}
 	}
 
 	lock_sock(sk);
@@ -1502,7 +1527,8 @@ static int iso_sock_sendmsg(struct socket *sock, struct msghdr *msg,
 
 	release_sock(sk);
 
-	skb = bt_skb_sendmsg(sk, msg, len, mtu, HCI_ISO_DATA_HDR_SIZE, 0);
+	hlen = iso_pi(sk)->ts_flag ? HCI_ISO_TS_DATA_HDR_SIZE : HCI_ISO_DATA_HDR_SIZE;
+	skb = bt_skb_sendmsg(sk, msg, len, mtu, hlen, 0);
 	if (IS_ERR(skb))
 		return PTR_ERR(skb);
 
@@ -1838,6 +1864,17 @@ static int iso_sock_setsockopt(struct socket *sock, int level, int optname,
 
 		iso_pi(sk)->base_len = optlen;
 
+		break;
+
+	case BT_PKT_ISO_TIMESTAMP:
+		err = copy_safe_from_sockptr(&opt, sizeof(opt), optval, optlen);
+		if (err)
+			break;
+
+		if (opt)
+			set_bit(BT_SK_PKT_ISO_TIMESTAMP, &bt_sk(sk)->flags);
+		else
+			clear_bit(BT_SK_PKT_ISO_TIMESTAMP, &bt_sk(sk)->flags);
 		break;
 
 	default:

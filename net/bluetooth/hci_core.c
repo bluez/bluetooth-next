@@ -3335,7 +3335,7 @@ static void hci_queue_iso(struct hci_conn *conn, struct sk_buff_head *queue,
 
 	list = skb_shinfo(skb)->frag_list;
 
-	flags = hci_iso_flags_pack(list ? ISO_START : ISO_SINGLE, 0x00);
+	flags = hci_iso_flags_pack(list ? ISO_START : ISO_SINGLE, conn->iso_pkt_ts ? 0x01 : 0x00);
 	hci_add_iso_hdr(skb, conn->handle, flags);
 
 	if (!list) {

@@ -740,6 +740,7 @@ struct hci_conn {
 	struct bt_iso_qos iso_qos;
 	__u8		num_bis;
 	__u8		bis[HCI_MAX_ISO_BIS];
+	bool		iso_pkt_ts;
 
 	unsigned long	flags;
 

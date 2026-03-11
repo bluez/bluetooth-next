@@ -259,6 +259,10 @@ struct bt_codecs {
 
 #define BT_SCM_PKT_SEQNUM	0x05
 
+#define BT_PKT_ISO_TIMESTAMP     23
+
+#define BT_SCM_PKT_ISO_TIMESTAMP 0x06
+
 __printf(1, 2)
 void bt_info(const char *fmt, ...);
 __printf(1, 2)
@@ -409,6 +413,7 @@ enum {
 	BT_SK_SUSPEND,
 	BT_SK_PKT_STATUS,
 	BT_SK_PKT_SEQNUM,
+	BT_SK_PKT_ISO_TIMESTAMP,
 };
 
 struct bt_sock_list {
