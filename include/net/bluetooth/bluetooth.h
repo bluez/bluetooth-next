@@ -259,6 +259,8 @@ struct bt_codecs {
 
 #define BT_SCM_PKT_SEQNUM	0x05
 
+#define BT_SCM_PKT_ISO_TS	0x06
+
 __printf(1, 2)
 void bt_info(const char *fmt, ...);
 __printf(1, 2)

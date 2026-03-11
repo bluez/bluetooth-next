@@ -3322,7 +3322,7 @@ static void hci_add_iso_hdr(struct sk_buff *skb, __u16 handle, __u8 flags)
 }
 
 static void hci_queue_iso(struct hci_conn *conn, struct sk_buff_head *queue,
-			  struct sk_buff *skb)
+			  struct sk_buff *skb, u8 ts)
 {
 	struct hci_dev *hdev = conn->hdev;
 	struct sk_buff *list;
@@ -3335,7 +3335,7 @@ static void hci_queue_iso(struct hci_conn *conn, struct sk_buff_head *queue,
 
 	list = skb_shinfo(skb)->frag_list;
 
-	flags = hci_iso_flags_pack(list ? ISO_START : ISO_SINGLE, 0x00);
+	flags = hci_iso_flags_pack(list ? ISO_START : ISO_SINGLE, ts);
 	hci_add_iso_hdr(skb, conn->handle, flags);
 
 	if (!list) {
@@ -3368,13 +3368,13 @@ static void hci_queue_iso(struct hci_conn *conn, struct sk_buff_head *queue,
 	bt_dev_dbg(hdev, "hcon %p queued %d", conn, skb_queue_len(queue));
 }
 
-void hci_send_iso(struct hci_conn *conn, struct sk_buff *skb)
+void hci_send_iso(struct hci_conn *conn, struct sk_buff *skb, bool ts)
 {
 	struct hci_dev *hdev = conn->hdev;
 
 	BT_DBG("%s len %d", hdev->name, skb->len);
 
-	hci_queue_iso(conn, &conn->data_q, skb);
+	hci_queue_iso(conn, &conn->data_q, skb, ts ? 0x01 : 0x00);
 
 	queue_work(hdev->workqueue, &hdev->tx_work);
 }
