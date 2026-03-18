@@ -950,6 +950,7 @@ struct btusb_data {
 	unsigned long flags;
 
 	bool poll_sync;
+	bool intel_combined;
 	int intr_interval;
 	struct work_struct  work;
 	struct work_struct  waker;
@@ -1006,6 +1007,9 @@ struct btusb_data {
 
 	struct qca_dump_info qca_dump;
 };
+
+static bool btusb_intel_idle_power_manageable(struct btusb_data *data);
+static bool btusb_needs_runtime_remote_wakeup(struct btusb_data *data);
 
 static void btusb_reset(struct hci_dev *hdev)
 {
@@ -1218,12 +1222,19 @@ static inline void btusb_free_frags(struct btusb_data *data)
 
 static int btusb_recv_event(struct btusb_data *data, struct sk_buff *skb)
 {
+	int err;
+
 	if (data->intr_interval) {
 		/* Trigger dequeue immediately if an event is received */
 		schedule_delayed_work(&data->rx_work, 0);
 	}
 
-	return data->recv_event(data->hdev, skb);
+	err = data->recv_event(data->hdev, skb);
+	if (!err)
+		data->intf->needs_remote_wakeup =
+			btusb_needs_runtime_remote_wakeup(data);
+
+	return err;
 }
 
 static int btusb_recv_intr(struct btusb_data *data, void *buffer, int count)
@@ -1991,7 +2002,8 @@ static int btusb_open(struct hci_dev *hdev)
 			goto setup_fail;
 	}
 
-	data->intf->needs_remote_wakeup = 1;
+	data->intf->needs_remote_wakeup =
+		btusb_needs_runtime_remote_wakeup(data);
 
 	if (test_and_set_bit(BTUSB_INTR_RUNNING, &data->flags))
 		goto done;
@@ -2032,6 +2044,38 @@ static void btusb_stop_traffic(struct btusb_data *data)
 	usb_kill_anchored_urbs(&data->isoc_anchor);
 	usb_kill_anchored_urbs(&data->diag_anchor);
 	usb_kill_anchored_urbs(&data->ctrl_anchor);
+}
+
+static bool btusb_intel_idle_power_manageable(struct btusb_data *data)
+{
+	struct usb_device *udev = data->udev;
+
+	return data->intel_combined && udev->parent &&
+	       usb_acpi_power_manageable(udev->parent, udev->portnum - 1);
+}
+
+static bool btusb_needs_runtime_remote_wakeup(struct btusb_data *data)
+{
+	struct hci_dev *hdev = data->hdev;
+
+	if (!btusb_intel_idle_power_manageable(data))
+		return true;
+
+	if (hci_conn_count(hdev))
+		return true;
+
+	if (hdev->discovery.state == DISCOVERY_FINDING ||
+	    hdev->discovery.state == DISCOVERY_RESOLVING)
+		return true;
+
+	if (hci_dev_test_flag(hdev, HCI_LE_SCAN) ||
+	    hci_dev_test_flag(hdev, HCI_LE_ADV) ||
+	    hci_dev_test_flag(hdev, HCI_ADVERTISING) ||
+	    test_bit(HCI_PSCAN, &hdev->flags) ||
+	    test_bit(HCI_ISCAN, &hdev->flags))
+		return true;
+
+	return false;
 }
 
 static int btusb_close(struct hci_dev *hdev)
@@ -4118,6 +4162,8 @@ static int btusb_probe(struct usb_interface *intf,
 	data->recv_bulk = btusb_recv_bulk;
 
 	if (id->driver_info & BTUSB_INTEL_COMBINED) {
+		data->intel_combined = true;
+
 		/* Allocate extra space for Intel device */
 		priv_size += sizeof(struct btintel_data);
 
