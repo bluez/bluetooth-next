@@ -6669,7 +6669,7 @@ void l2cap_chan_rx_avail(struct l2cap_chan *chan, ssize_t rx_avail)
 
 	chan->rx_avail = rx_avail;
 
-	if (chan->state == BT_CONNECTED)
+	if (chan->state == BT_CONNECTED && chan->conn->hcon->type == LE_LINK)
 		l2cap_chan_le_send_credits(chan);
 }
 
