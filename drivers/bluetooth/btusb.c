@@ -4494,6 +4494,9 @@ static int btusb_suspend(struct usb_interface *intf, pm_message_t message)
 
 	cancel_work_sync(&data->work);
 
+	if (!PMSG_IS_AUTO(message))
+		hci_cmd_sync_cancel_sync(data->hdev, EHOSTDOWN);
+
 	if (data->suspend)
 		data->suspend(data->hdev);
 
