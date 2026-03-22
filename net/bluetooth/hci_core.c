@@ -2747,6 +2747,9 @@ void hci_release_dev(struct hci_dev *hdev)
 	kfree_const(hdev->hw_info);
 	kfree_const(hdev->fw_info);
 
+	if (hdev->dump.supported)
+		disable_delayed_work_sync(&hdev->dump.dump_timeout);
+
 	destroy_workqueue(hdev->workqueue);
 	destroy_workqueue(hdev->req_workqueue);
 
