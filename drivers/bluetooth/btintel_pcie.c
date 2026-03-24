@@ -1019,6 +1019,13 @@ static void btintel_pcie_msix_tx_handle(struct btintel_pcie_data *data)
 
 	txq = &data->txq;
 
+	if (cr_tia >= txq->count || cr_hia >= txq->count) {
+		bt_dev_err(data->hdev,
+			   "TXQ: invalid ring indices tia=%u hia=%u",
+			   cr_tia, cr_hia);
+		return;
+	}
+
 	while (cr_tia != cr_hia) {
 		data->tx_wait_done = true;
 		wake_up(&data->tx_wait_q);
@@ -1418,6 +1425,12 @@ static void btintel_pcie_msix_rx_handle(struct btintel_pcie_data *data)
 		return;
 
 	rxq = &data->rxq;
+
+	if (cr_tia >= rxq->count || cr_hia >= rxq->count) {
+		bt_dev_err(hdev, "RXQ: invalid ring indices tia=%u hia=%u",
+			   cr_tia, cr_hia);
+		return;
+	}
 
 	/* The firmware sends multiple CD in a single MSI-X and it needs to
 	 * process all received CDs in this interrupt.
