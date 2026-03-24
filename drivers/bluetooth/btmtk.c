@@ -1291,7 +1291,7 @@ int btmtk_usb_suspend(struct hci_dev *hdev)
 }
 EXPORT_SYMBOL_GPL(btmtk_usb_suspend);
 
-int btmtk_usb_setup(struct hci_dev *hdev)
+static int do_btmtk_usb_setup(struct hci_dev *hdev)
 {
 	struct btmtk_data *btmtk_data = hci_get_priv(hdev);
 	struct btmtk_hci_wmt_params wmt_params;
@@ -1502,6 +1502,21 @@ done:
 	bt_dev_info(hdev, "Device setup in %llu usecs", duration);
 
 	return 0;
+}
+
+int btmtk_usb_setup(struct hci_dev *hdev)
+{
+	struct btmtk_data *btmtk_data = hci_get_priv(hdev);
+	int err;
+
+	err = usb_autopm_get_interface(btmtk_data->intf);
+	if (err < 0)
+		return err;
+
+	err = do_btmtk_usb_setup(hdev);
+
+	usb_autopm_put_interface(btmtk_data->intf);
+	return err;
 }
 EXPORT_SYMBOL_GPL(btmtk_usb_setup);
 
