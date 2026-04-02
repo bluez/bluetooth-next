@@ -1376,7 +1376,9 @@ static int btintel_pcie_submit_rx_work(struct btintel_pcie_data *data, u8 status
 	rfh_hdr = buf;
 
 	len = rfh_hdr->packet_len;
-	if (len <= 0) {
+	if (len <= 0 ||
+	    len > BTINTEL_PCIE_BUFFER_SIZE - sizeof(*rfh_hdr)) {
+		bt_dev_warn(data->hdev, "Invalid RX packet length: %d", len);
 		ret = -EINVAL;
 		goto resubmit;
 	}
