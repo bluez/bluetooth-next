@@ -299,18 +299,27 @@ static int bnep_rx_frame(struct bnep_session *s, struct sk_buff *skb)
 {
 	struct net_device *dev = s->dev;
 	struct sk_buff *nskb;
-	u8 type, ctrl_type;
+	u8 type;
 
 	dev->stats.rx_bytes += skb->len;
 
+	if (!skb->len)
+		goto badframe;
+
 	type = *(u8 *) skb->data;
 	skb_pull(skb, 1);
-	ctrl_type = *(u8 *)skb->data;
 
 	if ((type & BNEP_TYPE_MASK) >= sizeof(__bnep_rx_hlen))
 		goto badframe;
 
 	if ((type & BNEP_TYPE_MASK) == BNEP_CONTROL) {
+		u8 ctrl_type;
+
+		if (!skb->len)
+			goto badframe;
+
+		ctrl_type = *(u8 *)skb->data;
+
 		if (bnep_rx_control(s, skb->data, skb->len) < 0) {
 			dev->stats.tx_errors++;
 			kfree_skb(skb);
@@ -326,12 +335,16 @@ static int bnep_rx_frame(struct bnep_session *s, struct sk_buff *skb)
 		switch (ctrl_type) {
 		case BNEP_SETUP_CONN_REQ:
 			/* Pull: ctrl type (1 b), len (1 b), data (len bytes) */
+			if (skb->len < 2)
+				goto badframe;
 			if (!skb_pull(skb, 2 + *(u8 *)(skb->data + 1) * 2))
 				goto badframe;
 			break;
 		case BNEP_FILTER_MULTI_ADDR_SET:
 		case BNEP_FILTER_NET_TYPE_SET:
 			/* Pull: ctrl type (1 b), len (2 b), data (len bytes) */
+			if (skb->len < 3)
+				goto badframe;
 			if (!skb_pull(skb, 3 + *(u16 *)(skb->data + 1) * 2))
 				goto badframe;
 			break;
