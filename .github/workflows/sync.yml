@@ -35,6 +35,7 @@ jobs:
       uses: bluez/action-ci@main
       with:
         task: patchwork
+        workflow: workflow
         space: kernel
         github_token: ${{ secrets.ACTION_TOKEN }}
         email_token: ${{ secrets.EMAIL_TOKEN }}
