@@ -4670,6 +4670,59 @@ static inline int l2cap_information_rsp(struct l2cap_conn *conn,
 	return 0;
 }
 
+struct conn_param_update_data {
+	u16	handle;
+	bdaddr_t dst;
+	u8	dst_type;
+	u16	min;
+	u16	max;
+	u16	latency;
+	u16	to_multiplier;
+};
+
+static int l2cap_conn_param_update_sync(struct hci_dev *hdev, void *data)
+{
+	struct conn_param_update_data *d = data;
+	struct hci_conn_params *params;
+	struct hci_cp_le_conn_update cp;
+	u8 store_hint = 0x00;
+
+	hci_dev_lock(hdev);
+
+	params = hci_conn_params_lookup(hdev, &d->dst, d->dst_type);
+	if (params) {
+		params->conn_min_interval = d->min;
+		params->conn_max_interval = d->max;
+		params->conn_latency = d->latency;
+		params->supervision_timeout = d->to_multiplier;
+		store_hint = 0x01;
+	}
+
+	hci_dev_unlock(hdev);
+
+	memset(&cp, 0, sizeof(cp));
+	cp.handle		= cpu_to_le16(d->handle);
+	cp.conn_interval_min	= cpu_to_le16(d->min);
+	cp.conn_interval_max	= cpu_to_le16(d->max);
+	cp.conn_latency		= cpu_to_le16(d->latency);
+	cp.supervision_timeout	= cpu_to_le16(d->to_multiplier);
+	cp.min_ce_len		= cpu_to_le16(0x0000);
+	cp.max_ce_len		= cpu_to_le16(0x0000);
+
+	hci_send_cmd(hdev, HCI_OP_LE_CONN_UPDATE, sizeof(cp), &cp);
+
+	mgmt_new_conn_param(hdev, &d->dst, d->dst_type, store_hint,
+			    d->min, d->max, d->latency, d->to_multiplier);
+
+	return 0;
+}
+
+static void l2cap_conn_param_update_destroy(struct hci_dev *hdev, void *data,
+					    int err)
+{
+	kfree(data);
+}
+
 static inline int l2cap_conn_param_update_req(struct l2cap_conn *conn,
 					      struct l2cap_cmd_hdr *cmd,
 					      u16 cmd_len, u8 *data)
@@ -4677,6 +4730,7 @@ static inline int l2cap_conn_param_update_req(struct l2cap_conn *conn,
 	struct hci_conn *hcon = conn->hcon;
 	struct l2cap_conn_param_update_req *req;
 	struct l2cap_conn_param_update_rsp rsp;
+	struct conn_param_update_data *d;
 	u16 min, max, latency, to_multiplier;
 	int err;
 
@@ -4707,14 +4761,22 @@ static inline int l2cap_conn_param_update_req(struct l2cap_conn *conn,
 		       sizeof(rsp), &rsp);
 
 	if (!err) {
-		u8 store_hint;
+		d = kmalloc(sizeof(*d), GFP_KERNEL);
+		if (!d)
+			return 0;
 
-		store_hint = hci_le_conn_update(hcon, min, max, latency,
-						to_multiplier);
-		mgmt_new_conn_param(hcon->hdev, &hcon->dst, hcon->dst_type,
-				    store_hint, min, max, latency,
-				    to_multiplier);
+		d->handle = hcon->handle;
+		bacpy(&d->dst, &hcon->dst);
+		d->dst_type = hcon->dst_type;
+		d->min = min;
+		d->max = max;
+		d->latency = latency;
+		d->to_multiplier = to_multiplier;
 
+		if (hci_cmd_sync_queue(hcon->hdev,
+				       l2cap_conn_param_update_sync, d,
+				       l2cap_conn_param_update_destroy) < 0)
+			kfree(d);
 	}
 
 	return 0;
