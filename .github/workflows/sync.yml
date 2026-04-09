@@ -16,6 +16,7 @@ jobs:
       uses: bluez/action-ci@main
       with:
         task: sync
+        workflow: workflow
         upstream_repo: 'https://git.kernel.org/pub/scm/linux/kernel/git/bluetooth/bluetooth-next.git'
         github_token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -35,6 +36,7 @@ jobs:
       uses: bluez/action-ci@main
       with:
         task: patchwork
+        workflow: workflow
         space: kernel
         github_token: ${{ secrets.ACTION_TOKEN }}
         email_token: ${{ secrets.EMAIL_TOKEN }}
