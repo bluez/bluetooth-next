@@ -3336,6 +3336,12 @@ static void hci_conn_request_evt(struct hci_dev *hdev, void *data,
 			bt_dev_err(hdev, "connection err: %ld", PTR_ERR(conn));
 			goto unlock;
 		}
+	} else if (conn->role == HCI_ROLE_MASTER) {
+		/* Reject incoming request when outgoing connection to
+		 * the same device is already in progress.
+		 */
+		hci_reject_conn(hdev, &ev->bdaddr);
+		goto unlock;
 	}
 
 	memcpy(conn->dev_class, ev->dev_class, 3);
