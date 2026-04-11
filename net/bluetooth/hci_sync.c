@@ -6602,7 +6602,12 @@ static int hci_le_create_conn_sync(struct hci_dev *hdev, void *data)
 		if (hci_dev_test_flag(hdev, HCI_LE_SCAN) &&
 		    hdev->le_scan_type == LE_SCAN_ACTIVE &&
 		    !hci_dev_test_flag(hdev, HCI_LE_SIMULTANEOUS_ROLES)) {
-			hci_conn_del(conn);
+			hci_dev_lock(hdev);
+			if (hci_conn_valid(hdev, conn)) {
+				hci_connect_cfm(conn, bt_status(-EBUSY));
+				hci_conn_del(conn);
+			}
+			hci_dev_unlock(hdev);
 			return -EBUSY;
 		}
 
