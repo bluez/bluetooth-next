@@ -770,8 +770,12 @@ struct hci_conn {
 	struct dentry	*debugfs;
 
 	struct hci_dev	*hdev;
+
+	/* Spinlock to guard sco_data */
+	spinlock_t	proto_lock;
+
 	void		*l2cap_data;
-	void		*sco_data;
+	void __rcu	*sco_data;
 	void		*iso_data;
 
 	struct list_head link_list;
