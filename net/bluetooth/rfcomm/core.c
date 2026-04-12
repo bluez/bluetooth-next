@@ -1431,9 +1431,15 @@ static int rfcomm_apply_pn(struct rfcomm_dlc *d, int cr, struct rfcomm_pn *pn)
 
 static int rfcomm_recv_pn(struct rfcomm_session *s, int cr, struct sk_buff *skb)
 {
-	struct rfcomm_pn *pn = (void *) skb->data;
+	struct rfcomm_pn *pn;
 	struct rfcomm_dlc *d;
-	u8 dlci = pn->dlci;
+	u8 dlci;
+
+	if (skb->len < sizeof(*pn))
+		return -EINVAL;
+
+	pn = (void *) skb->data;
+	dlci = pn->dlci;
 
 	BT_DBG("session %p state %ld dlci %d", s, s->state, dlci);
 
@@ -1483,8 +1489,8 @@ static int rfcomm_recv_pn(struct rfcomm_session *s, int cr, struct sk_buff *skb)
 
 static int rfcomm_recv_rpn(struct rfcomm_session *s, int cr, int len, struct sk_buff *skb)
 {
-	struct rfcomm_rpn *rpn = (void *) skb->data;
-	u8 dlci = __get_dlci(rpn->dlci);
+	struct rfcomm_rpn *rpn;
+	u8 dlci;
 
 	u8 bit_rate  = 0;
 	u8 data_bits = 0;
@@ -1494,6 +1500,12 @@ static int rfcomm_recv_rpn(struct rfcomm_session *s, int cr, int len, struct sk_
 	u8 xon_char  = 0;
 	u8 xoff_char = 0;
 	u16 rpn_mask = RFCOMM_RPN_PM_ALL;
+
+	if (skb->len < sizeof(*rpn))
+		return -EINVAL;
+
+	rpn = (void *) skb->data;
+	dlci = __get_dlci(rpn->dlci);
 
 	BT_DBG("dlci %d cr %d len 0x%x bitr 0x%x line 0x%x flow 0x%x xonc 0x%x xoffc 0x%x pm 0x%x",
 		dlci, cr, len, rpn->bit_rate, rpn->line_settings, rpn->flow_ctrl,
@@ -1589,8 +1601,14 @@ rpn_out:
 
 static int rfcomm_recv_rls(struct rfcomm_session *s, int cr, struct sk_buff *skb)
 {
-	struct rfcomm_rls *rls = (void *) skb->data;
-	u8 dlci = __get_dlci(rls->dlci);
+	struct rfcomm_rls *rls;
+	u8 dlci;
+
+	if (skb->len < sizeof(*rls))
+		return -EINVAL;
+
+	rls = (void *) skb->data;
+	dlci = __get_dlci(rls->dlci);
 
 	BT_DBG("dlci %d cr %d status 0x%x", dlci, cr, rls->status);
 
@@ -1608,9 +1626,15 @@ static int rfcomm_recv_rls(struct rfcomm_session *s, int cr, struct sk_buff *skb
 
 static int rfcomm_recv_msc(struct rfcomm_session *s, int cr, struct sk_buff *skb)
 {
-	struct rfcomm_msc *msc = (void *) skb->data;
+	struct rfcomm_msc *msc;
 	struct rfcomm_dlc *d;
-	u8 dlci = __get_dlci(msc->dlci);
+	u8 dlci;
+
+	if (skb->len < sizeof(*msc))
+		return -EINVAL;
+
+	msc = (void *) skb->data;
+	dlci = __get_dlci(msc->dlci);
 
 	BT_DBG("dlci %d cr %d v24 0x%x", dlci, cr, msc->v24_sig);
 
