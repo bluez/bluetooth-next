@@ -6062,6 +6062,8 @@ static void hci_le_conn_update_complete_evt(struct hci_dev *hdev, void *data,
 					    struct sk_buff *skb)
 {
 	struct hci_ev_le_conn_update_complete *ev = data;
+	struct hci_cp_le_conn_update *sent;
+	struct hci_conn_params *params;
 	struct hci_conn *conn;
 
 	bt_dev_dbg(hdev, "status 0x%2.2x", ev->status);
@@ -6076,6 +6078,37 @@ static void hci_le_conn_update_complete_evt(struct hci_dev *hdev, void *data,
 		conn->le_conn_interval = le16_to_cpu(ev->interval);
 		conn->le_conn_latency = le16_to_cpu(ev->latency);
 		conn->le_supv_timeout = le16_to_cpu(ev->supervision_timeout);
+
+		/* Update stored connection parameters and notify userspace
+		 * using the parameters from the original HCI command.
+		 */
+		sent = hci_sent_cmd_data(hdev, HCI_OP_LE_CONN_UPDATE);
+		if (sent) {
+			u8 store_hint;
+
+			params = hci_conn_params_lookup(hdev, &conn->dst,
+							conn->dst_type);
+			if (params) {
+				params->conn_min_interval =
+					le16_to_cpu(sent->conn_interval_min);
+				params->conn_max_interval =
+					le16_to_cpu(sent->conn_interval_max);
+				params->conn_latency =
+					le16_to_cpu(sent->conn_latency);
+				params->supervision_timeout =
+					le16_to_cpu(sent->supervision_timeout);
+				store_hint = 0x01;
+			} else {
+				store_hint = 0x00;
+			}
+
+			mgmt_new_conn_param(hdev, &conn->dst, conn->dst_type,
+					    store_hint,
+					    le16_to_cpu(sent->conn_interval_min),
+					    le16_to_cpu(sent->conn_interval_max),
+					    le16_to_cpu(sent->conn_latency),
+					    le16_to_cpu(sent->supervision_timeout));
+		}
 	}
 
 	hci_dev_unlock(hdev);

@@ -480,40 +480,64 @@ bool hci_setup_sync(struct hci_conn *conn, __u16 handle)
 	return hci_setup_sync_conn(conn, handle);
 }
 
-u8 hci_le_conn_update(struct hci_conn *conn, u16 min, u16 max, u16 latency,
-		      u16 to_multiplier)
+struct le_conn_update_data {
+	struct hci_conn *conn;
+	u16	min;
+	u16	max;
+	u16	latency;
+	u16	to_multiplier;
+};
+
+static int le_conn_update_sync(struct hci_dev *hdev, void *data)
 {
-	struct hci_dev *hdev = conn->hdev;
-	struct hci_conn_params *params;
+	struct le_conn_update_data *d = data;
+	struct hci_conn *conn;
 	struct hci_cp_le_conn_update cp;
 
 	hci_dev_lock(hdev);
-
-	params = hci_conn_params_lookup(hdev, &conn->dst, conn->dst_type);
-	if (params) {
-		params->conn_min_interval = min;
-		params->conn_max_interval = max;
-		params->conn_latency = latency;
-		params->supervision_timeout = to_multiplier;
-	}
-
+	/* Verify connection is still alive. */
+	conn = hci_conn_valid(hdev, d->conn) ? d->conn : NULL;
 	hci_dev_unlock(hdev);
+	if (!conn)
+		return -ECANCELED;
 
 	memset(&cp, 0, sizeof(cp));
 	cp.handle		= cpu_to_le16(conn->handle);
-	cp.conn_interval_min	= cpu_to_le16(min);
-	cp.conn_interval_max	= cpu_to_le16(max);
-	cp.conn_latency		= cpu_to_le16(latency);
-	cp.supervision_timeout	= cpu_to_le16(to_multiplier);
+	cp.conn_interval_min	= cpu_to_le16(d->min);
+	cp.conn_interval_max	= cpu_to_le16(d->max);
+	cp.conn_latency		= cpu_to_le16(d->latency);
+	cp.supervision_timeout	= cpu_to_le16(d->to_multiplier);
 	cp.min_ce_len		= cpu_to_le16(0x0000);
 	cp.max_ce_len		= cpu_to_le16(0x0000);
 
-	hci_send_cmd(hdev, HCI_OP_LE_CONN_UPDATE, sizeof(cp), &cp);
+	return __hci_cmd_sync_status(hdev, HCI_OP_LE_CONN_UPDATE,
+				     sizeof(cp), &cp, HCI_CMD_TIMEOUT);
+}
 
-	if (params)
-		return 0x01;
+static void le_conn_update_complete(struct hci_dev *hdev, void *data,
+					int err)
+{
+	kfree(data);
+}
 
-	return 0x00;
+void hci_le_conn_update(struct hci_conn *conn, u16 min, u16 max, u16 latency,
+		        u16 to_multiplier)
+{
+	struct le_conn_update_data *d;
+
+	d = kmalloc(sizeof(*d), GFP_KERNEL);
+	if (!d)
+		return;
+
+	d->conn = conn;
+	d->min = min;
+	d->max = max;
+	d->latency = latency;
+	d->to_multiplier = to_multiplier;
+
+	if (hci_cmd_sync_queue(conn->hdev, le_conn_update_sync, d,
+			       le_conn_update_complete) < 0)
+		kfree(d);
 }
 
 void hci_le_start_enc(struct hci_conn *conn, __le16 ediv, __le64 rand,
