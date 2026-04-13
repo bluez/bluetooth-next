@@ -1201,7 +1201,7 @@ void hci_conn_del(struct hci_conn *conn)
 			hdev->acl_cnt += conn->sent;
 		break;
 	case LE_LINK:
-		cancel_delayed_work(&conn->le_conn_timeout);
+		disable_delayed_work_sync(&conn->le_conn_timeout);
 
 		if (hdev->le_pkts) {
 			if (!hci_conn_num(hdev, LE_LINK) ||
