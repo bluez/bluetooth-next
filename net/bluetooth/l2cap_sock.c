@@ -1497,6 +1497,7 @@ static void l2cap_sock_cleanup_listen(struct sock *parent)
 static struct l2cap_chan *l2cap_sock_new_connection_cb(struct l2cap_chan *chan)
 {
 	struct sock *sk, *parent = chan->data;
+	struct l2cap_chan *child_chan;
 
 	lock_sock(parent);
 
@@ -1520,9 +1521,11 @@ static struct l2cap_chan *l2cap_sock_new_connection_cb(struct l2cap_chan *chan)
 
 	bt_accept_enqueue(parent, sk, false);
 
+	child_chan = l2cap_pi(sk)->chan;
+
 	release_sock(parent);
 
-	return l2cap_pi(sk)->chan;
+	return child_chan;
 }
 
 static int l2cap_sock_recv_cb(struct l2cap_chan *chan, struct sk_buff *skb)
