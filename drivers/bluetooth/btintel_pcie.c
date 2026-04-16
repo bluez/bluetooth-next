@@ -2280,6 +2280,7 @@ static void btintel_pcie_inc_recovery_count(struct pci_dev *pdev,
 static int btintel_pcie_setup_hdev(struct btintel_pcie_data *data);
 static void btintel_pcie_reset(struct hci_dev *hdev);
 
+#if IS_ENABLED(CONFIG_ACPI)
 static int btintel_pcie_acpi_reset_method(struct btintel_pcie_data *data)
 {
 	union acpi_object *obj, argv4;
@@ -2389,6 +2390,12 @@ static void btintel_pcie_perform_pldr(struct btintel_pcie_data *data)
 			BT_ERR("BT reprobe failed for BDF:%s", pci_name(pdev));
 	}
 }
+#else
+static void btintel_pcie_perform_pldr(struct btintel_pcie_data *data)
+{
+	bt_dev_warn(data->hdev, "PLDR not supported, ACPI is disabled");
+}
+#endif
 
 static void btintel_pcie_reset_work(struct work_struct *wk)
 {
