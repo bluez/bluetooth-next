@@ -323,6 +323,17 @@ static int l2cap_seq_list_init(struct l2cap_seq_list *seq_list, u16 size)
 {
 	size_t alloc_size, i;
 
+	/*
+	 * A peer may send an ERTM RFC option with txwin_size = 0, which
+	 * propagates here as size = 0.  roundup_pow_of_two(0) is
+	 * documented UB (see include/linux/log2.h) and produces a
+	 * semantically broken seq_list that silently drops every
+	 * retransmission slot.  Reject size = 0 explicitly so the caller
+	 * (l2cap_ertm_init) tears the channel down cleanly instead.
+	 */
+	if (!size)
+		return -EINVAL;
+
 	/* Allocated size is a power of 2 to map sequence numbers
 	 * (which may be up to 14 bits) in to a smaller array that is
 	 * sized for the negotiated ERTM transmit windows.
@@ -3593,6 +3604,17 @@ done:
 			break;
 
 		case L2CAP_MODE_ERTM:
+			/*
+			 * Peer-supplied RFC txwin_size = 0 is out of spec
+			 * (Core Spec v5.3 Vol 3 Part A 5.4: ERTM tx window
+			 * range is 1..63, or 1..0x3fff with EWS).  Clamp up
+			 * to the default window so the subsequent
+			 * l2cap_seq_list_init(remote_tx_win) does not
+			 * receive a zero size.
+			 */
+			if (!rfc.txwin_size)
+				rfc.txwin_size = L2CAP_DEFAULT_TX_WINDOW;
+
 			if (!test_bit(CONF_EWS_RECV, &chan->conf_state))
 				chan->remote_tx_win = rfc.txwin_size;
 			else
