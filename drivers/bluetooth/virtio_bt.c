@@ -227,8 +227,15 @@ static void virtbt_rx_work(struct work_struct *work)
 	if (!skb)
 		return;
 
-	skb_put(skb, len);
-	virtbt_rx_handle(vbt, skb);
+	if (len > skb_tailroom(skb)) {
+		bt_dev_err(vbt->hdev,
+			   "rx reply len %u exceeds skb tailroom %u\n",
+			   len, skb_tailroom(skb));
+		kfree_skb(skb);
+	} else {
+		skb_put(skb, len);
+		virtbt_rx_handle(vbt, skb);
+	}
 
 	if (virtbt_add_inbuf(vbt) < 0)
 		return;
