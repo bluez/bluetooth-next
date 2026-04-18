@@ -1169,6 +1169,7 @@ static int iso_sock_connect(struct socket *sock, struct sockaddr_unsized *addr,
 	struct sockaddr_iso *sa = (struct sockaddr_iso *)addr;
 	struct sock *sk = sock->sk;
 	int err;
+	bool bcast;
 
 	BT_DBG("sk %p", sk);
 
@@ -1191,9 +1192,11 @@ static int iso_sock_connect(struct socket *sock, struct sockaddr_unsized *addr,
 	bacpy(&iso_pi(sk)->dst, &sa->iso_bdaddr);
 	iso_pi(sk)->dst_type = sa->iso_bdaddr_type;
 
+	bcast = !bacmp(&iso_pi(sk)->dst, BDADDR_ANY);
+
 	release_sock(sk);
 
-	if (bacmp(&iso_pi(sk)->dst, BDADDR_ANY))
+	if (!bcast)
 		err = iso_connect_cis(sk);
 	else
 		err = iso_connect_bis(sk);
