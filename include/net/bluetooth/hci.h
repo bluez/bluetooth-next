@@ -378,6 +378,17 @@ enum {
 	 */
 	HCI_QUIRK_BROKEN_READ_PAGE_SCAN_TYPE,
 
+	/* When this quirk is set, the controller suppresses passive LE
+	 * background scanning while an active connection exists.
+	 * This is required for combo chips with shared Wi-Fi/Bluetooth
+	 * antennas to prevent coexistence issues causing audio drops
+	 * and Wi-Fi packet loss.
+	 *
+	 * This quirk can be set before hci_register_dev is called or
+	 * during the hdev->setup vendor callback.
+	 */
+	HCI_QUIRK_NO_SCAN_WHILE_CONNECTED,
+
 	__HCI_NUM_QUIRKS,
 };
 

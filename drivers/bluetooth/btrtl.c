@@ -1299,6 +1299,12 @@ EXPORT_SYMBOL_GPL(btrtl_download_firmware);
 
 void btrtl_set_quirks(struct hci_dev *hdev, struct btrtl_device_info *btrtl_dev)
 {
+	/* Realtek combo chips share the antenna between Wi-Fi and
+	 * Bluetooth. Suppress passive scanning while connected to
+	 * prevent coexistence issues.
+	 */
+	hci_set_quirk(hdev, HCI_QUIRK_NO_SCAN_WHILE_CONNECTED);
+
 	/* Enable controller to do both LE scan and BR/EDR inquiry
 	 * simultaneously.
 	 */

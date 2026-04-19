@@ -3194,6 +3194,13 @@ int hci_update_passive_scan_sync(struct hci_dev *hdev)
 	if (hdev->discovery.state != DISCOVERY_STOPPED)
 		return 0;
 
+	/* If the controller requires no scanning while connected,
+	 * suppress passive scanning when an active connection exists.
+	 */
+	if (hci_test_quirk(hdev, HCI_QUIRK_NO_SCAN_WHILE_CONNECTED) &&
+	    !list_empty(&hdev->conn_hash.list))
+		return 0;
+
 	/* Reset RSSI and UUID filters when starting background scanning
 	 * since these filters are meant for service discovery only.
 	 *
