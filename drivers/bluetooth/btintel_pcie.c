@@ -892,8 +892,7 @@ static inline bool btintel_pcie_in_lockdown(struct btintel_pcie_data *data)
 
 static inline bool btintel_pcie_in_error(struct btintel_pcie_data *data)
 {
-	return (data->boot_stage_cache & BTINTEL_PCIE_CSR_BOOT_STAGE_DEVICE_ERR) ||
-		(data->boot_stage_cache & BTINTEL_PCIE_CSR_BOOT_STAGE_ABORT_HANDLER);
+	return	data->boot_stage_cache & BTINTEL_PCIE_CSR_BOOT_STAGE_ABORT_HANDLER;
 }
 
 static void btintel_pcie_msix_gp1_handler(struct btintel_pcie_data *data)
@@ -926,7 +925,8 @@ static void btintel_pcie_msix_gp0_handler(struct btintel_pcie_data *data)
 		data->img_resp_cache = reg;
 
 	if (btintel_pcie_in_error(data)) {
-		bt_dev_err(data->hdev, "Controller in error state");
+		bt_dev_err(data->hdev, "Controller in error state: boot_stage: 0x%8.8x",
+			   data->boot_stage_cache);
 		btintel_pcie_dump_debug_registers(data->hdev);
 		return;
 	}
