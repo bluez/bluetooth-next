@@ -345,6 +345,10 @@ static int l2cap_seq_list_init(struct l2cap_seq_list *seq_list, u16 size)
 static inline void l2cap_seq_list_free(struct l2cap_seq_list *seq_list)
 {
 	kfree(seq_list->list);
+	seq_list->list = NULL;
+	seq_list->mask = 0;
+	seq_list->head = L2CAP_SEQ_LIST_CLEAR;
+	seq_list->tail = L2CAP_SEQ_LIST_CLEAR;
 }
 
 static inline bool l2cap_seq_list_contains(struct l2cap_seq_list *seq_list,
@@ -3234,8 +3238,15 @@ static void __l2cap_set_ertm_timeouts(struct l2cap_chan *chan,
 	rfc->monitor_timeout = cpu_to_le16(L2CAP_DEFAULT_MONITOR_TO);
 }
 
+static inline u16 l2cap_txwin_default(u16 txwin)
+{
+	return txwin ? txwin : L2CAP_DEFAULT_TX_WINDOW;
+}
+
 static inline void l2cap_txwin_setup(struct l2cap_chan *chan)
 {
+	chan->tx_win = l2cap_txwin_default(chan->tx_win);
+
 	if (chan->tx_win > L2CAP_DEFAULT_TX_WINDOW &&
 	    __l2cap_ews_supported(chan->conn)) {
 		/* use extended control field */
@@ -3593,6 +3604,8 @@ done:
 			break;
 
 		case L2CAP_MODE_ERTM:
+			rfc.txwin_size = l2cap_txwin_default(rfc.txwin_size);
+
 			if (!test_bit(CONF_EWS_RECV, &chan->conf_state))
 				chan->remote_tx_win = rfc.txwin_size;
 			else
@@ -3715,7 +3728,8 @@ static int l2cap_parse_conf_rsp(struct l2cap_chan *chan, void *rsp, int len,
 		case L2CAP_CONF_EWS:
 			if (olen != 2)
 				break;
-			chan->ack_win = min_t(u16, val, chan->ack_win);
+			chan->ack_win = min_t(u16, l2cap_txwin_default(val),
+					      chan->ack_win);
 			l2cap_add_conf_opt(&ptr, L2CAP_CONF_EWS, 2,
 					   chan->tx_win, endptr - ptr);
 			break;
@@ -3756,7 +3770,7 @@ static int l2cap_parse_conf_rsp(struct l2cap_chan *chan, void *rsp, int len,
 			chan->mps    = le16_to_cpu(rfc.max_pdu_size);
 			if (!test_bit(FLAG_EXT_CTRL, &chan->flags))
 				chan->ack_win = min_t(u16, chan->ack_win,
-						      rfc.txwin_size);
+						      l2cap_txwin_default(rfc.txwin_size));
 
 			if (test_bit(FLAG_EFS_ENABLE, &chan->flags)) {
 				chan->local_msdu = le16_to_cpu(efs.msdu);
@@ -3970,10 +3984,11 @@ static void l2cap_conf_rfc_get(struct l2cap_chan *chan, void *rsp, int len)
 		chan->monitor_timeout = le16_to_cpu(rfc.monitor_timeout);
 		chan->mps = le16_to_cpu(rfc.max_pdu_size);
 		if (test_bit(FLAG_EXT_CTRL, &chan->flags))
-			chan->ack_win = min_t(u16, chan->ack_win, txwin_ext);
+			chan->ack_win = min_t(u16, chan->ack_win,
+					      l2cap_txwin_default(txwin_ext));
 		else
 			chan->ack_win = min_t(u16, chan->ack_win,
-					      rfc.txwin_size);
+					      l2cap_txwin_default(rfc.txwin_size));
 		break;
 	case L2CAP_MODE_STREAMING:
 		chan->mps    = le16_to_cpu(rfc.max_pdu_size);
