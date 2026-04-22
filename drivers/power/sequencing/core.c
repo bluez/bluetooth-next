@@ -182,12 +182,14 @@ static void pwrseq_unit_release(struct kref *ref)
  *               the state lock has been released. It's useful for implementing
  *               boot-up delays without blocking other users from powering up
  *               using the same power sequencer.
+ * @is_fixed: Check whether this target is fixed or not.
  */
 struct pwrseq_target {
 	struct list_head list;
 	const char *name;
 	struct pwrseq_unit *unit;
 	pwrseq_power_state_func post_enable;
+	bool (*is_fixed)(struct pwrseq_device *pwrseq);
 };
 
 static struct pwrseq_target *
@@ -206,6 +208,7 @@ pwrseq_target_new(const struct pwrseq_target_data *data)
 	}
 
 	target->post_enable = data->post_enable;
+	target->is_fixed = data->is_fixed;
 
 	return target;
 }
@@ -964,6 +967,36 @@ int pwrseq_power_off(struct pwrseq_desc *desc)
 	return ret;
 }
 EXPORT_SYMBOL_GPL(pwrseq_power_off);
+
+/**
+ * pwrseq_is_fixed() - Check whether the power sequencer is fixed or
+ * controllable.
+ * @desc: Descriptor referencing the power sequencer.
+ *
+ * This API can be used to check whether a specific power sequencer like
+ * 'Bluetooth' is fixed or controllable through properties like 'BT_EN' GPIO.
+ *
+ * Returns: true if fixed, false if controllable.
+ */
+bool pwrseq_is_fixed(struct pwrseq_desc *desc)
+{
+	/*
+	 * If there is no power sequencer, then the consumer cannot control
+	 * the power, so it is effectively fixed.
+	 */
+	if (!desc)
+		return true;
+
+	/*
+	 * If the provider hasn't implemented the callback, assume it acts
+	 * like a controllable power sequencer (for backward compatibility).
+	 */
+	if (!desc->target->is_fixed)
+		return false;
+
+	return desc->target->is_fixed(desc->pwrseq);
+}
+EXPORT_SYMBOL_GPL(pwrseq_is_fixed);
 
 #if IS_ENABLED(CONFIG_DEBUG_FS)
 
