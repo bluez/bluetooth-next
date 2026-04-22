@@ -1417,7 +1417,7 @@ int hidp_connection_del(struct hidp_conndel_req *req)
 				       HIDP_TRANS_HID_CONTROL |
 				         HIDP_CTRL_VIRTUAL_CABLE_UNPLUG,
 				       NULL, 0);
-	else
+	else if (session->conn)
 		l2cap_unregister_user(session->conn, &session->user);
 
 	hidp_session_put(session);
