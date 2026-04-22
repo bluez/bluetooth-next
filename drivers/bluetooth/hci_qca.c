@@ -2453,6 +2453,10 @@ static int qca_serdev_probe(struct serdev_device *serdev)
 								   "uart");
 			if (IS_ERR(qcadev->bt_power->pwrseq))
 				return PTR_ERR(qcadev->bt_power->pwrseq);
+
+			if (pwrseq_is_fixed(qcadev->bt_power->pwrseq))
+				bt_en_available = false;
+
 			break;
 		}
 
