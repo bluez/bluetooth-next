@@ -1715,6 +1715,9 @@ static int rfcomm_recv_data(struct rfcomm_session *s, u8 dlci, int pf, struct sk
 	}
 
 	if (pf && d->cfc) {
+		if (!skb->len)
+			goto drop;
+
 		u8 credits = *(u8 *) skb->data; skb_pull(skb, 1);
 
 		d->tx_credits += credits;
