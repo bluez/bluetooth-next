@@ -1568,6 +1568,19 @@ int btmtk_recv_event(struct hci_dev *hdev, struct sk_buff *skb)
 	return hci_recv_frame(hdev, skb);
 }
 EXPORT_SYMBOL_GPL(btmtk_recv_event);
+
+u8 btmtk_classify_pkt_type(struct hci_dev *hdev, struct sk_buff *skb)
+{
+	/* MT7925 spams invalid ISO packets during ISO RX */
+	if (hci_skb_pkt_type(skb) == HCI_ISODATA_PKT &&
+	    skb->len == sizeof(struct hci_iso_hdr) &&
+	    hci_iso_hdr(skb)->handle == 0 &&
+	    hci_iso_hdr(skb)->dlen == 0)
+		return HCI_DIAG_PKT;
+
+	return hci_skb_pkt_type(skb);
+}
+EXPORT_SYMBOL_GPL(btmtk_classify_pkt_type);
 #endif
 
 MODULE_AUTHOR("Sean Wang <sean.wang@mediatek.com>");
