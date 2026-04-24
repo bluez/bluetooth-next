@@ -222,6 +222,8 @@ int btmtk_usb_setup(struct hci_dev *hdev);
 int btmtk_usb_shutdown(struct hci_dev *hdev);
 
 int btmtk_recv_event(struct hci_dev *hdev, struct sk_buff *skb);
+
+u8 btmtk_classify_pkt_type(struct hci_dev *hdev, struct sk_buff *skb);
 #else
 
 static inline int btmtk_set_bdaddr(struct hci_dev *hdev,
@@ -305,5 +307,11 @@ static inline int btmtk_usb_shutdown(struct hci_dev *hdev)
 static inline int btmtk_recv_event(struct hci_dev *hdev, struct sk_buff *skb)
 {
 	return hci_recv_frame(hdev, skb);
+}
+
+static inline u8 btmtk_classify_pkt_type(struct hci_dev *hdev,
+					 struct sk_buff *skb)
+{
+	return hci_skb_pkt_type(skb);
 }
 #endif
