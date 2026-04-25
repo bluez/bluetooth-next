@@ -543,7 +543,7 @@ static int rtlbt_parse_firmware_v2(struct hci_dev *hdev,
 				   unsigned char **_buf)
 {
 	struct rtl_epatch_header_v2 *hdr;
-	int rc;
+	int rc = 0;
 	u8 key_id;
 	u32 num_sections;
 	struct rtl_section *section;
