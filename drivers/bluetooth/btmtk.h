@@ -177,6 +177,7 @@ struct btmtk_data {
 	struct usb_interface *isopkt_intf;
 	struct usb_anchor isopkt_anchor;
 	struct sk_buff *isopkt_skb;
+	bool isopkt_padding_seen;
 
 	/* spinlock for ISO data transmission */
 	spinlock_t isorxlock;
