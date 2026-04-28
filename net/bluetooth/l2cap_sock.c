@@ -1477,7 +1477,15 @@ static void l2cap_sock_cleanup_listen(struct sock *parent)
 
 	/* Close not yet accepted channels */
 	while ((sk = bt_accept_dequeue(parent, NULL))) {
-		struct l2cap_chan *chan = l2cap_pi(sk)->chan;
+		struct l2cap_chan *chan;
+
+		/* Hold sk across the chan->lock acquisition window.
+		 * A concurrent l2cap_conn_del() can call l2cap_sock_kill(sk)
+		 * -> kfree(sk) inside chan->lock before we acquire it,
+		 * leaving a dangling pointer.
+		 */
+		sock_hold(sk);
+		chan = l2cap_pi(sk)->chan;
 
 		BT_DBG("child chan %p state %s", chan,
 		       state_to_string(chan->state));
@@ -1487,10 +1495,16 @@ static void l2cap_sock_cleanup_listen(struct sock *parent)
 
 		__clear_chan_timer(chan);
 		l2cap_chan_close(chan, ECONNRESET);
-		l2cap_sock_kill(sk);
+		/* l2cap_conn_del() may have already called l2cap_sock_kill()
+		 * (setting SOCK_DEAD); skip the duplicate to avoid a
+		 * double sock_put().
+		 */
+		if (!sock_flag(sk, SOCK_DEAD))
+			l2cap_sock_kill(sk);
 
 		l2cap_chan_unlock(chan);
 		l2cap_chan_put(chan);
+		sock_put(sk);
 	}
 }
 
