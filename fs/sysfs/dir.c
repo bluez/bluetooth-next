@@ -108,6 +108,9 @@ int sysfs_rename_dir_ns(struct kobject *kobj, const char *new_name,
 	struct kernfs_node *parent;
 	int ret;
 
+	if (!kobj->sd)
+		return -ENOENT;
+
 	parent = kernfs_get_parent(kobj->sd);
 	ret = kernfs_rename_ns(kobj->sd, parent, new_name, new_ns);
 	kernfs_put(parent);
@@ -119,6 +122,9 @@ int sysfs_move_dir_ns(struct kobject *kobj, struct kobject *new_parent_kobj,
 {
 	struct kernfs_node *kn = kobj->sd;
 	struct kernfs_node *new_parent;
+
+	if (!kn)
+		return -ENOENT;
 
 	new_parent = new_parent_kobj && new_parent_kobj->sd ?
 		new_parent_kobj->sd : sysfs_root_kn;
