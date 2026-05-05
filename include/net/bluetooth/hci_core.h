@@ -2094,6 +2094,8 @@ void hci_conn_del_sysfs(struct hci_conn *conn);
 /* Shorter Connection Intervals support */
 #define le_sci_capable(dev) \
 	((dev)->le_features[9] & HCI_LE_SCI)
+#define le_sci_enabled(dev) \
+	(le_enabled(dev) && le_sci_capable(dev))
 
 /* ----- HCI protocols ----- */
 #define HCI_PROTO_DEFER             0x01
