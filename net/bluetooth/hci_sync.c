@@ -4449,6 +4449,10 @@ static int hci_le_set_event_mask_sync(struct hci_dev *hdev)
 		events[6] |= 0x02;	/* LE CS Subevent Result Continue event */
 		events[6] |= 0x04;	/* LE CS Test End Complete event */
 	}
+
+	if (le_sci_capable(hdev))
+		events[6] |= 0x20;	/* LE Connection Rate Change */
+
 	return __hci_cmd_sync_status(hdev, HCI_OP_LE_SET_EVENT_MASK,
 				     sizeof(events), events, HCI_CMD_TIMEOUT);
 }
@@ -4611,9 +4615,16 @@ static int hci_le_set_host_features_sync(struct hci_dev *hdev)
 			return err;
 	}
 
-	if (le_cs_capable(hdev))
+	if (le_cs_capable(hdev)) {
 		/* Channel Sounding (Host Support) */
 		err = hci_le_set_host_feature_sync(hdev, 47, 0x01);
+		if (err)
+			return err;
+	}
+
+	if (le_sci_capable(hdev))
+		/* Short Connection Interval (Host Support) */
+		err = hci_le_set_host_feature_sync(hdev, 73, 0x01);
 
 	return err;
 }
@@ -4896,11 +4907,88 @@ static int hci_le_set_default_phy_sync(struct hci_dev *hdev)
 				     sizeof(cp), &cp, HCI_CMD_TIMEOUT);
 }
 
+/* Read Connection Interval if command is supported and SCI feature bit is
+ * marked as supported.
+ */
+static int hci_le_read_conn_interval_sync(struct hci_dev *hdev)
+{
+	if (!(hdev->commands[48] & BIT(7)) ||
+	    !(hdev->le_features[0] & HCI_LE_SCI))
+		return 0;
+
+	return __hci_cmd_sync_status(hdev, HCI_OP_LE_READ_CONN_INTERVAL,
+				     0, NULL, HCI_CMD_TIMEOUT);
+}
+
+/* Set Default Connection Rate Parameters if command is supported, SCI feature
+ * bit is marked as supported and at least one of the supported SCI groups
+ * exists.
+ */
+static int hci_le_set_def_rate_sync(struct hci_dev *hdev)
+{
+	struct hci_cp_le_set_def_rate cp;
+	struct sci_group *grp, *tmp;
+	__u16 min, max;
+
+	if (!(hdev->commands[48] & BIT(6)) ||
+	    !(hdev->le_features[0] & HCI_LE_SCI) ||
+	    list_empty(&hdev->sci_groups))
+		return 0;
+
+	memset(&cp, 0, sizeof(cp));
+
+	/* Iterate over the SCI groups and find the widest supported connection
+	 * interval range to maximize compatibility with peer devices.
+	 */
+	list_for_each_entry_safe(grp, tmp, &hdev->sci_groups, list) {
+		if (!min == 0 || grp->min < min)
+			min = grp->min;
+
+		if (!max == 0 || grp->max > max)
+			max = grp->max;
+	}
+
+	cp.interval_min = cpu_to_le16(min);
+	cp.interval_max = cpu_to_le16(max);
+
+	/* HOG 1.2 Table 7.4. Modes with recommended parameter values suggests
+	 * subrate 1-4 for all modes so use that as default.
+	 */
+	cp.subrate_min = cpu_to_le16(0x0001);
+	cp.subrate_max = cpu_to_le16(0x0004);
+
+	/* HIP 1.2 Table 7.5. Modes with recommended parameter values suggests
+	 * max latency of 0 for all modes expect low power.
+	 */
+	cp.max_latency = 0x0000;
+
+	/* HIP 1.2 Table 7.5. Modes with recommended parameter values suggests
+	 * continuation number 1 for full range.
+	 */
+	cp.cont_num = cpu_to_le16(0x0001);
+
+	/* HOG 1.2 Table 7.4. Modes with recommended parameter values states
+	 * that link supervision timeout should be: Greater than or equal to
+	 * (1 + Peripheral Latency) x Subrate max x Connection Interval max x 2.
+	 */
+	cp.supv_timeout = cpu_to_le16((1 + 0) * 0x0004 * max * 2 / 10);
+
+	cp.min_ce_len = cpu_to_le16(min);
+	cp.max_ce_len = cpu_to_le16(max);
+
+	return __hci_cmd_sync_status(hdev, HCI_OP_LE_SET_DEF_RATE,
+				     sizeof(cp), &cp, HCI_CMD_TIMEOUT);
+}
+
 static const struct hci_init_stage le_init4[] = {
 	/* HCI_OP_LE_WRITE_DEF_DATA_LEN */
 	HCI_INIT(hci_le_set_write_def_data_len_sync),
 	/* HCI_OP_LE_SET_DEFAULT_PHY */
 	HCI_INIT(hci_le_set_default_phy_sync),
+	/* HCI_OP_LE_READ_CONN_INTERVAL */
+	HCI_INIT(hci_le_read_conn_interval_sync),
+	/* HCI_OP_LE_SET_DEF_RATE */
+	HCI_INIT(hci_le_set_def_rate_sync),
 	{}
 };
 
