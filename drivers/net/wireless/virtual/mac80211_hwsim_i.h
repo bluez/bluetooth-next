@@ -137,6 +137,10 @@ u64 mac80211_hwsim_boottime_to_tsf(struct mac80211_hwsim_data *data,
 u64 mac80211_hwsim_get_tsf(struct ieee80211_hw *hw,
 			   struct ieee80211_vif *vif);
 
+void mac80211_hwsim_tx_frame(struct ieee80211_hw *hw,
+			     struct sk_buff *skb,
+			     struct ieee80211_channel *chan);
+
 void ieee80211_hwsim_wake_tx_queue(struct ieee80211_hw *hw,
 				   struct ieee80211_txq *txq);
 

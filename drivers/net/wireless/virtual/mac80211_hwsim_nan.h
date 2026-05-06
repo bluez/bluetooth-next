@@ -7,6 +7,18 @@
 #ifndef __MAC80211_HWSIM_NAN_H
 #define __MAC80211_HWSIM_NAN_H
 
+enum mac80211_hwsim_nan_phase {
+	MAC80211_HWSIM_NAN_PHASE_SCAN,
+	MAC80211_HWSIM_NAN_PHASE_WARMUP,
+	MAC80211_HWSIM_NAN_PHASE_UP,
+};
+
+enum mac80211_hwsim_nan_role {
+	MAC80211_HWSIM_NAN_ROLE_MASTER,
+	MAC80211_HWSIM_NAN_ROLE_SYNC,
+	MAC80211_HWSIM_NAN_ROLE_NON_SYNC,
+};
+
 struct mac80211_hwsim_nan_data {
 	struct ieee80211_vif *device_vif;
 	u8 bands;
@@ -14,12 +26,40 @@ struct mac80211_hwsim_nan_data {
 	struct hrtimer slot_timer;
 	struct hrtimer resume_txqs_timer;
 	bool notify_dw;
+
+	struct hrtimer discovery_beacon_timer;
+
+	/* Later members are protected by this lock */
+	spinlock_t state_lock;
+
+	u8 master_pref;
+	u8 random_factor;
+
+	u8 random_factor_valid_dwst;
+
+	enum mac80211_hwsim_nan_phase phase;
+	enum mac80211_hwsim_nan_role role;
+
+	u8 cluster_id[ETH_ALEN];
+
+	struct ieee80211_nan_anchor_master_info current_ami;
+	struct ieee80211_nan_anchor_master_info last_ami;
+
+	/* Wi-Fi Aware version 4.0, section 3.3.6.1 and 3.3.6.2 */
+	int master_transition_score;
+	/* Wi-Fi Aware version 4.0, section 3.3.6.3 and 3.3.6.4 */
+	int sync_transition_score;
+
+	bool tsf_adjusted;
+	bool tsf_discontinuity;
 };
 
 enum hrtimer_restart
 mac80211_hwsim_nan_slot_timer(struct hrtimer *timer);
 enum hrtimer_restart
 mac80211_hwsim_nan_resume_txqs_timer(struct hrtimer *timer);
+enum hrtimer_restart
+mac80211_hwsim_nan_discovery_beacon_timer(struct hrtimer *timer);
 
 int mac80211_hwsim_nan_start(struct ieee80211_hw *hw,
 			     struct ieee80211_vif *vif,
@@ -42,5 +82,8 @@ mac80211_hwsim_nan_get_tx_channel(struct ieee80211_hw *hw);
 bool mac80211_hwsim_nan_receive(struct ieee80211_hw *hw,
 				struct ieee80211_channel *channel,
 				struct ieee80211_rx_status *rx_status);
+
+void mac80211_hwsim_nan_rx(struct ieee80211_hw *hw,
+			   struct sk_buff *skb);
 
 #endif /* __MAC80211_HWSIM_NAN_H */
