@@ -3957,6 +3957,51 @@ static u8 hci_cc_le_read_all_local_features(struct hci_dev *hdev, void *data,
 	return rp->status;
 }
 
+static u8 hci_cc_le_read_conn_interval(struct hci_dev *hdev, void *data,
+				       struct sk_buff *skb)
+{
+	struct hci_rp_le_read_conn_interval *rp = data;
+	__u8 i;
+
+	bt_dev_dbg(hdev, "status 0x%2.2x", rp->status);
+
+	if (rp->status || !rp->num_grps)
+		return rp->status;
+
+	hci_dev_lock(hdev);
+
+	/* Clear any existing SCI groups before adding new ones. */
+	hci_sci_groups_clear(hdev);
+
+	for (i = 0; i < rp->num_grps; i++) {
+		struct hci_le_conn_interval_group *grp;
+		struct sci_group *sgrp;
+
+		/* Pull HCI event data for the current group. */
+		grp = skb_pull_data(skb, sizeof(*grp));
+		if (!grp) {
+			bt_dev_err(hdev, "invalid data length for SCI group");
+			break;
+		}
+
+		sgrp = kzalloc(sizeof(*sgrp), GFP_KERNEL);
+		if (!sgrp) {
+			bt_dev_err(hdev, "can't allocate memory for SCI group");
+			break;
+		}
+
+		sgrp->min = __le16_to_cpu(grp->min);
+		sgrp->max = __le16_to_cpu(grp->max);
+		sgrp->stride = __le16_to_cpu(grp->stride);
+
+		list_add(&sgrp->list, &hdev->sci_groups);
+	}
+
+	hci_dev_unlock(hdev);
+
+	return rp->status;
+}
+
 static void hci_cs_le_create_big(struct hci_dev *hdev, u8 status)
 {
 	bt_dev_dbg(hdev, "status 0x%2.2x", status);
@@ -4239,6 +4284,10 @@ static const struct hci_cc {
 	HCI_CC(HCI_OP_LE_READ_ALL_LOCAL_FEATURES,
 	       hci_cc_le_read_all_local_features,
 	       sizeof(struct hci_rp_le_read_all_local_features)),
+	HCI_CC_VL(HCI_OP_LE_READ_CONN_INTERVAL,
+		  hci_cc_le_read_conn_interval,
+		  sizeof(struct hci_rp_le_read_conn_interval),
+		  HCI_MAX_EVENT_SIZE),
 };
 
 static u8 hci_cc_func(struct hci_dev *hdev, const struct hci_cc *cc,
@@ -7372,6 +7421,16 @@ unlock:
 	hci_dev_unlock(hdev);
 }
 
+static void hci_le_conn_rate_change_evt(struct hci_dev *hdev, void *data,
+					struct sk_buff *skb)
+{
+	struct hci_evt_le_conn_rate_change *ev = data;
+
+	bt_dev_dbg(hdev, "status 0x%2.2x", ev->status);
+
+	/* TODO: Store rate to be used for next connection? */
+}
+
 #define HCI_LE_EV_VL(_op, _func, _min_len, _max_len) \
 [_op] = { \
 	.func = _func, \
@@ -7483,6 +7542,9 @@ static const struct hci_le_ev {
 		     sizeof(struct
 			    hci_evt_le_read_all_remote_features_complete),
 		     HCI_MAX_EVENT_SIZE),
+	/* [0x37 = HCI_EVT_LE_CONN_RATE_CHANGE] */
+	HCI_LE_EV(HCI_EVT_LE_CONN_RATE_CHANGE, hci_le_conn_rate_change_evt,
+		  sizeof(struct hci_evt_le_conn_rate_change)),
 };
 
 static void hci_le_meta_evt(struct hci_dev *hdev, void *data,

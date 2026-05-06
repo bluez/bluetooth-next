@@ -2543,8 +2543,9 @@ struct hci_dev *hci_alloc_dev_priv(int sizeof_priv)
 	INIT_LIST_HEAD(&hdev->adv_instances);
 	INIT_LIST_HEAD(&hdev->blocked_keys);
 	INIT_LIST_HEAD(&hdev->monitored_devices);
-
 	INIT_LIST_HEAD(&hdev->local_codecs);
+	INIT_LIST_HEAD(&hdev->sci_groups);
+
 	INIT_WORK(&hdev->rx_work, hci_rx_work);
 	INIT_WORK(&hdev->cmd_work, hci_cmd_work);
 	INIT_WORK(&hdev->tx_work, hci_tx_work);
@@ -2740,6 +2741,16 @@ void hci_unregister_dev(struct hci_dev *hdev)
 }
 EXPORT_SYMBOL(hci_unregister_dev);
 
+void hci_sci_groups_clear(struct hci_dev *hdev)
+{
+	struct sci_group *grp, *tmp;
+
+	list_for_each_entry_safe(grp, tmp, &hdev->sci_groups, list) {
+		list_del(&grp->list);
+		kfree(grp);
+	}
+}
+
 /* Release HCI device */
 void hci_release_dev(struct hci_dev *hdev)
 {
@@ -2766,6 +2777,7 @@ void hci_release_dev(struct hci_dev *hdev)
 	hci_discovery_filter_clear(hdev);
 	hci_blocked_keys_clear(hdev);
 	hci_codec_list_clear(&hdev->local_codecs);
+	hci_sci_groups_clear(hdev);
 	msft_release(hdev);
 	hci_dev_unlock(hdev);
 
