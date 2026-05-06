@@ -36,6 +36,11 @@ static_assert(DW0_TSF_MASK + 1 == 8192 * 1024);
 /* Quiet time at the end of each slot where TX is suppressed */
 #define NAN_CHAN_SWITCH_TIME_US		256
 
+struct hwsim_nan_sta_iter_ctx {
+	struct ieee80211_hw *hw;
+	bool can_tx;
+};
+
 static void mac80211_hwsim_nan_resume_txqs(struct mac80211_hwsim_data *data);
 
 static u64 hwsim_nan_get_timer_tsf(struct mac80211_hwsim_data *data)
@@ -75,6 +80,109 @@ static u64 hwsim_nan_get_master_rank(struct mac80211_hwsim_data *data)
 
 	return hwsim_nan_encode_master_rank(master_pref, random_factor,
 					    data->nan.device_vif->addr);
+}
+
+static bool mac80211_hwsim_nan_is_dw_slot(struct mac80211_hwsim_data *data,
+					  u8 slot)
+{
+	return slot == SLOT_24GHZ_DW ||
+		(slot == SLOT_5GHZ_DW &&
+		 (data->nan.bands & BIT(NL80211_BAND_5GHZ)));
+}
+
+static bool
+hwsim_nan_rx_chandef_compatible(struct mac80211_hwsim_data *data, u8 slot,
+				struct ieee80211_channel *rx_chan, u8 rx_bw)
+{
+	static const int bw_to_mhz[] = {
+		[RATE_INFO_BW_20] = 20, [RATE_INFO_BW_40] = 40,
+		[RATE_INFO_BW_80] = 80, [RATE_INFO_BW_160] = 160,
+	};
+	struct cfg80211_chan_def sched_chandef;
+	int rx_mhz, sched_mhz;
+
+	scoped_guard(spinlock_bh, &data->nan.state_lock)
+		sched_chandef = data->nan.local_sched[slot];
+
+	if (!sched_chandef.chan ||
+	    sched_chandef.chan->center_freq != rx_chan->center_freq)
+		return false;
+
+	if (rx_bw >= ARRAY_SIZE(bw_to_mhz) || !bw_to_mhz[rx_bw])
+		return false;
+
+	rx_mhz = bw_to_mhz[rx_bw];
+	sched_mhz = cfg80211_chandef_get_width(&sched_chandef);
+
+	/* Accept RX at narrower or equal bandwidth */
+	return rx_mhz <= sched_mhz;
+}
+
+static bool hwsim_nan_peer_present_in_dw(struct hwsim_sta_priv *sp, u64 tsf)
+{
+	u8 slot = hwsim_nan_slot_from_tsf(tsf);
+	u8 cdw = 0;
+	u8 dw_index, wake_interval;
+	u16 committed_dw;
+
+	scoped_guard(spinlock_bh, &sp->nan_sched.lock)
+		committed_dw = sp->nan_sched.committed_dw;
+
+	/* If peer doesn't advertise committed DW, assume presence in
+	 * all 2.4 GHz DW slots
+	 */
+	if (!committed_dw)
+		return slot == SLOT_24GHZ_DW;
+
+	/* Get DW index (0-15) within the 16-DWST DW0 cycle */
+	dw_index = (tsf / ieee80211_tu_to_usec(DWST_TU)) & 0xf;
+
+	/* Extract CDW for the appropriate band (spec Table 80) */
+	if (slot == SLOT_24GHZ_DW)
+		cdw = committed_dw & 0x7;
+	else if (slot == SLOT_5GHZ_DW)
+		cdw = (committed_dw >> 3) & 0x7;
+
+	if (cdw == 0)
+		return false;
+
+	/* Peer wakes every 2^(cdw-1) DWs: 1, 2, 4, 8, or 16 */
+	wake_interval = 1 << (cdw - 1);
+
+	return (dw_index % wake_interval) == 0;
+}
+
+static bool
+hwsim_nan_peer_present_in_faw(struct hwsim_sta_priv *sp,
+			      struct mac80211_hwsim_data *data, u8 slot)
+{
+	struct cfg80211_chan_def local_chandef;
+
+	scoped_guard(spinlock_bh, &data->nan.state_lock)
+		local_chandef = data->nan.local_sched[slot];
+
+	if (!local_chandef.chan)
+		return false;
+
+	scoped_guard(spinlock_bh, &sp->nan_sched.lock) {
+		for (int i = 0; i < CFG80211_NAN_MAX_PEER_MAPS; i++) {
+			struct cfg80211_chan_def *peer_chandef;
+
+			if (sp->nan_sched.maps[i].map_id ==
+			    CFG80211_NAN_INVALID_MAP_ID)
+				continue;
+
+			peer_chandef = &sp->nan_sched.maps[i].chans[slot];
+			if (!peer_chandef->chan)
+				continue;
+
+			if (cfg80211_chandef_compatible(&local_chandef,
+							peer_chandef))
+				return true;
+		}
+	}
+
+	return false;
 }
 
 static void
@@ -880,15 +988,65 @@ int mac80211_hwsim_nan_change_config(struct ieee80211_hw *hw,
 	return 0;
 }
 
-static void mac80211_hwsim_nan_resume_txqs(struct mac80211_hwsim_data *data)
+static void hwsim_nan_can_sta_transmit(void *_ctx, struct ieee80211_sta *sta)
 {
-	u32 timeout_ns;
+	struct hwsim_nan_sta_iter_ctx *ctx = _ctx;
 
-	/* Nothing to do if we are not in a DW */
-	if (!mac80211_hwsim_nan_txq_transmitting(data->hw,
-						 data->nan.device_vif->txq_mgmt))
+	if (ctx->can_tx)
 		return;
 
+	for (int i = 0; i < ARRAY_SIZE(sta->txq); i++) {
+		struct ieee80211_txq *txq = sta->txq[i];
+
+		if (!txq)
+			continue;
+
+		if (txq->vif->type != NL80211_IFTYPE_NAN &&
+		    txq->vif->type != NL80211_IFTYPE_NAN_DATA)
+			return;
+
+		if (mac80211_hwsim_nan_txq_transmitting(ctx->hw, txq)) {
+			ctx->can_tx = true;
+			return;
+		}
+	}
+}
+
+static void mac80211_hwsim_nan_resume_txqs(struct mac80211_hwsim_data *data)
+{
+	u64 tsf = mac80211_hwsim_get_tsf(data->hw, data->nan.device_vif);
+	u8 slot = hwsim_nan_slot_from_tsf(tsf);
+	bool is_dw_slot = mac80211_hwsim_nan_is_dw_slot(data, slot);
+	struct hwsim_nan_sta_iter_ctx ctx = {
+		.hw = data->hw,
+		.can_tx = false,
+	};
+	u32 timeout_ns;
+
+	/* Outside DW, require local FAW schedule to proceed */
+	if (!is_dw_slot) {
+		scoped_guard(spinlock_bh, &data->nan.state_lock) {
+			if (!data->nan.local_sched[slot].chan)
+				return;
+		}
+	}
+
+	guard(rcu)();
+
+	/* Check if management queue can transmit */
+	if (mac80211_hwsim_nan_txq_transmitting(data->hw,
+						data->nan.device_vif->txq_mgmt))
+		goto resume_txqs_timer;
+
+	/* Check if any STA queue can transmit */
+	ieee80211_iterate_stations_atomic(data->hw,
+					  hwsim_nan_can_sta_transmit,
+					  &ctx);
+
+	if (!ctx.can_tx)
+		return;
+
+resume_txqs_timer:
 	/*
 	 * Wait a bit and also randomize things so that not everyone is TXing
 	 * at the same time. Each slot is 16 TU long, this waits between 100 us
@@ -900,6 +1058,26 @@ static void mac80211_hwsim_nan_resume_txqs(struct mac80211_hwsim_data *data)
 	hrtimer_start(&data->nan.resume_txqs_timer,
 		      ns_to_ktime(timeout_ns),
 		      HRTIMER_MODE_REL_SOFT);
+}
+
+static void hwsim_nan_wake_sta_iter(void *_data, struct ieee80211_sta *sta)
+{
+	struct ieee80211_hw *hw = _data;
+
+	for (int i = 0; i < ARRAY_SIZE(sta->txq); i++) {
+		struct ieee80211_txq *txq = sta->txq[i];
+
+		if (!txq)
+			continue;
+
+		/* exit early if non-NAN */
+		if (txq->vif->type != NL80211_IFTYPE_NAN &&
+		    txq->vif->type != NL80211_IFTYPE_NAN_DATA)
+			return;
+
+		if (mac80211_hwsim_nan_txq_transmitting(hw, txq))
+			ieee80211_hwsim_wake_tx_queue(hw, txq);
+	}
 }
 
 enum hrtimer_restart
@@ -917,6 +1095,11 @@ mac80211_hwsim_nan_resume_txqs_timer(struct hrtimer *timer)
 		ieee80211_hwsim_wake_tx_queue(data->hw,
 					      data->nan.device_vif->txq_mgmt);
 
+	/* Wake TX queues for all stations */
+	ieee80211_iterate_stations_atomic(data->hw,
+					  hwsim_nan_wake_sta_iter,
+					  data->hw);
+
 	return HRTIMER_NORESTART;
 }
 
@@ -924,6 +1107,9 @@ bool mac80211_hwsim_nan_txq_transmitting(struct ieee80211_hw *hw,
 					 struct ieee80211_txq *txq)
 {
 	struct mac80211_hwsim_data *data = hw->priv;
+	struct ieee80211_sta *nmi_sta;
+	struct hwsim_sta_priv *sp;
+	bool is_dw_slot;
 	u64 tsf;
 	u8 slot;
 
@@ -937,36 +1123,54 @@ bool mac80211_hwsim_nan_txq_transmitting(struct ieee80211_hw *hw,
 	if (slot != hwsim_nan_slot_from_tsf(tsf + NAN_CHAN_SWITCH_TIME_US))
 		return false;
 
-	/* Check NAN device interface management frame transmission */
-	if (!txq->sta) {
-		/* Only transmit these during one of the DWs */
-		if (slot == SLOT_24GHZ_DW ||
-		    (slot == SLOT_5GHZ_DW &&
-		     (data->nan.bands & BIT(NL80211_BAND_5GHZ))))
-			return true;
+	is_dw_slot = mac80211_hwsim_nan_is_dw_slot(data, slot);
 
-		return false;
+	/* Non-STA TXQ: allow management frames during DW */
+	if (!txq->sta)
+		return is_dw_slot;
+
+	/* STA TXQ: need peer schedule for availability check */
+	nmi_sta = rcu_dereference(txq->sta->nmi) ?: txq->sta;
+	sp = (void *)nmi_sta->drv_priv;
+
+	/* DW slot: NDI can TX only mgmt but not worth checking,
+	 * NMI checks peer's committed DW
+	 */
+	if (is_dw_slot) {
+		if (txq->vif->type == NL80211_IFTYPE_NAN_DATA)
+			return false;
+		return hwsim_nan_peer_present_in_dw(sp, tsf);
 	}
 
-	return true;
+	/* FAW slot: verify local schedule and peer availability */
+	return hwsim_nan_peer_present_in_faw(sp, data, slot);
 }
 
-struct ieee80211_channel *
-mac80211_hwsim_nan_get_tx_channel(struct ieee80211_hw *hw)
+void mac80211_hwsim_nan_get_tx_chandef(struct ieee80211_hw *hw,
+				       struct cfg80211_chan_def *chandef)
 {
 	struct mac80211_hwsim_data *data = hw->priv;
 	u64 tsf = mac80211_hwsim_get_tsf(data->hw, data->nan.device_vif);
 	u8 slot = hwsim_nan_slot_from_tsf(tsf);
 
-	if (slot == SLOT_24GHZ_DW)
-		return ieee80211_get_channel(hw->wiphy, 2437);
+	/* DW slots are always 20 MHz */
+	if (slot == SLOT_24GHZ_DW) {
+		cfg80211_chandef_create(chandef,
+					ieee80211_get_channel(hw->wiphy, 2437),
+					NL80211_CHAN_NO_HT);
+		return;
+	}
 
-	if (slot == SLOT_5GHZ_DW &&
-	    data->nan.bands & BIT(NL80211_BAND_5GHZ))
-		return ieee80211_get_channel(hw->wiphy, 5745);
+	if (slot == SLOT_5GHZ_DW && data->nan.bands & BIT(NL80211_BAND_5GHZ)) {
+		cfg80211_chandef_create(chandef,
+					ieee80211_get_channel(hw->wiphy, 5745),
+					NL80211_CHAN_NO_HT);
+		return;
+	}
 
-	/* drop frame and warn, NAN_CHAN_SWITCH_TIME_US should avoid races */
-	return NULL;
+	/* FAW slot: copy local schedule for this slot */
+	scoped_guard(spinlock_bh, &data->nan.state_lock)
+		*chandef = data->nan.local_sched[slot];
 }
 
 bool mac80211_hwsim_nan_receive(struct ieee80211_hw *hw,
@@ -1006,7 +1210,9 @@ bool mac80211_hwsim_nan_receive(struct ieee80211_hw *hw,
 	    channel->center_freq == 5745)
 		return true;
 
-	return false;
+	/* Accept frames during FAW slots if chandef is compatible */
+	return hwsim_nan_rx_chandef_compatible(data, slot, channel,
+					       rx_status->bw);
 }
 
 void mac80211_hwsim_nan_local_sched_changed(struct ieee80211_hw *hw,

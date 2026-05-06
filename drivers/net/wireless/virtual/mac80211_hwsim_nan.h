@@ -86,8 +86,8 @@ int mac80211_hwsim_nan_peer_sched_changed(struct ieee80211_hw *hw,
 bool mac80211_hwsim_nan_txq_transmitting(struct ieee80211_hw *hw,
 					 struct ieee80211_txq *txq);
 
-struct ieee80211_channel *
-mac80211_hwsim_nan_get_tx_channel(struct ieee80211_hw *hw);
+void mac80211_hwsim_nan_get_tx_chandef(struct ieee80211_hw *hw,
+				       struct cfg80211_chan_def *chandef);
 
 bool mac80211_hwsim_nan_receive(struct ieee80211_hw *hw,
 				struct ieee80211_channel *channel,
