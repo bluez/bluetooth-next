@@ -1395,10 +1395,8 @@ static int btintel_pcie_submit_rx_work(struct btintel_pcie_data *data, u8 status
 	rfh_hdr = buf;
 
 	len = rfh_hdr->packet_len;
-	if (len <= 0) {
-		ret = -EINVAL;
+	if (len <= 0)
 		goto resubmit;
-	}
 
 	/* Remove RFH header */
 	buf += sizeof(*rfh_hdr);
