@@ -43,11 +43,13 @@ struct pwrseq_unit_data {
  *               the state lock has been released. It's useful for implementing
  *               boot-up delays without blocking other users from powering up
  *               using the same power sequencer.
+ * @is_fixed: Callback to check whether this power sequencer is fixed or not.
  */
 struct pwrseq_target_data {
 	const char *name;
 	const struct pwrseq_unit_data *unit;
 	pwrseq_power_state_func post_enable;
+	bool (*is_fixed)(struct pwrseq_device *pwrseq);
 };
 
 /**
