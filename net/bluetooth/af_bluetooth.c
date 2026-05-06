@@ -521,13 +521,17 @@ static inline __poll_t bt_accept_poll(struct sock *parent)
 	struct bt_sock *s, *n;
 	struct sock *sk;
 
+	lock_sock(parent);
 	list_for_each_entry_safe(s, n, &bt_sk(parent)->accept_q, accept_q) {
 		sk = (struct sock *)s;
 		if (sk->sk_state == BT_CONNECTED ||
 		    (test_bit(BT_SK_DEFER_SETUP, &bt_sk(parent)->flags) &&
-		     sk->sk_state == BT_CONNECT2))
+		     sk->sk_state == BT_CONNECT2)) {
+			release_sock(parent);
 			return EPOLLIN | EPOLLRDNORM;
+		}
 	}
+	release_sock(parent);
 
 	return 0;
 }
