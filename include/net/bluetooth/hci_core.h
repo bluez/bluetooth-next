@@ -333,6 +333,14 @@ struct adv_monitor {
 #define HCI_ADV_MONITOR_EXT_NONE		1
 #define HCI_ADV_MONITOR_EXT_MSFT		2
 
+
+struct sci_group {
+	struct list_head list;
+	__u16 min;
+	__u16 max;
+	__u16 stride;
+};
+
 #define HCI_MAX_SHORT_NAME_LENGTH	10
 
 #define HCI_CONN_HANDLE_MAX		0x0eff
@@ -572,6 +580,7 @@ struct hci_dev {
 	struct list_head	pend_le_reports;
 	struct list_head	blocked_keys;
 	struct list_head	local_codecs;
+	struct list_head	sci_groups;
 
 	struct hci_dev_stats	stat;
 
@@ -2081,6 +2090,14 @@ void hci_conn_del_sysfs(struct hci_conn *conn);
 
 #define mws_transport_config_capable(dev) (((dev)->commands[30] & 0x08) && \
 	(!hci_test_quirk((dev), HCI_QUIRK_BROKEN_MWS_TRANSPORT_CONFIG)))
+
+/* Shorter Connection Intervals support */
+#define le_sci_capable(dev) \
+	((dev)->le_features[9] & HCI_LE_SCI)
+#define le_sci_enabled(dev) \
+	(le_enabled(dev) && le_sci_capable(dev))
+
+void hci_sci_groups_clear(struct hci_dev *hdev);
 
 /* ----- HCI protocols ----- */
 #define HCI_PROTO_DEFER             0x01
