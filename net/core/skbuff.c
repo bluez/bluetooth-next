@@ -6992,6 +6992,24 @@ struct sk_buff *pskb_extract(struct sk_buff *skb, int off,
 }
 EXPORT_SYMBOL(pskb_extract);
 
+int skb_printf(struct sk_buff *skb, const char *fmt, ...)
+{
+	int len, size = skb_availroom(skb);
+	va_list args;
+
+	va_start(args, fmt);
+	len = vsnprintf(skb_tail_pointer(skb), size, fmt, args);
+	va_end(args);
+
+	if (unlikely(len >= size))
+		return -ENOSPC;
+
+	skb->tail += len;
+	skb->len += len;
+	return len;
+}
+EXPORT_SYMBOL(skb_printf);
+
 /**
  * skb_condense - try to get rid of fragments/frag_list if possible
  * @skb: buffer

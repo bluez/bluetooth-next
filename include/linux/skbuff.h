@@ -4292,6 +4292,7 @@ int skb_mpls_update_lse(struct sk_buff *skb, __be32 mpls_lse);
 int skb_mpls_dec_ttl(struct sk_buff *skb);
 struct sk_buff *pskb_extract(struct sk_buff *skb, int off, int to_copy,
 			     gfp_t gfp);
+int skb_printf(struct sk_buff *skb, const char *fmt, ...);
 
 static inline int memcpy_from_msg(void *data, struct msghdr *msg, int len)
 {
