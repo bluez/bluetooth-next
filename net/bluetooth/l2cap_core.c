@@ -7083,6 +7083,7 @@ int l2cap_chan_connect(struct l2cap_chan *chan, __le16 psm, u16 cid,
 	struct l2cap_conn *conn;
 	struct hci_conn *hcon;
 	struct hci_dev *hdev;
+	bool link_connected;
 	int err;
 
 	BT_DBG("%pMR -> %pMR (type %u) psm 0x%4.4x mode 0x%2.2x", &chan->src,
@@ -7227,6 +7228,7 @@ int l2cap_chan_connect(struct l2cap_chan *chan, __le16 psm, u16 cid,
 	chan->src_type = bdaddr_src_type(hcon);
 
 	__l2cap_chan_add(conn, chan);
+	link_connected = READ_ONCE(hcon->state) == BT_CONNECTED;
 
 	/* l2cap_chan_add takes its own ref so we can drop this one */
 	hci_conn_drop(hcon);
@@ -7241,7 +7243,7 @@ int l2cap_chan_connect(struct l2cap_chan *chan, __le16 psm, u16 cid,
 	chan->sport = 0;
 	write_unlock(&chan_list_lock);
 
-	if (hcon->state == BT_CONNECTED) {
+	if (link_connected) {
 		if (chan->chan_type != L2CAP_CHAN_CONN_ORIENTED) {
 			__clear_chan_timer(chan);
 			if (l2cap_chan_check_security(chan, true))
