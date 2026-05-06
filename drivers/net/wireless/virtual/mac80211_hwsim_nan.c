@@ -41,6 +41,13 @@ struct hwsim_nan_sta_iter_ctx {
 	bool can_tx;
 };
 
+struct hwsim_nan_mcast_data_iter_ctx {
+	struct ieee80211_hw *hw;
+	struct ieee80211_vif *vif;
+	size_t n_vif_sta;
+	size_t n_sta_can_tx;
+};
+
 static void mac80211_hwsim_nan_resume_txqs(struct mac80211_hwsim_data *data);
 
 static u64 hwsim_nan_get_timer_tsf(struct mac80211_hwsim_data *data)
@@ -1103,6 +1110,42 @@ mac80211_hwsim_nan_resume_txqs_timer(struct hrtimer *timer)
 	return HRTIMER_NORESTART;
 }
 
+static void
+hwsim_nan_can_mcast_sta_transmit(void *_ctx, struct ieee80211_sta *sta)
+{
+	struct hwsim_nan_mcast_data_iter_ctx *ctx = _ctx;
+	struct ieee80211_txq *txq = sta->txq[0];
+
+	if (!txq || txq->vif != ctx->vif)
+		return;
+
+	ctx->n_vif_sta++;
+	if (mac80211_hwsim_nan_txq_transmitting(ctx->hw, txq))
+		ctx->n_sta_can_tx++;
+}
+
+static bool
+mac80211_hwsim_nan_mcast_data_transmitting(struct ieee80211_hw *hw,
+					   struct ieee80211_txq *txq)
+{
+	struct mac80211_hwsim_data *data = hw->priv;
+	struct hwsim_nan_mcast_data_iter_ctx ctx = {
+		.hw = hw,
+		.vif = txq->vif,
+		.n_sta_can_tx = 0,
+		.n_vif_sta = 0,
+	};
+
+	/* Check if all the stations associated with the current
+	 * interface are available.
+	 */
+	ieee80211_iterate_stations_atomic(data->hw,
+					  hwsim_nan_can_mcast_sta_transmit,
+					  &ctx);
+
+	return ctx.n_vif_sta && ctx.n_sta_can_tx == ctx.n_vif_sta;
+}
+
 bool mac80211_hwsim_nan_txq_transmitting(struct ieee80211_hw *hw,
 					 struct ieee80211_txq *txq)
 {
@@ -1125,9 +1168,16 @@ bool mac80211_hwsim_nan_txq_transmitting(struct ieee80211_hw *hw,
 
 	is_dw_slot = mac80211_hwsim_nan_is_dw_slot(data, slot);
 
-	/* Non-STA TXQ: allow management frames during DW */
-	if (!txq->sta)
-		return is_dw_slot;
+	if (!txq->sta) {
+		/* Non-STA TXQ: allow management frames during DW */
+		if (txq->vif->type == NL80211_IFTYPE_NAN)
+			return is_dw_slot;
+
+		/* Allow multicast data when all the peers are available
+		 * on this slot
+		 */
+		return mac80211_hwsim_nan_mcast_data_transmitting(hw, txq);
+	}
 
 	/* STA TXQ: need peer schedule for availability check */
 	nmi_sta = rcu_dereference(txq->sta->nmi) ?: txq->sta;
