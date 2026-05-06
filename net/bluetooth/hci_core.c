@@ -948,6 +948,14 @@ static void hci_power_on(struct work_struct *work)
 
 	BT_DBG("%s", hdev->name);
 
+	if (hci_dev_test_flag(hdev, HCI_CONFIG) &&
+	    hci_dev_test_flag(hdev, HCI_MGMT) &&
+	    !hci_dev_test_flag(hdev, HCI_RFKILLED) &&
+	    test_bit(HCI_UP, &hdev->flags)) {
+		hci_dev_do_close(hdev);
+		hci_dev_set_flag(hdev, HCI_AUTO_OFF);
+	}
+
 	if (test_bit(HCI_UP, &hdev->flags) &&
 	    hci_dev_test_flag(hdev, HCI_MGMT) &&
 	    hci_dev_test_and_clear_flag(hdev, HCI_AUTO_OFF)) {
