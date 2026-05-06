@@ -26,7 +26,12 @@
 static_assert(16 * DWST_TU * 1024 == 8192 * 1024);
 static_assert(DW0_TSF_MASK + 1 == 8192 * 1024);
 
+/* Quiet time at the end of each slot where TX is suppressed */
+#define NAN_CHAN_SWITCH_TIME_US		256
+
 static u8 hwsim_nan_cluster_id[ETH_ALEN];
+
+static void mac80211_hwsim_nan_resume_txqs(struct mac80211_hwsim_data *data);
 
 static u64 hwsim_nan_get_timer_tsf(struct mac80211_hwsim_data *data)
 {
@@ -130,6 +135,8 @@ mac80211_hwsim_nan_slot_timer(struct hrtimer *timer)
 		cfg80211_next_nan_dw_notif(wdev, notify_dw_chan, GFP_ATOMIC);
 	}
 
+	mac80211_hwsim_nan_resume_txqs(data);
+
 	mac80211_hwsim_nan_schedule_slot(data, slot + 1);
 
 	return HRTIMER_RESTART;
@@ -190,6 +197,7 @@ int mac80211_hwsim_nan_stop(struct ieee80211_hw *hw,
 		return -EINVAL;
 
 	hrtimer_cancel(&data->nan.slot_timer);
+	hrtimer_cancel(&data->nan.resume_txqs_timer);
 	data->nan.device_vif = NULL;
 
 	spin_lock_bh(&hwsim_radio_lock);
@@ -230,4 +238,75 @@ int mac80211_hwsim_nan_change_config(struct ieee80211_hw *hw,
 		data->nan.notify_dw = conf->enable_dw_notification;
 
 	return 0;
+}
+
+static void mac80211_hwsim_nan_resume_txqs(struct mac80211_hwsim_data *data)
+{
+	u32 timeout_ns;
+
+	/* Nothing to do if we are not in a DW */
+	if (!mac80211_hwsim_nan_txq_transmitting(data->hw,
+						 data->nan.device_vif->txq_mgmt))
+		return;
+
+	/*
+	 * Wait a bit and also randomize things so that not everyone is TXing
+	 * at the same time. Each slot is 16 TU long, this waits between 100 us
+	 * and 5 ms before starting to TX (unless a new frame arrives).
+	 */
+	timeout_ns = get_random_u32_inclusive(100 * NSEC_PER_USEC,
+					      5 * NSEC_PER_MSEC);
+
+	hrtimer_start(&data->nan.resume_txqs_timer,
+		      ns_to_ktime(timeout_ns),
+		      HRTIMER_MODE_REL_SOFT);
+}
+
+enum hrtimer_restart
+mac80211_hwsim_nan_resume_txqs_timer(struct hrtimer *timer)
+{
+	struct mac80211_hwsim_data *data =
+		container_of(timer, struct mac80211_hwsim_data,
+			     nan.resume_txqs_timer);
+
+	guard(rcu)();
+
+	/* Wake TX queue for management frames on the NAN device interface */
+	if (mac80211_hwsim_nan_txq_transmitting(data->hw,
+						data->nan.device_vif->txq_mgmt))
+		ieee80211_hwsim_wake_tx_queue(data->hw,
+					      data->nan.device_vif->txq_mgmt);
+
+	return HRTIMER_NORESTART;
+}
+
+bool mac80211_hwsim_nan_txq_transmitting(struct ieee80211_hw *hw,
+					 struct ieee80211_txq *txq)
+{
+	struct mac80211_hwsim_data *data = hw->priv;
+	u64 tsf;
+	u8 slot;
+
+	if (WARN_ON_ONCE(!data->nan.device_vif))
+		return true;
+
+	tsf = mac80211_hwsim_get_tsf(hw, data->nan.device_vif);
+	slot = hwsim_nan_slot_from_tsf(tsf);
+
+	/* Enforce a maximum channel switch time and guard against TX delays */
+	if (slot != hwsim_nan_slot_from_tsf(tsf + NAN_CHAN_SWITCH_TIME_US))
+		return false;
+
+	/* Check NAN device interface management frame transmission */
+	if (!txq->sta) {
+		/* Only transmit these during one of the DWs */
+		if (slot == SLOT_24GHZ_DW ||
+		    (slot == SLOT_5GHZ_DW &&
+		     (data->nan.bands & BIT(NL80211_BAND_5GHZ))))
+			return true;
+
+		return false;
+	}
+
+	return true;
 }

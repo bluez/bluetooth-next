@@ -2235,13 +2235,17 @@ static void mac80211_hwsim_tx(struct ieee80211_hw *hw,
 	ieee80211_tx_status_irqsafe(hw, skb);
 }
 
-static void ieee80211_hwsim_wake_tx_queue(struct ieee80211_hw *hw,
-					  struct ieee80211_txq *txq)
+void ieee80211_hwsim_wake_tx_queue(struct ieee80211_hw *hw,
+				   struct ieee80211_txq *txq)
 {
 	struct ieee80211_tx_control control = {
 		.sta = txq->sta,
 	};
 	struct sk_buff *skb;
+
+	if (txq->vif->type == NL80211_IFTYPE_NAN &&
+	    !mac80211_hwsim_nan_txq_transmitting(hw, txq))
+		return;
 
 	while ((skb = ieee80211_tx_dequeue(hw, txq)))
 		mac80211_hwsim_tx(hw, &control, skb);
@@ -5602,6 +5606,9 @@ static int mac80211_hwsim_new_radio(struct genl_info *info,
 
 		hrtimer_setup(&data->nan.slot_timer,
 			      mac80211_hwsim_nan_slot_timer,
+			      CLOCK_BOOTTIME, HRTIMER_MODE_ABS_SOFT);
+		hrtimer_setup(&data->nan.resume_txqs_timer,
+			      mac80211_hwsim_nan_resume_txqs_timer,
 			      CLOCK_BOOTTIME, HRTIMER_MODE_ABS_SOFT);
 	}
 

@@ -15,11 +15,14 @@ struct mac80211_hwsim_nan_data {
 	struct ieee80211_channel *channel;
 
 	struct hrtimer slot_timer;
+	struct hrtimer resume_txqs_timer;
 	bool notify_dw;
 };
 
 enum hrtimer_restart
 mac80211_hwsim_nan_slot_timer(struct hrtimer *timer);
+enum hrtimer_restart
+mac80211_hwsim_nan_resume_txqs_timer(struct hrtimer *timer);
 
 int mac80211_hwsim_nan_start(struct ieee80211_hw *hw,
 			     struct ieee80211_vif *vif,
@@ -32,5 +35,8 @@ int mac80211_hwsim_nan_change_config(struct ieee80211_hw *hw,
 				     struct ieee80211_vif *vif,
 				     struct cfg80211_nan_conf *conf,
 				     u32 changes);
+
+bool mac80211_hwsim_nan_txq_transmitting(struct ieee80211_hw *hw,
+					 struct ieee80211_txq *txq);
 
 #endif /* __MAC80211_HWSIM_NAN_H */
