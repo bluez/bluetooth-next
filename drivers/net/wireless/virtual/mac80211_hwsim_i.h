@@ -14,6 +14,27 @@
 #include "mac80211_hwsim.h"
 #include "mac80211_hwsim_nan.h"
 
+struct hwsim_sta_nan_sched {
+	/* Later members are protected by this lock */
+	spinlock_t lock;
+	u16 committed_dw;
+	struct {
+		u8 map_id;
+		struct cfg80211_chan_def chans[CFG80211_NAN_SCHED_NUM_TIME_SLOTS];
+	} maps[CFG80211_NAN_MAX_PEER_MAPS];
+};
+
+struct hwsim_sta_priv {
+	u32 magic;
+	unsigned int last_link;
+	u16 active_links_rx;
+
+	/* NAN peer schedule - must be accessed under nan_sched.lock */
+	struct hwsim_sta_nan_sched nan_sched;
+};
+
+#define HWSIM_STA_MAGIC	0x6d537749
+
 struct mac80211_hwsim_link_data {
 	u32 link_id;
 	u64 beacon_int	/* beacon interval in us */;

@@ -1008,3 +1008,83 @@ bool mac80211_hwsim_nan_receive(struct ieee80211_hw *hw,
 
 	return false;
 }
+
+void mac80211_hwsim_nan_local_sched_changed(struct ieee80211_hw *hw,
+					    struct ieee80211_vif *vif)
+{
+	struct mac80211_hwsim_data *data = hw->priv;
+	struct ieee80211_nan_channel **slots = vif->cfg.nan_sched.schedule;
+
+	if (WARN_ON(vif->type != NL80211_IFTYPE_NAN))
+		return;
+
+	spin_lock_bh(&data->nan.state_lock);
+
+	for (int i = 0; i < ARRAY_SIZE(data->nan.local_sched); i++) {
+		struct ieee80211_chanctx_conf *chanctx;
+
+		if (!slots[i] || IS_ERR(slots[i])) {
+			memset(&data->nan.local_sched[i], 0,
+			       sizeof(data->nan.local_sched[i]));
+			continue;
+		}
+
+		chanctx = slots[i]->chanctx_conf;
+		if (!chanctx) {
+			memset(&data->nan.local_sched[i], 0,
+			       sizeof(data->nan.local_sched[i]));
+			continue;
+		}
+
+		data->nan.local_sched[i] = chanctx->def;
+	}
+
+	spin_unlock_bh(&data->nan.state_lock);
+}
+
+int mac80211_hwsim_nan_peer_sched_changed(struct ieee80211_hw *hw,
+					  struct ieee80211_sta *sta)
+{
+	struct hwsim_sta_priv *sp = (void *)sta->drv_priv;
+	struct ieee80211_nan_peer_sched *sched = sta->nan_sched;
+
+	spin_lock_bh(&sp->nan_sched.lock);
+
+	/* Clear existing schedule */
+	sp->nan_sched.committed_dw = 0;
+	for (int i = 0; i < CFG80211_NAN_MAX_PEER_MAPS; i++) {
+		sp->nan_sched.maps[i].map_id = CFG80211_NAN_INVALID_MAP_ID;
+		memset(sp->nan_sched.maps[i].chans, 0,
+		       sizeof(sp->nan_sched.maps[i].chans));
+	}
+
+	if (!sched)
+		goto out;
+
+	sp->nan_sched.committed_dw = sched->committed_dw;
+
+	for (int i = 0; i < CFG80211_NAN_MAX_PEER_MAPS; i++) {
+		struct ieee80211_nan_peer_map *map = &sched->maps[i];
+
+		if (map->map_id == CFG80211_NAN_INVALID_MAP_ID)
+			continue;
+
+		sp->nan_sched.maps[i].map_id = map->map_id;
+
+		for (int j = 0; j < CFG80211_NAN_SCHED_NUM_TIME_SLOTS; j++) {
+			struct ieee80211_nan_channel *peer_chan =
+				map->slots[j];
+
+			if (peer_chan && peer_chan->chanreq.oper.chan)
+				sp->nan_sched.maps[i].chans[j] =
+					peer_chan->chanreq.oper;
+			else
+				memset(&sp->nan_sched.maps[i].chans[j], 0,
+				       sizeof(sp->nan_sched.maps[i].chans[j]));
+		}
+	}
+
+out:
+	spin_unlock_bh(&sp->nan_sched.lock);
+	return 0;
+}

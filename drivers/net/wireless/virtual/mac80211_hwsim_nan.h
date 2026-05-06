@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * mac80211_hwsim_nan - NAN software simulation for mac80211_hwsim
- * Copyright (C) 2025 Intel Corporation
+ * Copyright (C) 2025-2026 Intel Corporation
  */
 
 #ifndef __MAC80211_HWSIM_NAN_H
@@ -52,6 +52,13 @@ struct mac80211_hwsim_nan_data {
 
 	bool tsf_adjusted;
 	bool tsf_discontinuity;
+
+	/*
+	 * Local schedule - stores channel definition for each 16TU slot.
+	 * Derived from NMI vif->cfg.nan_schedule. chan == NULL means not
+	 * available in that slot (except DW which is implicit).
+	 */
+	struct cfg80211_chan_def local_sched[CFG80211_NAN_SCHED_NUM_TIME_SLOTS];
 };
 
 enum hrtimer_restart
@@ -73,6 +80,9 @@ int mac80211_hwsim_nan_change_config(struct ieee80211_hw *hw,
 				     struct cfg80211_nan_conf *conf,
 				     u32 changes);
 
+int mac80211_hwsim_nan_peer_sched_changed(struct ieee80211_hw *hw,
+					  struct ieee80211_sta *sta);
+
 bool mac80211_hwsim_nan_txq_transmitting(struct ieee80211_hw *hw,
 					 struct ieee80211_txq *txq);
 
@@ -85,5 +95,8 @@ bool mac80211_hwsim_nan_receive(struct ieee80211_hw *hw,
 
 void mac80211_hwsim_nan_rx(struct ieee80211_hw *hw,
 			   struct sk_buff *skb);
+
+void mac80211_hwsim_nan_local_sched_changed(struct ieee80211_hw *hw,
+					    struct ieee80211_vif *vif);
 
 #endif /* __MAC80211_HWSIM_NAN_H */
