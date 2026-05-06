@@ -4,7 +4,7 @@
  * Copyright (c) 2008, Jouni Malinen <j@w1.fi>
  * Copyright (c) 2011, Javier Lopez <jlopex@gmail.com>
  * Copyright (c) 2016 - 2017 Intel Deutschland GmbH
- * Copyright (C) 2018 - 2025 Intel Corporation
+ * Copyright (C) 2018 - 2026 Intel Corporation
  */
 
 /*
@@ -5629,6 +5629,12 @@ static int mac80211_hwsim_new_radio(struct genl_info *info,
 			      CLOCK_BOOTTIME, HRTIMER_MODE_ABS_SOFT);
 
 		spin_lock_init(&data->nan.state_lock);
+	}
+
+	if (param->iftypes & BIT(NL80211_IFTYPE_NAN_DATA)) {
+		data->if_limits[n_limits].max = 2;
+		data->if_limits[n_limits].types = BIT(NL80211_IFTYPE_NAN_DATA);
+		n_limits++;
 	}
 
 	data->if_combination.radar_detect_widths =

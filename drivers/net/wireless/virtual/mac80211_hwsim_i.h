@@ -4,7 +4,7 @@
  * Copyright (c) 2008, Jouni Malinen <j@w1.fi>
  * Copyright (c) 2011, Javier Lopez <jlopex@gmail.com>
  * Copyright (c) 2016 - 2017 Intel Deutschland GmbH
- * Copyright (C) 2018 - 2025 Intel Corporation
+ * Copyright (C) 2018 - 2026 Intel Corporation
  */
 
 #ifndef __MAC80211_HWSIM_I_H
@@ -39,7 +39,7 @@ struct mac80211_hwsim_data {
 	struct ieee80211_channel channels_s1g[HWSIM_NUM_S1G_CHANNELS_US];
 	struct ieee80211_rate rates[HWSIM_NUM_RATES];
 	struct ieee80211_iface_combination if_combination;
-	struct ieee80211_iface_limit if_limits[4];
+	struct ieee80211_iface_limit if_limits[5];
 	int n_if_limits;
 	/* Storage space for channels, etc. */
 	struct mac80211_hwsim_phy_data *phy_data;
