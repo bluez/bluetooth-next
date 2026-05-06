@@ -1088,11 +1088,34 @@ struct urb *alloc_mtk_intr_urb(struct hci_dev *hdev, struct sk_buff *skb,
 }
 EXPORT_SYMBOL_GPL(alloc_mtk_intr_urb);
 
+static bool check_isopkt(struct hci_dev *hdev, void *buffer, int count,
+			 int pktsize)
+{
+	struct btmtk_data *btmtk_data = hci_get_priv(hdev);
+
+	/* With MT7925 we receive URBs that have size MTK_ISO_THRESHOLD, with
+	 * trailing zero padding following the ISO packet data. This appears not
+	 * intentional, so flag an error, and skip rest of the URB to not
+	 * generate ISO packets from the padding.
+	 */
+	if (btmtk_data->isopkt_rx_pad && pktsize == MTK_ISO_THRESHOLD &&
+	    count < pktsize && mem_is_zero(buffer, count)) {
+		if (!btmtk_data->isopkt_padding_seen) {
+			btmtk_data->isopkt_padding_seen = true;
+			bt_dev_err(hdev, "Zero ISO data (only first reported)");
+		}
+		return false;
+	}
+
+	return true;
+}
+
 static int btmtk_recv_isopkt(struct hci_dev *hdev, void *buffer, int count)
 {
 	struct btmtk_data *btmtk_data = hci_get_priv(hdev);
 	struct sk_buff *skb;
 	unsigned long flags;
+	int pktsize = count;
 	int err = 0;
 
 	spin_lock_irqsave(&btmtk_data->isorxlock, flags);
@@ -1102,6 +1125,9 @@ static int btmtk_recv_isopkt(struct hci_dev *hdev, void *buffer, int count)
 		int len;
 
 		if (!skb) {
+			if (!check_isopkt(hdev, buffer, count, pktsize))
+				break;
+
 			skb = bt_skb_alloc(HCI_MAX_ISO_SIZE, GFP_ATOMIC);
 			if (!skb) {
 				err = -ENOMEM;
@@ -1249,6 +1275,15 @@ static int btmtk_usb_isointf_init(struct hci_dev *hdev)
 	int err;
 
 	spin_lock_init(&btmtk_data->isorxlock);
+
+	switch (btmtk_data->dev_id) {
+	case 0x7925:
+		btmtk_data->isopkt_rx_pad = true;
+		break;
+	default:
+		btmtk_data->isopkt_rx_pad = false;
+		break;
+	}
 
 	__set_mtk_intr_interface(hdev);
 
