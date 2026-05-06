@@ -11,9 +11,6 @@ struct mac80211_hwsim_nan_data {
 	struct ieee80211_vif *device_vif;
 	u8 bands;
 
-	/* Current channel of the NAN device */
-	struct ieee80211_channel *channel;
-
 	struct hrtimer slot_timer;
 	struct hrtimer resume_txqs_timer;
 	bool notify_dw;
@@ -41,5 +38,9 @@ bool mac80211_hwsim_nan_txq_transmitting(struct ieee80211_hw *hw,
 
 struct ieee80211_channel *
 mac80211_hwsim_nan_get_tx_channel(struct ieee80211_hw *hw);
+
+bool mac80211_hwsim_nan_receive(struct ieee80211_hw *hw,
+				struct ieee80211_channel *channel,
+				struct ieee80211_rx_status *rx_status);
 
 #endif /* __MAC80211_HWSIM_NAN_H */

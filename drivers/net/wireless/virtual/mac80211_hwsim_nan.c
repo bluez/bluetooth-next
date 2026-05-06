@@ -96,7 +96,6 @@ mac80211_hwsim_nan_slot_timer(struct hrtimer *timer)
 	case SLOT_24GHZ_DW:
 		wiphy_dbg(data->hw->wiphy, "Start of 2.4 GHz DW, is DW0=%d\n",
 			  dwst_of_dw0);
-		data->nan.channel = ieee80211_get_channel(hw->wiphy, 2437);
 		break;
 
 	case SLOT_24GHZ_DW + 1:
@@ -111,8 +110,6 @@ mac80211_hwsim_nan_slot_timer(struct hrtimer *timer)
 	case SLOT_5GHZ_DW:
 		if (data->nan.bands & BIT(NL80211_BAND_5GHZ)) {
 			wiphy_dbg(data->hw->wiphy, "Start of 5 GHz DW\n");
-			data->nan.channel =
-				ieee80211_get_channel(hw->wiphy, 5745);
 		}
 		break;
 
@@ -158,7 +155,6 @@ int mac80211_hwsim_nan_start(struct ieee80211_hw *hw,
 	/* set this before starting the timer, as preemption might occur */
 	data->nan.device_vif = vif;
 	data->nan.bands = conf->bands;
-	data->nan.channel = ieee80211_get_channel(hw->wiphy, 2437);
 
 	/* Just run this "soon" and start in a random schedule position */
 	hrtimer_start(&data->nan.slot_timer,
@@ -327,4 +323,41 @@ mac80211_hwsim_nan_get_tx_channel(struct ieee80211_hw *hw)
 
 	/* drop frame and warn, NAN_CHAN_SWITCH_TIME_US should avoid races */
 	return NULL;
+}
+
+bool mac80211_hwsim_nan_receive(struct ieee80211_hw *hw,
+				struct ieee80211_channel *channel,
+				struct ieee80211_rx_status *rx_status)
+{
+	struct mac80211_hwsim_data *data = hw->priv;
+	u8 slot;
+
+	if (WARN_ON_ONCE(!data->nan.device_vif))
+		return false;
+
+	if (rx_status->rx_flags & RX_FLAG_MACTIME) {
+		slot = hwsim_nan_slot_from_tsf(rx_status->mactime);
+	} else {
+		u64 tsf;
+
+		/*
+		 * This is not perfect, but that should be fine.
+		 *
+		 * Assume the frame might be a bit early in relation to our
+		 * own TSF. This is largely because the TSF sync is going to be
+		 * pretty bad when the frame was RXed via NL and the beacon as
+		 * well as RX timestamps are not accurate.
+		 */
+		tsf = mac80211_hwsim_get_tsf(data->hw, data->nan.device_vif);
+		slot = hwsim_nan_slot_from_tsf(tsf + 128);
+	}
+
+	if (slot == SLOT_24GHZ_DW && channel->center_freq == 2437)
+		return true;
+
+	if (slot == SLOT_5GHZ_DW && data->nan.bands & BIT(NL80211_BAND_5GHZ) &&
+	    channel->center_freq == 5745)
+		return true;
+
+	return false;
 }
