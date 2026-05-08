@@ -311,7 +311,7 @@ static int virtbt_probe(struct virtio_device *vdev)
 
 	err = virtio_find_vqs(vdev, VIRTBT_NUM_VQS, vbt->vqs, vqs_info, NULL);
 	if (err)
-		return err;
+		goto free_vbt;
 
 	hdev = hci_alloc_dev();
 	if (!hdev) {
@@ -400,6 +400,8 @@ open_failed:
 	hci_free_dev(hdev);
 failed:
 	vdev->config->del_vqs(vdev);
+free_vbt:
+	kfree(vbt);
 	return err;
 }
 
