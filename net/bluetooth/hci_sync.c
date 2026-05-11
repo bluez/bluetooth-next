@@ -6991,12 +6991,21 @@ static int hci_acl_create_conn_sync(struct hci_dev *hdev, void *data)
 					conn->conn_timeout, NULL);
 }
 
+static void create_acl_conn_complete(struct hci_dev *hdev, void *data, int err)
+{
+	struct hci_conn *conn = data;
+
+	bt_dev_dbg(hdev, "err %d", err);
+
+	hci_conn_put(conn);
+}
+
 int hci_connect_acl_sync(struct hci_dev *hdev, struct hci_conn *conn)
 {
 	int err;
 
-	err = hci_cmd_sync_queue_once(hdev, hci_acl_create_conn_sync, conn,
-				      NULL);
+	err = hci_cmd_sync_queue_conn_once(hdev, hci_acl_create_conn_sync, conn,
+					   create_acl_conn_complete);
 	return (err == -EEXIST) ? 0 : err;
 }
 
@@ -7051,7 +7060,8 @@ int hci_cancel_connect_sync(struct hci_dev *hdev, struct hci_conn *conn)
 	case ACL_LINK:
 		return !hci_cmd_sync_dequeue_once(hdev,
 						  hci_acl_create_conn_sync,
-						  conn, NULL);
+						  conn,
+						  create_acl_conn_complete);
 	case LE_LINK:
 		return !hci_cmd_sync_dequeue_once(hdev, hci_le_create_conn_sync,
 						  conn, create_le_conn_complete);
