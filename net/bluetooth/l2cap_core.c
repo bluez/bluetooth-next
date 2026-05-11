@@ -5293,7 +5293,11 @@ static inline int l2cap_ecred_conn_rsp(struct l2cap_conn *conn,
 			l2cap_chan_unlock(chan);
 			chan = __l2cap_get_chan_by_dcid(conn, dcid);
 			l2cap_chan_lock(chan);
-			l2cap_chan_del(chan, ECONNRESET);
+			/* Disconnect the original channel as it may be
+			 * considered connected since dcid has already been
+			 * assigned.
+			 */
+			l2cap_send_disconn_req(chan, ECONNRESET);
 			l2cap_chan_unlock(chan);
 			continue;
 		}
