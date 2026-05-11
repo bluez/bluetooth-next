@@ -4071,6 +4071,9 @@ static void l2cap_connect(struct l2cap_conn *conn, struct l2cap_cmd_hdr *cmd,
 
 	__l2cap_chan_add(conn, chan);
 
+	/* Drop the ops->new_connection() ref; conn list now pins chan. */
+	l2cap_chan_put(chan);
+
 	dcid = chan->scid;
 
 	__set_chan_timer(chan, chan->ops->get_sndtimeo(chan));
@@ -4970,6 +4973,9 @@ static int l2cap_le_connect_req(struct l2cap_conn *conn,
 
 	__l2cap_chan_add(conn, chan);
 
+	/* Drop the ops->new_connection() ref; conn list now pins chan. */
+	l2cap_chan_put(chan);
+
 	l2cap_le_flowctl_init(chan, __le16_to_cpu(req->credits));
 
 	dcid = chan->scid;
@@ -5193,6 +5199,9 @@ static inline int l2cap_ecred_conn_req(struct l2cap_conn *conn,
 		chan->remote_mps = mps;
 
 		__l2cap_chan_add(conn, chan);
+
+		/* Drop the ops->new_connection() ref; conn list now pins chan. */
+		l2cap_chan_put(chan);
 
 		l2cap_ecred_init(chan, __le16_to_cpu(req->credits));
 
@@ -7407,6 +7416,9 @@ static void l2cap_connect_cfm(struct hci_conn *hcon, u8 status)
 			chan->dst_type = dst_type;
 
 			__l2cap_chan_add(conn, chan);
+
+			/* Drop the ops->new_connection() ref; conn list now pins chan. */
+			l2cap_chan_put(chan);
 		}
 
 		l2cap_chan_unlock(pchan);

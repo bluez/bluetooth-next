@@ -755,6 +755,11 @@ static inline struct l2cap_chan *chan_new_conn_cb(struct l2cap_chan *pchan)
 
 	BT_DBG("chan %p pchan %p", chan, pchan);
 
+	/* Match the put that the caller of ops->new_connection() performs
+	 * once it is done with the returned channel pointer.
+	 */
+	l2cap_chan_hold(chan);
+
 	return chan;
 }
 

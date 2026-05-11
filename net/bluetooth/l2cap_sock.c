@@ -1497,6 +1497,7 @@ static void l2cap_sock_cleanup_listen(struct sock *parent)
 static struct l2cap_chan *l2cap_sock_new_connection_cb(struct l2cap_chan *chan)
 {
 	struct sock *sk, *parent = chan->data;
+	struct l2cap_chan *child_chan;
 
 	if (!parent)
 		return NULL;
@@ -1523,9 +1524,19 @@ static struct l2cap_chan *l2cap_sock_new_connection_cb(struct l2cap_chan *chan)
 
 	bt_accept_enqueue(parent, sk, false);
 
+	child_chan = l2cap_pi(sk)->chan;
+
+	/* Pin the channel for the caller. Once release_sock(parent) returns,
+	 * userspace can accept(2) and immediately close(2) the child socket,
+	 * which would drop the socket's references on the channel and free
+	 * it before the caller (e.g. l2cap_connect_req()) is done using the
+	 * returned pointer. The matching put is the caller's responsibility.
+	 */
+	l2cap_chan_hold(child_chan);
+
 	release_sock(parent);
 
-	return l2cap_pi(sk)->chan;
+	return child_chan;
 }
 
 static int l2cap_sock_recv_cb(struct l2cap_chan *chan, struct sk_buff *skb)
