@@ -786,6 +786,31 @@ int hci_cmd_sync_queue_once(struct hci_dev *hdev, hci_cmd_sync_work_func_t func,
 }
 EXPORT_SYMBOL(hci_cmd_sync_queue_once);
 
+/* Queue an HCI command entry once, pinning a hci_conn for the duration.
+ *
+ * On success, the cmd_sync queue owns one hci_conn_get() reference;
+ * the supplied destroy callback must hci_conn_put() to balance.
+ *
+ * On any failure return (including -EEXIST, where
+ * hci_cmd_sync_queue_once() neither invokes destroy nor consumes the
+ * data pointer because an existing entry already owns the slot), the
+ * helper releases the reference before returning, so callers do not
+ * need to discriminate failure codes to keep the refcount balanced.
+ */
+static int hci_cmd_sync_queue_conn_once(struct hci_dev *hdev,
+					hci_cmd_sync_work_func_t func,
+					struct hci_conn *conn,
+					hci_cmd_sync_work_destroy_t destroy)
+{
+	int err;
+
+	err = hci_cmd_sync_queue_once(hdev, func, hci_conn_get(conn), destroy);
+	if (err)
+		hci_conn_put(conn);
+
+	return err;
+}
+
 /* Run HCI command:
  *
  * - hdev must be running
@@ -6982,36 +7007,38 @@ static void create_le_conn_complete(struct hci_dev *hdev, void *data, int err)
 	bt_dev_dbg(hdev, "err %d", err);
 
 	if (err == -ECANCELED)
-		return;
+		goto done;
 
 	hci_dev_lock(hdev);
 
 	if (!hci_conn_valid(hdev, conn))
-		goto done;
+		goto unlock;
 
 	if (!err) {
 		hci_connect_le_scan_cleanup(conn, 0x00);
-		goto done;
+		goto unlock;
 	}
 
 	/* Check if connection is still pending */
 	if (conn != hci_lookup_le_connect(hdev))
-		goto done;
+		goto unlock;
 
 	/* Flush to make sure we send create conn cancel command if needed */
 	flush_delayed_work(&conn->le_conn_timeout);
 	hci_conn_failed(conn, bt_status(err));
 
-done:
+unlock:
 	hci_dev_unlock(hdev);
+done:
+	hci_conn_put(conn);
 }
 
 int hci_connect_le_sync(struct hci_dev *hdev, struct hci_conn *conn)
 {
 	int err;
 
-	err = hci_cmd_sync_queue_once(hdev, hci_le_create_conn_sync, conn,
-				      create_le_conn_complete);
+	err = hci_cmd_sync_queue_conn_once(hdev, hci_le_create_conn_sync, conn,
+					   create_le_conn_complete);
 	return (err == -EEXIST) ? 0 : err;
 }
 
