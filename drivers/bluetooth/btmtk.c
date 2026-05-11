@@ -1417,6 +1417,19 @@ int btmtk_usb_setup(struct hci_dev *hdev)
 		hci_set_msft_opcode(hdev, 0xFD30);
 		hci_set_aosp_capable(hdev);
 
+		/* MT6639 firmware advertises the HCI Enhanced Setup
+		 * Synchronous Connection command (opcode 0x043D) in its
+		 * supported-commands bitmap, but actually rejects it at
+		 * runtime, breaking mSBC wideband HFP (the headset mic
+		 * captures pure silence). The Windows MediaTek driver
+		 * works around this by falling back to the classic Setup
+		 * Synchronous Connection command (opcode 0x0428); setting
+		 * this quirk makes the BR/EDR core do the same fallback.
+		 */
+		if (dev_id == 0x6639)
+			hci_set_quirk(hdev,
+				      HCI_QUIRK_BROKEN_ENHANCED_SETUP_SYNC_CONN);
+
 		/* Clear BTMTK_FIRMWARE_DL_RETRY if setup successfully */
 		test_and_clear_bit(BTMTK_FIRMWARE_DL_RETRY, &btmtk_data->flags);
 
