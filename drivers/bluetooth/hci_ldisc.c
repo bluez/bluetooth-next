@@ -544,13 +544,17 @@ static void hci_uart_tty_close(struct tty_struct *tty)
 	if (hdev)
 		hci_uart_close(hdev);
 
+	/*
+	 * Always cancel workqueues unconditionally before freeing the hu
+	 * struct, as they might be active during the PROTO_INIT phase.
+	 */
+	cancel_work_sync(&hu->init_ready);
+	cancel_work_sync(&hu->write_work);
+
 	if (test_bit(HCI_UART_PROTO_READY, &hu->flags)) {
 		percpu_down_write(&hu->proto_lock);
 		clear_bit(HCI_UART_PROTO_READY, &hu->flags);
 		percpu_up_write(&hu->proto_lock);
-
-		cancel_work_sync(&hu->init_ready);
-		cancel_work_sync(&hu->write_work);
 
 		if (hdev) {
 			if (test_bit(HCI_UART_REGISTERED, &hu->flags))
