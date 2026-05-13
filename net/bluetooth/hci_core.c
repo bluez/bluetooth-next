@@ -3278,6 +3278,12 @@ void hci_send_acl(struct hci_chan *chan, struct sk_buff *skb, __u16 flags)
 
 	BT_DBG("%s chan %p flags 0x%4.4x", hdev->name, chan, flags);
 
+	if (!test_bit(HCI_UP, &hdev->flags) ||
+	    hci_dev_test_flag(hdev, HCI_CMD_DRAIN_WORKQUEUE)) {
+		kfree_skb(skb);
+		return;
+	}
+
 	hci_queue_acl(chan, &chan->data_q, skb, flags);
 
 	queue_work(hdev->workqueue, &hdev->tx_work);
@@ -3290,6 +3296,12 @@ void hci_send_sco(struct hci_conn *conn, struct sk_buff *skb)
 	struct hci_sco_hdr hdr;
 
 	BT_DBG("%s len %d", hdev->name, skb->len);
+
+	if (!test_bit(HCI_UP, &hdev->flags) ||
+	    hci_dev_test_flag(hdev, HCI_CMD_DRAIN_WORKQUEUE)) {
+		kfree_skb(skb);
+		return;
+	}
 
 	hdr.handle = cpu_to_le16(conn->handle);
 	hdr.dlen   = skb->len;
@@ -3373,6 +3385,12 @@ void hci_send_iso(struct hci_conn *conn, struct sk_buff *skb)
 	struct hci_dev *hdev = conn->hdev;
 
 	BT_DBG("%s len %d", hdev->name, skb->len);
+
+	if (!test_bit(HCI_UP, &hdev->flags) ||
+	    hci_dev_test_flag(hdev, HCI_CMD_DRAIN_WORKQUEUE)) {
+		kfree_skb(skb);
+		return;
+	}
 
 	hci_queue_iso(conn, &conn->data_q, skb);
 
