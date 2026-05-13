@@ -208,8 +208,13 @@ static int bnep_ctrl_set_mcfilter(struct bnep_session *s, u8 *data, int len)
 
 static int bnep_rx_control(struct bnep_session *s, void *data, int len)
 {
-	u8  cmd = *(u8 *)data;
+	u8  cmd;
 	int err = 0;
+
+	if (len < 1)
+		return -EILSEQ;
+
+	cmd = *(u8 *)data;
 
 	data++;
 	len--;
@@ -303,14 +308,21 @@ static int bnep_rx_frame(struct bnep_session *s, struct sk_buff *skb)
 
 	dev->stats.rx_bytes += skb->len;
 
+	if (skb->len < 1)
+		goto badframe;
+
 	type = *(u8 *) skb->data;
 	skb_pull(skb, 1);
-	ctrl_type = *(u8 *)skb->data;
 
 	if ((type & BNEP_TYPE_MASK) >= sizeof(__bnep_rx_hlen))
 		goto badframe;
 
 	if ((type & BNEP_TYPE_MASK) == BNEP_CONTROL) {
+		if (skb->len < 1)
+			goto badframe;
+
+		ctrl_type = *(u8 *)skb->data;
+
 		if (bnep_rx_control(s, skb->data, skb->len) < 0) {
 			dev->stats.tx_errors++;
 			kfree_skb(skb);
@@ -326,6 +338,9 @@ static int bnep_rx_frame(struct bnep_session *s, struct sk_buff *skb)
 		switch (ctrl_type) {
 		case BNEP_SETUP_CONN_REQ:
 			/* Pull: ctrl type (1 b), len (1 b), data (len bytes) */
+			if (skb->len < 2)
+				goto badframe;
+
 			if (!skb_pull(skb, 2 + *(u8 *)(skb->data + 1) * 2))
 				goto badframe;
 			break;
