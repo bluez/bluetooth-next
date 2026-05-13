@@ -2787,6 +2787,9 @@ static int btusb_recv_event_realtek(struct hci_dev *hdev, struct sk_buff *skb)
 		return 0;
 	}
 
+	if (skb->data[0] == HCI_VENDOR_PKT)
+		return btrtl_recv_event(hdev, skb);
+
 	return hci_recv_frame(hdev, skb);
 }
 
