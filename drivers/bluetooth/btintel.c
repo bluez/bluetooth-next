@@ -3358,7 +3358,7 @@ void btintel_print_fseq_info(struct hci_dev *hdev)
 		return;
 	}
 
-	if (skb->len < (sizeof(u32) * 16 + 2)) {
+	if (skb->len < (sizeof(u32) * 18 + 2)) {
 		bt_dev_dbg(hdev, "Malformed packet of length %u received",
 			   skb->len);
 		kfree_skb(skb);
