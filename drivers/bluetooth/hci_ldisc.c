@@ -194,7 +194,22 @@ void hci_uart_init_work(struct work_struct *work)
 	err = hci_register_dev(hu->hdev);
 	if (err < 0) {
 		BT_ERR("Can't register HCI device");
+
+		/*
+		 * Acquire proto_lock before clearing PROTO_READY and closing
+		 * the protocol to synchronize with active readers.
+		 */
+		percpu_down_write(&hu->proto_lock);
 		clear_bit(HCI_UART_PROTO_READY, &hu->flags);
+		percpu_up_write(&hu->proto_lock);
+
+		/*
+		 * Disable any pending write_work that may have been queued
+		 * during the PROTO_INIT phase to prevent UAF/NPD when hdev
+		 * is freed.
+		 */
+		disable_work_sync(&hu->write_work);
+
 		hu->proto->close(hu);
 		hdev = hu->hdev;
 		hu->hdev = NULL;
@@ -540,6 +555,15 @@ static void hci_uart_tty_close(struct tty_struct *tty)
 	if (!hu)
 		return;
 
+	/*
+	 * Disable workqueues unconditionally before tearing down the
+	 * connection, as they might be active during the PROTO_INIT phase.
+	 * Using disable_work_sync() ensures no new submissions can occur
+	 * during or after hci_uart_close().
+	 */
+	disable_work_sync(&hu->init_ready);
+	disable_work_sync(&hu->write_work);
+
 	hdev = hu->hdev;
 	if (hdev)
 		hci_uart_close(hdev);
@@ -548,9 +572,6 @@ static void hci_uart_tty_close(struct tty_struct *tty)
 		percpu_down_write(&hu->proto_lock);
 		clear_bit(HCI_UART_PROTO_READY, &hu->flags);
 		percpu_up_write(&hu->proto_lock);
-
-		cancel_work_sync(&hu->init_ready);
-		cancel_work_sync(&hu->write_work);
 
 		if (hdev) {
 			if (test_bit(HCI_UART_REGISTERED, &hu->flags))
@@ -692,6 +713,14 @@ static int hci_uart_register_dev(struct hci_uart *hu)
 
 	if (hci_register_dev(hdev) < 0) {
 		BT_ERR("Can't register HCI device");
+
+		/*
+		 * Disable any pending write_work that may have been queued
+		 * during the proto->open() phase to prevent UAF/NPD when
+		 * hdev is freed.
+		 */
+		disable_work_sync(&hu->write_work);
+
 		percpu_down_write(&hu->proto_lock);
 		clear_bit(HCI_UART_PROTO_INIT, &hu->flags);
 		percpu_up_write(&hu->proto_lock);
