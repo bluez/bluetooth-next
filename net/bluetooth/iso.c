@@ -1028,13 +1028,16 @@ done:
 	return err;
 }
 
-static struct hci_dev *iso_conn_get_hdev(struct iso_conn *conn)
+static struct hci_dev *iso_conn_get_hdev(struct iso_conn *conn,
+					 struct hci_conn **hcon)
 {
 	struct hci_dev *hdev = NULL;
 
 	iso_conn_lock(conn);
-	if (conn->hcon)
+	if (conn->hcon) {
 		hdev = hci_dev_hold(conn->hcon->hdev);
+		*hcon = hci_conn_get(conn->hcon);
+	}
 	iso_conn_unlock(conn);
 
 	return hdev;
@@ -1066,18 +1069,16 @@ static int iso_sock_rebind_bc(struct sock *sk, struct sockaddr_iso *sa,
 	if (!bdaddr_type_is_le(sa->iso_bc->bc_bdaddr_type))
 		return -EINVAL;
 
-	hdev = iso_conn_get_hdev(iso_pi(sk)->conn);
+	hdev = iso_conn_get_hdev(iso_pi(sk)->conn, &bis);
 	if (!hdev)
 		return -EINVAL;
-
-	bis = iso_pi(sk)->conn->hcon;
 
 	/* Release the socket before lookups since that requires hci_dev_lock
 	 * which shall not be acquired while holding sock_lock for proper
 	 * ordering.
 	 */
 	release_sock(sk);
-	hci_dev_lock(bis->hdev);
+	hci_dev_lock(hdev);
 	lock_sock(sk);
 
 	if (!iso_pi(sk)->conn || iso_pi(sk)->conn->hcon != bis) {
@@ -1094,6 +1095,7 @@ static int iso_sock_rebind_bc(struct sock *sk, struct sockaddr_iso *sa,
 
 unlock:
 	hci_dev_unlock(hdev);
+	hci_conn_put(bis);
 	hci_dev_put(hdev);
 
 	return err;
