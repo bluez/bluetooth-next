@@ -3358,14 +3358,9 @@ void btintel_print_fseq_info(struct hci_dev *hdev)
 		return;
 	}
 
-	if (skb->len < (sizeof(u32) * 16 + 2)) {
-		bt_dev_dbg(hdev, "Malformed packet of length %u received",
-			   skb->len);
-		kfree_skb(skb);
-		return;
-	}
-
 	p = skb_pull_data(skb, 1);
+	if (!p)
+		goto malformed;
 	if (*p) {
 		bt_dev_dbg(hdev, "Failed to get fseq status (0x%2.2x)", *p);
 		kfree_skb(skb);
@@ -3373,6 +3368,8 @@ void btintel_print_fseq_info(struct hci_dev *hdev)
 	}
 
 	p = skb_pull_data(skb, 1);
+	if (!p)
+		goto malformed;
 	switch (*p) {
 	case 0:
 		str = "Success";
@@ -3396,64 +3393,119 @@ void btintel_print_fseq_info(struct hci_dev *hdev)
 
 	bt_dev_info(hdev, "Fseq status: %s (0x%2.2x)", str, *p);
 
-	val = get_unaligned_le32(skb_pull_data(skb, 4));
+	p = skb_pull_data(skb, 4);
+	if (!p)
+		goto malformed;
+	val = get_unaligned_le32(p);
 	bt_dev_dbg(hdev, "Reason: 0x%8.8x", val);
 
-	val = get_unaligned_le32(skb_pull_data(skb, 4));
+	p = skb_pull_data(skb, 4);
+	if (!p)
+		goto malformed;
+	val = get_unaligned_le32(p);
 	bt_dev_dbg(hdev, "Global version: 0x%8.8x", val);
 
-	val = get_unaligned_le32(skb_pull_data(skb, 4));
+	p = skb_pull_data(skb, 4);
+	if (!p)
+		goto malformed;
+	val = get_unaligned_le32(p);
 	bt_dev_dbg(hdev, "Installed version: 0x%8.8x", val);
 
-	p = skb->data;
-	skb_pull_data(skb, 4);
+	p = skb_pull_data(skb, 4);
+	if (!p)
+		goto malformed;
 	bt_dev_info(hdev, "Fseq executed: %2.2u.%2.2u.%2.2u.%2.2u", p[0], p[1],
 		    p[2], p[3]);
 
-	p = skb->data;
-	skb_pull_data(skb, 4);
+	p = skb_pull_data(skb, 4);
+	if (!p)
+		goto malformed;
 	bt_dev_info(hdev, "Fseq BT Top: %2.2u.%2.2u.%2.2u.%2.2u", p[0], p[1],
 		    p[2], p[3]);
 
-	val = get_unaligned_le32(skb_pull_data(skb, 4));
+	p = skb_pull_data(skb, 4);
+	if (!p)
+		goto malformed;
+	val = get_unaligned_le32(p);
 	bt_dev_dbg(hdev, "Fseq Top init version: 0x%8.8x", val);
 
-	val = get_unaligned_le32(skb_pull_data(skb, 4));
+	p = skb_pull_data(skb, 4);
+	if (!p)
+		goto malformed;
+	val = get_unaligned_le32(p);
 	bt_dev_dbg(hdev, "Fseq Cnvio init version: 0x%8.8x", val);
 
-	val = get_unaligned_le32(skb_pull_data(skb, 4));
+	p = skb_pull_data(skb, 4);
+	if (!p)
+		goto malformed;
+	val = get_unaligned_le32(p);
 	bt_dev_dbg(hdev, "Fseq MBX Wifi file version: 0x%8.8x", val);
 
-	val = get_unaligned_le32(skb_pull_data(skb, 4));
+	p = skb_pull_data(skb, 4);
+	if (!p)
+		goto malformed;
+	val = get_unaligned_le32(p);
 	bt_dev_dbg(hdev, "Fseq BT version: 0x%8.8x", val);
 
-	val = get_unaligned_le32(skb_pull_data(skb, 4));
+	p = skb_pull_data(skb, 4);
+	if (!p)
+		goto malformed;
+	val = get_unaligned_le32(p);
 	bt_dev_dbg(hdev, "Fseq Top reset address: 0x%8.8x", val);
 
-	val = get_unaligned_le32(skb_pull_data(skb, 4));
+	p = skb_pull_data(skb, 4);
+	if (!p)
+		goto malformed;
+	val = get_unaligned_le32(p);
 	bt_dev_dbg(hdev, "Fseq MBX timeout: 0x%8.8x", val);
 
-	val = get_unaligned_le32(skb_pull_data(skb, 4));
+	p = skb_pull_data(skb, 4);
+	if (!p)
+		goto malformed;
+	val = get_unaligned_le32(p);
 	bt_dev_dbg(hdev, "Fseq MBX ack: 0x%8.8x", val);
 
-	val = get_unaligned_le32(skb_pull_data(skb, 4));
+	p = skb_pull_data(skb, 4);
+	if (!p)
+		goto malformed;
+	val = get_unaligned_le32(p);
 	bt_dev_dbg(hdev, "Fseq CNVi id: 0x%8.8x", val);
 
-	val = get_unaligned_le32(skb_pull_data(skb, 4));
+	p = skb_pull_data(skb, 4);
+	if (!p)
+		goto malformed;
+	val = get_unaligned_le32(p);
 	bt_dev_dbg(hdev, "Fseq CNVr id: 0x%8.8x", val);
 
-	val = get_unaligned_le32(skb_pull_data(skb, 4));
+	p = skb_pull_data(skb, 4);
+	if (!p)
+		goto malformed;
+	val = get_unaligned_le32(p);
 	bt_dev_dbg(hdev, "Fseq Error handle: 0x%8.8x", val);
 
-	val = get_unaligned_le32(skb_pull_data(skb, 4));
+	p = skb_pull_data(skb, 4);
+	if (!p)
+		goto malformed;
+	val = get_unaligned_le32(p);
 	bt_dev_dbg(hdev, "Fseq Magic noalive indication: 0x%8.8x", val);
 
-	val = get_unaligned_le32(skb_pull_data(skb, 4));
+	p = skb_pull_data(skb, 4);
+	if (!p)
+		goto malformed;
+	val = get_unaligned_le32(p);
 	bt_dev_dbg(hdev, "Fseq OTP version: 0x%8.8x", val);
 
-	val = get_unaligned_le32(skb_pull_data(skb, 4));
+	p = skb_pull_data(skb, 4);
+	if (!p)
+		goto malformed;
+	val = get_unaligned_le32(p);
 	bt_dev_dbg(hdev, "Fseq MBX otp version: 0x%8.8x", val);
 
+	kfree_skb(skb);
+	return;
+
+malformed:
+	bt_dev_dbg(hdev, "Malformed packet received");
 	kfree_skb(skb);
 }
 EXPORT_SYMBOL_GPL(btintel_print_fseq_info);
