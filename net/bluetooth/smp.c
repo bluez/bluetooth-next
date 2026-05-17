@@ -2902,6 +2902,9 @@ static int smp_cmd_keypress_notify(struct l2cap_conn *conn,
 {
 	struct smp_cmd_keypress_notify *kp = (void *) skb->data;
 
+	if (skb->len < sizeof(*kp))
+		return SMP_INVALID_PARAMS;
+
 	bt_dev_dbg(conn->hcon->hdev, "value 0x%02x", kp->value);
 
 	return 0;
