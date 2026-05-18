@@ -5618,11 +5618,25 @@ static inline void l2cap_sig_send_rej(struct l2cap_conn *conn, u16 ident)
 	l2cap_send_cmd(conn, ident, L2CAP_COMMAND_REJ, sizeof(rej), &rej);
 }
 
+/*
+ * Maximum L2CAP_ECHO_REQ commands handled in a single inbound
+ * signaling PDU.  An inbound PDU may legitimately pack multiple
+ * commands, but a peer that packs many L2CAP_ECHO_REQs into one
+ * PDU triggers an N:1 outbound ECHO_RSP storm that saturates the
+ * link's signaling and ACL TX paths.  Cap the number of echoes
+ * answered per inbound PDU to a small burst.  Subsequent ECHO_REQs
+ * in the same PDU are silently dropped; the peer can pace itself
+ * with one ECHO_REQ per PDU (the l2ping shape and the only legit
+ * use that has ever been observed in the wild).
+ */
+#define L2CAP_SIG_ECHO_BURST	4
+
 static inline void l2cap_sig_channel(struct l2cap_conn *conn,
 				     struct sk_buff *skb)
 {
 	struct hci_conn *hcon = conn->hcon;
 	struct l2cap_cmd_hdr *cmd;
+	unsigned int echo_count = 0;
 	int err;
 
 	l2cap_raw_recv(conn, skb);
@@ -5645,6 +5659,13 @@ static inline void l2cap_sig_channel(struct l2cap_conn *conn,
 			BT_DBG("corrupted command");
 			l2cap_sig_send_rej(conn, cmd->ident);
 			skb_pull(skb, len > skb->len ? skb->len : len);
+			continue;
+		}
+
+		if (cmd->code == L2CAP_ECHO_REQ &&
+		    ++echo_count > L2CAP_SIG_ECHO_BURST) {
+			/* Drop excess echoes packed into one PDU. */
+			skb_pull(skb, len);
 			continue;
 		}
 
