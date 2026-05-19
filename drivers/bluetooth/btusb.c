@@ -4476,6 +4476,15 @@ static void btusb_disconnect(struct usb_interface *intf)
 		usb_driver_release_interface(&btusb_driver, data->intf);
 	}
 
+	/*
+	 * rx_work is scheduled from URB completion handlers; btusb_close()
+	 * (called via hci_unregister_dev) uses a non-sync cancel, so a work
+	 * item may still be queued or executing when we reach this point.
+	 * Wait for it before freeing data, otherwise the worker dereferences
+	 * freed memory through skb_dequeue(&data->acl_q).
+	 */
+	cancel_delayed_work_sync(&data->rx_work);
+
 	hci_free_dev(hdev);
 	kfree(data);
 }
