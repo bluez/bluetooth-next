@@ -2900,7 +2900,15 @@ static int smp_cmd_dhkey_check(struct l2cap_conn *conn, struct sk_buff *skb)
 static int smp_cmd_keypress_notify(struct l2cap_conn *conn,
 				   struct sk_buff *skb)
 {
-	struct smp_cmd_keypress_notify *kp = (void *) skb->data;
+	struct smp_cmd_keypress_notify *kp;
+
+	kp = skb_pull_data(skb, sizeof(struct smp_cmd_keypress_notify));
+	if (!kp) {
+		bt_dev_warn_ratelimited(conn->hcon->hdev,
+					"Too small packet: skb->len %u < %zu",
+					skb->len, sizeof(struct smp_cmd_keypress_notify));
+		return SMP_INVALID_PARAMS;
+	}
 
 	bt_dev_dbg(conn->hcon->hdev, "value 0x%02x", kp->value);
 
