@@ -5618,6 +5618,55 @@ static inline void l2cap_sig_send_rej(struct l2cap_conn *conn, u16 ident)
 	l2cap_send_cmd(conn, ident, L2CAP_COMMAND_REJ, sizeof(rej), &rej);
 }
 
+static bool l2cap_sig_cmd_is_req(u8 code)
+{
+	switch (code) {
+	case L2CAP_CONN_REQ:
+	case L2CAP_CONF_REQ:
+	case L2CAP_DISCONN_REQ:
+	case L2CAP_ECHO_REQ:
+	case L2CAP_INFO_REQ:
+	case L2CAP_CONN_PARAM_UPDATE_REQ:
+	case L2CAP_LE_CONN_REQ:
+	case L2CAP_ECRED_CONN_REQ:
+	case L2CAP_ECRED_RECONF_REQ:
+		return true;
+	}
+
+	return false;
+}
+
+static u8 l2cap_sig_first_req_ident(const struct sk_buff *skb)
+{
+	const u8 *data = skb->data;
+	unsigned int len = skb->len;
+
+	while (len >= L2CAP_CMD_HDR_SIZE) {
+		const struct l2cap_cmd_hdr *cmd = (const void *)data;
+		u16 cmd_len = le16_to_cpu(cmd->len);
+
+		if (cmd->ident && l2cap_sig_cmd_is_req(cmd->code))
+			return cmd->ident;
+
+		if (cmd_len > len - L2CAP_CMD_HDR_SIZE)
+			break;
+
+		data += L2CAP_CMD_HDR_SIZE + cmd_len;
+		len -= L2CAP_CMD_HDR_SIZE + cmd_len;
+	}
+
+	return 0;
+}
+
+static inline void l2cap_sig_send_mtu_rej(struct l2cap_conn *conn, u8 ident)
+{
+	struct l2cap_cmd_rej_mtu rej;
+
+	rej.reason = cpu_to_le16(L2CAP_REJ_MTU_EXCEEDED);
+	rej.max_mtu = cpu_to_le16(L2CAP_SIG_MTU);
+	l2cap_send_cmd(conn, ident, L2CAP_COMMAND_REJ, sizeof(rej), &rej);
+}
+
 static inline void l2cap_sig_channel(struct l2cap_conn *conn,
 				     struct sk_buff *skb)
 {
@@ -5629,6 +5678,17 @@ static inline void l2cap_sig_channel(struct l2cap_conn *conn,
 
 	if (hcon->type != ACL_LINK)
 		goto drop;
+
+	if (skb->len > L2CAP_SIG_MTU) {
+		u8 ident = l2cap_sig_first_req_ident(skb);
+
+		BT_DBG("signaling packet exceeds MTU");
+
+		if (ident)
+			l2cap_sig_send_mtu_rej(conn, ident);
+
+		goto drop;
+	}
 
 	while (skb->len >= L2CAP_CMD_HDR_SIZE) {
 		u16 len;
