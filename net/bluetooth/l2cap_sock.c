@@ -1484,27 +1484,68 @@ static int l2cap_sock_release(struct socket *sock)
 static void l2cap_sock_cleanup_listen(struct sock *parent)
 {
 	struct sock *sk;
+	struct bt_sock *bs, *tmp;
+	LIST_HEAD(killable);
 
 	BT_DBG("parent %p state %s", parent,
 	       state_to_string(parent->sk_state));
 
-	/* Close not yet accepted channels */
+	/* Drain unaccepted children to a local list, pinning each so it
+	 * survives the parent lock-drop below.
+	 */
 	while ((sk = bt_accept_dequeue(parent, NULL))) {
-		struct l2cap_chan *chan = l2cap_pi(sk)->chan;
+		sock_hold(sk);
+		list_add_tail(&bt_sk(sk)->accept_q, &killable);
+	}
+
+	/* l2cap_chan_close() must run under conn->lock, but the rx path
+	 * (l2cap_sock_new_connection_cb) takes conn->lock then lock_sock(parent),
+	 * so parent must be released before we close.  Draining the queue
+	 * first means a concurrent cleanup_listen() on the same parent finds
+	 * it empty and is a no-op.
+	 */
+	release_sock(parent);
+
+	list_for_each_entry_safe(bs, tmp, &killable, accept_q) {
+		struct l2cap_chan *chan;
+		struct l2cap_conn *conn;
+
+		sk = (struct sock *)bs;
+		list_del_init(&bs->accept_q);
+
+		chan = l2cap_chan_hold_unless_zero(l2cap_pi(sk)->chan);
+		if (!chan) {
+			sock_put(sk);
+			continue;
+		}
+
+		l2cap_chan_lock(chan);
+		conn = l2cap_conn_hold_unless_zero(chan->conn);
+		l2cap_chan_unlock(chan);
+
+		if (conn)
+			mutex_lock(&conn->lock);
+		l2cap_chan_lock(chan);
 
 		BT_DBG("child chan %p state %s", chan,
 		       state_to_string(chan->state));
 
-		l2cap_chan_hold(chan);
-		l2cap_chan_lock(chan);
-
-		__clear_chan_timer(chan);
-		l2cap_chan_close(chan, ECONNRESET);
-		l2cap_sock_kill(sk);
+		if (chan->data) {
+			__clear_chan_timer(chan);
+			l2cap_chan_close(chan, ECONNRESET);
+			l2cap_sock_kill(sk);
+		}
 
 		l2cap_chan_unlock(chan);
+		if (conn) {
+			mutex_unlock(&conn->lock);
+			l2cap_conn_put(conn);
+		}
 		l2cap_chan_put(chan);
+		sock_put(sk);
 	}
+
+	lock_sock_nested(parent, L2CAP_NESTING_PARENT);
 }
 
 static struct l2cap_chan *l2cap_sock_new_connection_cb(struct l2cap_chan *chan)
