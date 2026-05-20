@@ -4051,9 +4051,15 @@ static void l2cap_connect(struct l2cap_conn *conn, struct l2cap_cmd_hdr *cmd,
 		goto response;
 	}
 
-	chan = pchan->ops->new_connection(pchan);
+	chan = l2cap_chan_create();
 	if (!chan)
 		goto response;
+
+	if (pchan->ops->new_connection(pchan, chan) < 0) {
+		l2cap_chan_put(chan);
+		chan = NULL;
+		goto response;
+	}
 
 	/* For certain devices (ex: HID mouse), support for authentication,
 	 * pairing and bonding is optional. For such devices, inorder to avoid
@@ -4131,6 +4137,10 @@ response:
 			       l2cap_build_conf_req(chan, buf, sizeof(buf)), buf);
 		chan->num_conf_req++;
 	}
+
+	/* Drop our local ref; __l2cap_chan_add() pinned chan via the conn list. */
+	if (chan)
+		l2cap_chan_put(chan);
 
 	l2cap_chan_unlock(pchan);
 	l2cap_chan_put(pchan);
@@ -4881,6 +4891,7 @@ static int l2cap_le_connect_req(struct l2cap_conn *conn,
 	struct l2cap_le_conn_rsp rsp;
 	struct l2cap_chan *chan, *pchan;
 	u16 dcid, scid, credits, mtu, mps;
+	u16 rsp_mtu, rsp_mps;
 	__le16 psm;
 	u8 result;
 
@@ -4893,6 +4904,8 @@ static int l2cap_le_connect_req(struct l2cap_conn *conn,
 	psm  = req->psm;
 	dcid = 0;
 	credits = 0;
+	rsp_mtu = 0;
+	rsp_mps = 0;
 
 	if (mtu < 23 || mps < 23)
 		return -EPROTO;
@@ -4953,8 +4966,15 @@ static int l2cap_le_connect_req(struct l2cap_conn *conn,
 		goto response_unlock;
 	}
 
-	chan = pchan->ops->new_connection(pchan);
+	chan = l2cap_chan_create();
 	if (!chan) {
+		result = L2CAP_CR_LE_NO_MEM;
+		goto response_unlock;
+	}
+
+	if (pchan->ops->new_connection(pchan, chan) < 0) {
+		l2cap_chan_put(chan);
+		chan = NULL;
 		result = L2CAP_CR_LE_NO_MEM;
 		goto response_unlock;
 	}
@@ -4974,6 +4994,8 @@ static int l2cap_le_connect_req(struct l2cap_conn *conn,
 
 	dcid = chan->scid;
 	credits = chan->rx_credits;
+	rsp_mtu = chan->imtu;
+	rsp_mps = chan->mps;
 
 	__set_chan_timer(chan, chan->ops->get_sndtimeo(chan));
 
@@ -4993,6 +5015,9 @@ static int l2cap_le_connect_req(struct l2cap_conn *conn,
 		result = L2CAP_CR_LE_SUCCESS;
 	}
 
+	/* Drop our local ref; __l2cap_chan_add() pinned chan via the conn list. */
+	l2cap_chan_put(chan);
+
 response_unlock:
 	l2cap_chan_unlock(pchan);
 	l2cap_chan_put(pchan);
@@ -5001,13 +5026,8 @@ response_unlock:
 		return 0;
 
 response:
-	if (chan) {
-		rsp.mtu = cpu_to_le16(chan->imtu);
-		rsp.mps = cpu_to_le16(chan->mps);
-	} else {
-		rsp.mtu = 0;
-		rsp.mps = 0;
-	}
+	rsp.mtu = cpu_to_le16(rsp_mtu);
+	rsp.mps = cpu_to_le16(rsp_mps);
 
 	rsp.dcid    = cpu_to_le16(dcid);
 	rsp.credits = cpu_to_le16(credits);
@@ -5177,8 +5197,14 @@ static inline int l2cap_ecred_conn_req(struct l2cap_conn *conn,
 			continue;
 		}
 
-		chan = pchan->ops->new_connection(pchan);
+		chan = l2cap_chan_create();
 		if (!chan) {
+			result = L2CAP_CR_LE_NO_MEM;
+			continue;
+		}
+
+		if (pchan->ops->new_connection(pchan, chan) < 0) {
+			l2cap_chan_put(chan);
 			result = L2CAP_CR_LE_NO_MEM;
 			continue;
 		}
@@ -5217,6 +5243,9 @@ static inline int l2cap_ecred_conn_req(struct l2cap_conn *conn,
 		} else {
 			l2cap_chan_ready(chan);
 		}
+
+		/* Drop our local ref; __l2cap_chan_add() pinned chan via the conn list. */
+		l2cap_chan_put(chan);
 	}
 
 unlock:
@@ -7399,7 +7428,11 @@ static void l2cap_connect_cfm(struct hci_conn *hcon, u8 status)
 			goto next;
 
 		l2cap_chan_lock(pchan);
-		chan = pchan->ops->new_connection(pchan);
+		chan = l2cap_chan_create();
+		if (chan && pchan->ops->new_connection(pchan, chan) < 0) {
+			l2cap_chan_put(chan);
+			chan = NULL;
+		}
 		if (chan) {
 			bacpy(&chan->src, &hcon->src);
 			bacpy(&chan->dst, &hcon->dst);
@@ -7407,6 +7440,9 @@ static void l2cap_connect_cfm(struct hci_conn *hcon, u8 status)
 			chan->dst_type = dst_type;
 
 			__l2cap_chan_add(conn, chan);
+
+			/* Drop our local ref; __l2cap_chan_add() pinned chan via the conn list. */
+			l2cap_chan_put(chan);
 		}
 
 		l2cap_chan_unlock(pchan);
