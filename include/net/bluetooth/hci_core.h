@@ -642,6 +642,10 @@ struct hci_dev {
 	bool			aosp_quality_report;
 #endif
 
+#if IS_ENABLED(CONFIG_BT_BRCMEXT)
+	bool			brcm_capable;
+#endif
+
 	int (*open)(struct hci_dev *hdev);
 	int (*close)(struct hci_dev *hdev);
 	int (*flush)(struct hci_dev *hdev);
@@ -755,6 +759,10 @@ struct hci_conn {
 	__u8		remote_auth;
 
 	unsigned int	sent;
+
+#if IS_ENABLED(CONFIG_BT_BRCMEXT)
+	bool		brcm_high_prio;
+#endif
 
 	struct sk_buff_head data_q;
 	struct list_head chan_list;
@@ -1788,6 +1796,13 @@ static inline void hci_set_aosp_capable(struct hci_dev *hdev)
 {
 #if IS_ENABLED(CONFIG_BT_AOSPEXT)
 	hdev->aosp_capable = true;
+#endif
+}
+
+static inline void hci_set_brcm_capable(struct hci_dev *hdev)
+{
+#if IS_ENABLED(CONFIG_BT_BRCMEXT)
+	hdev->brcm_capable = true;
 #endif
 }
 

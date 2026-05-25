@@ -46,6 +46,7 @@
 #include "msft.h"
 #include "aosp.h"
 #include "hci_codec.h"
+#include "brcm.h"
 
 static void hci_rx_work(struct work_struct *work);
 static void hci_cmd_work(struct work_struct *work);
@@ -3695,6 +3696,9 @@ static void hci_sched_acl_pkt(struct hci_dev *hdev)
 				break;
 
 			skb = skb_dequeue(&chan->data_q);
+
+			if (skb->priority == TC_PRIO_INTERACTIVE)
+				brcm_set_high_priority(hdev, chan->conn, true);
 
 			hci_conn_enter_active_mode(chan->conn,
 						   bt_cb(skb)->force_active);
