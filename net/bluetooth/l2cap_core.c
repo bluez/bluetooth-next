@@ -5294,10 +5294,12 @@ static inline int l2cap_ecred_conn_rsp(struct l2cap_conn *conn,
 			l2cap_chan_del(chan, ECONNREFUSED);
 			l2cap_chan_unlock(chan);
 			chan = __l2cap_get_chan_by_dcid(conn, dcid);
-			l2cap_chan_lock(chan);
-			l2cap_chan_del(chan, ECONNRESET);
-			l2cap_chan_unlock(chan);
-			continue;
+			if (chan) {
+				l2cap_chan_lock(chan);
+				l2cap_chan_del(chan, ECONNRESET);
+				l2cap_chan_unlock(chan);
+			}
+			break;
 		}
 
 		switch (result) {
