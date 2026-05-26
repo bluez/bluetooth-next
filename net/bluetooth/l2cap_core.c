@@ -3053,12 +3053,23 @@ fail:
 }
 
 static inline int l2cap_get_conf_opt(void **ptr, int *type, int *olen,
-				     unsigned long *val)
+				     unsigned long *val, size_t buflen)
 {
 	struct l2cap_conf_opt *opt = *ptr;
 	int len;
 
+	/* Guard opt->len dereference: reject if the 2-byte option header
+	 * itself does not fit in the remaining buffer.
+	 */
+	if (buflen < L2CAP_CONF_OPT_SIZE)
+		return -EINVAL;
+
 	len = L2CAP_CONF_OPT_SIZE + opt->len;
+
+	/* Reject options whose payload extends past the remaining buffer. */
+	if ((size_t)len > buflen)
+		return -EINVAL;
+
 	*ptr += len;
 
 	*type = opt->type;
@@ -3439,9 +3450,11 @@ static int l2cap_parse_conf_req(struct l2cap_chan *chan, void *data, size_t data
 	BT_DBG("chan %p", chan);
 
 	while (len >= L2CAP_CONF_OPT_SIZE) {
-		len -= l2cap_get_conf_opt(&req, &type, &olen, &val);
-		if (len < 0)
+		int optlen = l2cap_get_conf_opt(&req, &type, &olen, &val, len);
+
+		if (optlen < 0)
 			break;
+		len -= optlen;
 
 		hint  = type & L2CAP_CONF_HINT;
 		type &= L2CAP_CONF_MASK;
@@ -3677,9 +3690,11 @@ static int l2cap_parse_conf_rsp(struct l2cap_chan *chan, void *rsp, int len,
 	BT_DBG("chan %p, rsp %p, len %d, req %p", chan, rsp, len, data);
 
 	while (len >= L2CAP_CONF_OPT_SIZE) {
-		len -= l2cap_get_conf_opt(&rsp, &type, &olen, &val);
-		if (len < 0)
+		int optlen = l2cap_get_conf_opt(&rsp, &type, &olen, &val, len);
+
+		if (optlen < 0)
 			break;
+		len -= optlen;
 
 		switch (type) {
 		case L2CAP_CONF_MTU:
@@ -3948,9 +3963,11 @@ static void l2cap_conf_rfc_get(struct l2cap_chan *chan, void *rsp, int len)
 		return;
 
 	while (len >= L2CAP_CONF_OPT_SIZE) {
-		len -= l2cap_get_conf_opt(&rsp, &type, &olen, &val);
-		if (len < 0)
+		int optlen = l2cap_get_conf_opt(&rsp, &type, &olen, &val, len);
+
+		if (optlen < 0)
 			break;
+		len -= optlen;
 
 		switch (type) {
 		case L2CAP_CONF_RFC:
