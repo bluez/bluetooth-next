@@ -3502,7 +3502,7 @@ static void hci_auth_complete_evt(struct hci_dev *hdev, void *data,
 	if (!ev->status) {
 		clear_bit(HCI_CONN_AUTH_FAILURE, &conn->flags);
 		set_bit(HCI_CONN_AUTH, &conn->flags);
-		conn->sec_level = conn->pending_sec_level;
+		hci_conn_set_sec_level(conn, conn->pending_sec_level);
 	} else {
 		if (ev->status == HCI_ERROR_PIN_OR_KEY_MISSING)
 			set_bit(HCI_CONN_AUTH_FAILURE, &conn->flags);
@@ -3609,7 +3609,7 @@ static void hci_encrypt_change_evt(struct hci_dev *hdev, void *data,
 			/* Encryption implies authentication */
 			set_bit(HCI_CONN_AUTH, &conn->flags);
 			set_bit(HCI_CONN_ENCRYPT, &conn->flags);
-			conn->sec_level = conn->pending_sec_level;
+			hci_conn_set_sec_level(conn, conn->pending_sec_level);
 
 			/* P-256 authentication key implies FIPS */
 			if (conn->key_type == HCI_LK_AUTH_COMBINATION_P256)
@@ -5212,7 +5212,7 @@ static void hci_key_refresh_complete_evt(struct hci_dev *hdev, void *data,
 		goto unlock;
 
 	if (!ev->status)
-		conn->sec_level = conn->pending_sec_level;
+		hci_conn_set_sec_level(conn, conn->pending_sec_level);
 
 	clear_bit(HCI_CONN_ENCRYPT_PEND, &conn->flags);
 
@@ -5842,7 +5842,7 @@ static void le_conn_complete_evt(struct hci_dev *hdev, u8 status,
 
 	mgmt_device_connected(hdev, conn, NULL, 0);
 
-	conn->sec_level = BT_SECURITY_LOW;
+	hci_conn_set_sec_level(conn, BT_SECURITY_LOW);
 	conn->state = BT_CONFIG;
 
 	/* Store current advertising instance as connection advertising instance

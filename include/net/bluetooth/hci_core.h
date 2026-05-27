@@ -1863,6 +1863,8 @@ int hci_remove_ltk(struct hci_dev *hdev, bdaddr_t *bdaddr, u8 bdaddr_type);
 void hci_smp_ltks_clear(struct hci_dev *hdev);
 int hci_remove_link_key(struct hci_dev *hdev, bdaddr_t *bdaddr);
 
+void hci_conn_set_sec_level(struct hci_conn *conn, u8 sec_level);
+
 struct smp_irk *hci_find_irk_by_rpa(struct hci_dev *hdev, bdaddr_t *rpa);
 struct smp_irk *hci_find_irk_by_addr(struct hci_dev *hdev, bdaddr_t *bdaddr,
 				     u8 addr_type);
@@ -2203,10 +2205,10 @@ static inline void hci_encrypt_cfm(struct hci_conn *conn, __u8 status)
 
 	if (!status) {
 		if (conn->sec_level == BT_SECURITY_SDP)
-			conn->sec_level = BT_SECURITY_LOW;
+			hci_conn_set_sec_level(conn, BT_SECURITY_LOW);
 
 		if (conn->pending_sec_level > conn->sec_level)
-			conn->sec_level = conn->pending_sec_level;
+			hci_conn_set_sec_level(conn, conn->pending_sec_level);
 	}
 
 	mutex_lock(&hci_cb_list_lock);
@@ -2493,6 +2495,7 @@ void mgmt_advertising_removed(struct sock *sk, struct hci_dev *hdev,
 int mgmt_phy_configuration_changed(struct hci_dev *hdev, struct sock *skip);
 void mgmt_adv_monitor_device_lost(struct hci_dev *hdev, u16 handle,
 				  bdaddr_t *bdaddr, u8 addr_type);
+void mgmt_security_level_changed(struct hci_conn *conn, u8 level);
 
 int hci_abort_conn(struct hci_conn *conn, u8 reason);
 void hci_le_conn_update(struct hci_conn *conn, u16 min, u16 max, u16 latency,
