@@ -313,11 +313,16 @@ static int sco_connect(struct sock *sk)
 	struct sco_conn *conn;
 	struct hci_conn *hcon;
 	struct hci_dev  *hdev;
+	bdaddr_t dst;
 	int err, type;
 
-	BT_DBG("%pMR -> %pMR", &sco_pi(sk)->src, &sco_pi(sk)->dst);
+	lock_sock(sk);
+	bacpy(&dst, &sco_pi(sk)->dst);
+	release_sock(sk);
 
-	hdev = hci_get_route(&sco_pi(sk)->dst, &sco_pi(sk)->src, BDADDR_BREDR);
+	BT_DBG("%pMR -> %pMR", &sco_pi(sk)->src, &dst);
+
+	hdev = hci_get_route(&dst, &sco_pi(sk)->src, BDADDR_BREDR);
 	if (!hdev)
 		return -EHOSTUNREACH;
 
@@ -337,7 +342,7 @@ static int sco_connect(struct sock *sk)
 		break;
 	}
 
-	hcon = hci_connect_sco(hdev, type, &sco_pi(sk)->dst,
+	hcon = hci_connect_sco(hdev, type, &dst,
 			       sco_pi(sk)->setting, &sco_pi(sk)->codec,
 			       READ_ONCE(sk->sk_sndtimeo));
 	if (IS_ERR(hcon)) {
