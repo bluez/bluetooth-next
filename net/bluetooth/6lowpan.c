@@ -622,6 +622,15 @@ static bool is_bt_6lowpan(struct hci_conn *hcon)
 	return true;
 }
 
+static void chan_init(struct l2cap_chan *chan)
+{
+	l2cap_chan_set_defaults(chan);
+
+	chan->chan_type = L2CAP_CHAN_CONN_ORIENTED;
+	chan->mode = L2CAP_MODE_LE_FLOWCTL;
+	chan->imtu = 1280;
+}
+
 static struct l2cap_chan *chan_create(void)
 {
 	struct l2cap_chan *chan;
@@ -630,11 +639,7 @@ static struct l2cap_chan *chan_create(void)
 	if (!chan)
 		return NULL;
 
-	l2cap_chan_set_defaults(chan);
-
-	chan->chan_type = L2CAP_CHAN_CONN_ORIENTED;
-	chan->mode = L2CAP_MODE_LE_FLOWCTL;
-	chan->imtu = 1280;
+	chan_init(chan);
 
 	return chan;
 }
@@ -743,19 +748,15 @@ static inline void chan_ready_cb(struct l2cap_chan *chan)
 	ifup(dev->netdev);
 }
 
-static inline struct l2cap_chan *chan_new_conn_cb(struct l2cap_chan *pchan)
+static inline int chan_new_conn_cb(struct l2cap_chan *pchan,
+				   struct l2cap_chan *chan)
 {
-	struct l2cap_chan *chan;
-
-	chan = chan_create();
-	if (!chan)
-		return NULL;
-
+	chan_init(chan);
 	chan->ops = pchan->ops;
 
 	BT_DBG("chan %p pchan %p", chan, pchan);
 
-	return chan;
+	return 0;
 }
 
 static void unregister_dev(struct lowpan_btle_dev *dev)
