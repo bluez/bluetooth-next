@@ -297,7 +297,7 @@ u8 eir_create_adv_data(struct hci_dev *hdev, u8 instance, u8 *ptr, u8 size)
 	}
 
 skip_flags:
-	if (adv) {
+	if (adv && ad_len + adv->adv_data_len <= size) {
 		memcpy(ptr, adv->adv_data, adv->adv_data_len);
 		ad_len += adv->adv_data_len;
 		ptr += adv->adv_data_len;
