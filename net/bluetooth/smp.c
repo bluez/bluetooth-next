@@ -3204,15 +3204,10 @@ static const struct l2cap_ops smp_chan_ops = {
 	.get_sndtimeo		= l2cap_chan_no_get_sndtimeo,
 };
 
-static inline struct l2cap_chan *smp_new_conn_cb(struct l2cap_chan *pchan)
+static inline int smp_new_conn_cb(struct l2cap_chan *pchan,
+				  struct l2cap_chan *chan)
 {
-	struct l2cap_chan *chan;
-
 	BT_DBG("pchan %p", pchan);
-
-	chan = l2cap_chan_create();
-	if (!chan)
-		return NULL;
 
 	chan->chan_type	= pchan->chan_type;
 	chan->ops	= &smp_chan_ops;
@@ -3229,9 +3224,14 @@ static inline struct l2cap_chan *smp_new_conn_cb(struct l2cap_chan *pchan)
 	 */
 	atomic_set(&chan->nesting, L2CAP_NESTING_SMP);
 
-	BT_DBG("created chan %p", chan);
+	/* Take a reference to match the put in smp_teardown_cb(). The caller
+	 * drops its own local reference after __l2cap_chan_add().
+	 */
+	l2cap_chan_hold(chan);
 
-	return chan;
+	BT_DBG("initialised chan %p", chan);
+
+	return 0;
 }
 
 static const struct l2cap_ops smp_root_chan_ops = {
