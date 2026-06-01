@@ -361,6 +361,28 @@ static int interleaved_inquiry_sync(struct hci_dev *hdev, void *data)
 	return hci_inquiry_sync(hdev, DISCOV_INTERLEAVED_INQUIRY_LEN, 0);
 }
 
+static void scan_disable_complete(struct hci_dev *hdev, void *data, int err)
+{
+	if (err)
+		return;
+
+	hci_dev_lock(hdev);
+
+	if (hdev->discovery.type != DISCOV_TYPE_INTERLEAVED)
+		goto unlock;
+
+	if (hci_test_quirk(hdev, HCI_QUIRK_SIMULTANEOUS_DISCOVERY)) {
+		if (!test_bit(HCI_INQUIRY, &hdev->flags) &&
+		    hdev->discovery.state == DISCOVERY_FINDING) {
+			hci_discovery_set_state(hdev, DISCOVERY_STOPPED);
+			bt_dev_dbg(hdev, "state finding to stopped");
+		}
+	}
+
+unlock:
+	hci_dev_unlock(hdev);
+}
+
 static void le_scan_disable(struct work_struct *work)
 {
 	struct hci_dev *hdev = container_of(work, struct hci_dev,
@@ -373,7 +395,8 @@ static void le_scan_disable(struct work_struct *work)
 	if (!hci_dev_test_flag(hdev, HCI_LE_SCAN))
 		goto _return;
 
-	status = hci_cmd_sync_queue(hdev, scan_disable_sync, NULL, NULL);
+	status = hci_cmd_sync_queue(hdev, scan_disable_sync, NULL,
+				    scan_disable_complete);
 	if (status) {
 		bt_dev_err(hdev, "failed to disable LE scan: %d", status);
 		goto _return;
