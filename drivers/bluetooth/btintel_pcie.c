@@ -2694,6 +2694,10 @@ static void btintel_pcie_remove(struct pci_dev *pdev)
 	struct btintel_pcie_data *data;
 
 	data = pci_get_drvdata(pdev);
+	if (!data) {
+		BT_WARN("PCI driver data is NULL, aborting remove");
+		return;
+	}
 
 	/* Cancel pending reset work. Skip only when remove() is called from
 	 * within the reset work itself (PLDR device_reprobe path) to avoid
