@@ -513,6 +513,7 @@ struct l2cap_seq_list {
 
 struct l2cap_chan {
 	struct l2cap_conn	*conn;
+	struct l2cap_conn	*timer_conn; /* for chan_timer */
 	struct kref	kref;
 	atomic_t	nesting;
 
@@ -834,6 +835,9 @@ static inline void l2cap_chan_unlock(struct l2cap_chan *chan)
 	mutex_unlock(&chan->lock);
 }
 
+struct l2cap_conn *l2cap_conn_get(struct l2cap_conn *conn);
+void l2cap_conn_put(struct l2cap_conn *conn);
+
 static inline void l2cap_set_timer(struct l2cap_chan *chan,
 				   struct delayed_work *work, long timeout)
 {
@@ -842,8 +846,13 @@ static inline void l2cap_set_timer(struct l2cap_chan *chan,
 
 	/* If delayed work cancelled do not hold(chan)
 	   since it is already done with previous set_timer */
-	if (!cancel_delayed_work(work))
+	if (!cancel_delayed_work(work)) {
 		l2cap_chan_hold(chan);
+		if (work == &chan->chan_timer && chan->conn) {
+			l2cap_conn_get(chan->conn);
+			chan->timer_conn = chan->conn;
+		}
+	}
 
 	schedule_delayed_work(work, timeout);
 }
@@ -856,8 +865,13 @@ static inline bool l2cap_clear_timer(struct l2cap_chan *chan,
 	/* put(chan) if delayed work cancelled otherwise it
 	   is done in delayed work function */
 	ret = cancel_delayed_work(work);
-	if (ret)
+	if (ret) {
+		if (work == &chan->chan_timer && chan->timer_conn) {
+			l2cap_conn_put(chan->timer_conn);
+			chan->timer_conn = NULL;
+		}
 		l2cap_chan_put(chan);
+	}
 
 	return ret;
 }

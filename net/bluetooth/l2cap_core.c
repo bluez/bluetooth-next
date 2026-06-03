@@ -406,7 +406,7 @@ static void l2cap_chan_timeout(struct work_struct *work)
 {
 	struct l2cap_chan *chan = container_of(work, struct l2cap_chan,
 					       chan_timer.work);
-	struct l2cap_conn *conn = chan->conn;
+	struct l2cap_conn *conn = chan->timer_conn;
 	int reason;
 
 	BT_DBG("chan %p state %s", chan, state_to_string(chan->state));
@@ -421,23 +421,27 @@ static void l2cap_chan_timeout(struct work_struct *work)
 	 * this work. No need to call l2cap_chan_hold(chan) here again.
 	 */
 	l2cap_chan_lock(chan);
+	chan->timer_conn = NULL;
 
-	if (chan->state == BT_CONNECTED || chan->state == BT_CONFIG)
-		reason = ECONNREFUSED;
-	else if (chan->state == BT_CONNECT &&
-		 chan->sec_level != BT_SECURITY_SDP)
-		reason = ECONNREFUSED;
-	else
-		reason = ETIMEDOUT;
+	if (chan->conn) {
+		if (chan->state == BT_CONNECTED || chan->state == BT_CONFIG)
+			reason = ECONNREFUSED;
+		else if (chan->state == BT_CONNECT &&
+			 chan->sec_level != BT_SECURITY_SDP)
+			reason = ECONNREFUSED;
+		else
+			reason = ETIMEDOUT;
 
-	l2cap_chan_close(chan, reason);
+		l2cap_chan_close(chan, reason);
 
-	chan->ops->close(chan);
+		chan->ops->close(chan);
+	}
 
 	l2cap_chan_unlock(chan);
 	l2cap_chan_put(chan);
 
 	mutex_unlock(&conn->lock);
+	l2cap_conn_put(conn);
 }
 
 struct l2cap_chan *l2cap_chan_create(void)
