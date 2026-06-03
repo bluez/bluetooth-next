@@ -4007,6 +4007,31 @@ static inline int l2cap_command_rej(struct l2cap_conn *conn,
 	return 0;
 }
 
+/* Allocate and initialise a channel for an incoming connection.
+ *
+ * ->new_connection() initialises the channel and links it into @conn with
+ * __l2cap_chan_add(). The l2cap_chan_create() reference becomes the one owned
+ * by the parent subsystem (l2cap_pi(sk)->chan, conn->smp or peer->chan) and is
+ * released by its teardown callback; the conn list reference is released by
+ * l2cap_chan_del().
+ */
+static struct l2cap_chan *l2cap_new_connection(struct l2cap_conn *conn,
+					       struct l2cap_chan *pchan)
+{
+	struct l2cap_chan *chan;
+
+	chan = l2cap_chan_create();
+	if (!chan)
+		return NULL;
+
+	if (pchan->ops->new_connection(conn, pchan, chan) < 0) {
+		l2cap_chan_put(chan);
+		return NULL;
+	}
+
+	return chan;
+}
+
 static void l2cap_connect(struct l2cap_conn *conn, struct l2cap_cmd_hdr *cmd,
 			  u8 *data, u8 rsp_code)
 {
@@ -4053,7 +4078,7 @@ static void l2cap_connect(struct l2cap_conn *conn, struct l2cap_cmd_hdr *cmd,
 		goto response;
 	}
 
-	chan = pchan->ops->new_connection(pchan);
+	chan = l2cap_new_connection(conn, pchan);
 	if (!chan)
 		goto response;
 
@@ -4070,8 +4095,6 @@ static void l2cap_connect(struct l2cap_conn *conn, struct l2cap_cmd_hdr *cmd,
 	chan->dst_type = bdaddr_dst_type(conn->hcon);
 	chan->psm  = psm;
 	chan->dcid = scid;
-
-	__l2cap_chan_add(conn, chan);
 
 	dcid = chan->scid;
 
@@ -4955,7 +4978,7 @@ static int l2cap_le_connect_req(struct l2cap_conn *conn,
 		goto response_unlock;
 	}
 
-	chan = pchan->ops->new_connection(pchan);
+	chan = l2cap_new_connection(conn, pchan);
 	if (!chan) {
 		result = L2CAP_CR_LE_NO_MEM;
 		goto response_unlock;
@@ -4969,8 +4992,6 @@ static int l2cap_le_connect_req(struct l2cap_conn *conn,
 	chan->dcid = scid;
 	chan->omtu = mtu;
 	chan->remote_mps = mps;
-
-	__l2cap_chan_add(conn, chan);
 
 	l2cap_le_flowctl_init(chan, __le16_to_cpu(req->credits));
 
@@ -5179,7 +5200,7 @@ static inline int l2cap_ecred_conn_req(struct l2cap_conn *conn,
 			continue;
 		}
 
-		chan = pchan->ops->new_connection(pchan);
+		chan = l2cap_new_connection(conn, pchan);
 		if (!chan) {
 			result = L2CAP_CR_LE_NO_MEM;
 			continue;
@@ -5193,8 +5214,6 @@ static inline int l2cap_ecred_conn_req(struct l2cap_conn *conn,
 		chan->dcid = scid;
 		chan->omtu = mtu;
 		chan->remote_mps = mps;
-
-		__l2cap_chan_add(conn, chan);
 
 		l2cap_ecred_init(chan, __le16_to_cpu(req->credits));
 
@@ -7401,14 +7420,12 @@ static void l2cap_connect_cfm(struct hci_conn *hcon, u8 status)
 			goto next;
 
 		l2cap_chan_lock(pchan);
-		chan = pchan->ops->new_connection(pchan);
+		chan = l2cap_new_connection(conn, pchan);
 		if (chan) {
 			bacpy(&chan->src, &hcon->src);
 			bacpy(&chan->dst, &hcon->dst);
 			chan->src_type = bdaddr_src_type(hcon);
 			chan->dst_type = dst_type;
-
-			__l2cap_chan_add(conn, chan);
 		}
 
 		l2cap_chan_unlock(pchan);
