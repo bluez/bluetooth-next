@@ -513,6 +513,7 @@ struct l2cap_seq_list {
 
 struct l2cap_chan {
 	struct l2cap_conn	*conn;
+	struct l2cap_conn	*conn_ref;
 	struct kref	kref;
 	atomic_t	nesting;
 
