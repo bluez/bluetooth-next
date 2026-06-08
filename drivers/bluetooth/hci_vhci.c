@@ -338,6 +338,14 @@ static ssize_t force_devcd_write(struct file *file, const char __user *user_buf,
 		return -EFAULT;
 
 	data_size = count - offsetof(struct devcoredump_test_data, data);
+	switch (dump_data.state) {
+	case HCI_DEVCOREDUMP_DONE:
+	case HCI_DEVCOREDUMP_ABORT:
+	case HCI_DEVCOREDUMP_TIMEOUT:
+		break;
+	default:
+		return -EINVAL;
+	}
 	skb = alloc_skb(data_size, GFP_ATOMIC);
 	if (!skb)
 		return -ENOMEM;
