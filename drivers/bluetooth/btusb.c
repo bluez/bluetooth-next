@@ -1043,7 +1043,7 @@ static void btusb_reset(struct hci_dev *hdev)
 	usb_queue_reset_device(data->intf);
 }
 
-static void btusb_intel_reset(struct hci_dev *hdev)
+static void btusb_intel_reset(struct hci_dev *hdev, u8 reset_type)
 {
 	struct btusb_data *data = hci_get_drvdata(hdev);
 	struct gpio_desc *reset_gpio = data->reset_gpio;
@@ -1121,7 +1121,7 @@ static inline void btusb_rtl_alloc_devcoredump(struct hci_dev *hdev,
 	}
 }
 
-static void btusb_rtl_reset(struct hci_dev *hdev)
+static void btusb_rtl_reset(struct hci_dev *hdev, u8 reset_type)
 {
 	struct btusb_data *data = hci_get_drvdata(hdev);
 	struct gpio_desc *reset_gpio = data->reset_gpio;
@@ -1165,7 +1165,7 @@ static void btusb_rtl_hw_error(struct hci_dev *hdev, u8 code)
 	btusb_rtl_alloc_devcoredump(hdev, &hdr, NULL, 0);
 }
 
-static void btusb_qca_reset(struct hci_dev *hdev)
+static void btusb_qca_reset(struct hci_dev *hdev, u8 reset_type)
 {
 	struct btusb_data *data = hci_get_drvdata(hdev);
 	struct gpio_desc *reset_gpio = data->reset_gpio;

@@ -1539,7 +1539,7 @@ static bool nxp_wakeup(struct hci_dev *hdev)
 	return false;
 }
 
-static void nxp_reset(struct hci_dev *hdev)
+static void nxp_reset(struct hci_dev *hdev, u8 reset_type)
 {
 	struct btnxpuart_dev *nxpdev = hci_get_drvdata(hdev);
 

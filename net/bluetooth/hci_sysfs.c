@@ -97,8 +97,14 @@ static ssize_t reset_store(struct device *dev, struct device_attribute *attr,
 {
 	struct hci_dev *hdev = to_hci_dev(dev);
 
-	if (hdev->reset)
-		hdev->reset(hdev);
+	if (hdev->reset) {
+		int val;
+
+		if (kstrtoint(buf, 10, &val) || val != 1)
+			hdev->reset(hdev, 0);
+		else
+			hdev->reset(hdev, 1);
+	}
 
 	return count;
 }

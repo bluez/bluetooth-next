@@ -1435,7 +1435,7 @@ static void hci_cmd_timeout(struct work_struct *work)
 	}
 
 	if (hdev->reset)
-		hdev->reset(hdev);
+		hdev->reset(hdev, 0);
 
 	atomic_set(&hdev->cmd_cnt, 1);
 	queue_work(hdev->workqueue, &hdev->cmd_work);

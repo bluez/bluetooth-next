@@ -1269,7 +1269,7 @@ static int btmtksdio_send_frame(struct hci_dev *hdev, struct sk_buff *skb)
 	return 0;
 }
 
-static void btmtksdio_reset(struct hci_dev *hdev)
+static void btmtksdio_reset(struct hci_dev *hdev, u8 reset_type)
 {
 	struct btmtksdio_dev *bdev = hci_get_drvdata(hdev);
 	u32 status;
