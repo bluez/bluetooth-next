@@ -421,6 +421,8 @@ static void add_disk_final(struct gendisk *disk)
 		 */
 		dev_set_uevent_suppress(ddev, 0);
 		disk_uevent(disk, KOBJ_ADD);
+
+		blk_nvmem_add(disk->part0);
 	}
 
 	blk_apply_bdi_limits(disk->bdi, &disk->queue->limits);
@@ -703,6 +705,8 @@ static void __del_gendisk(struct gendisk *disk)
 		return;
 
 	disk_del_events(disk);
+
+	blk_nvmem_del(disk->part0);
 
 	/*
 	 * Prevent new openers by unlinked the bdev inode.
