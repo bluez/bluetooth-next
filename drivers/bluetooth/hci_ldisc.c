@@ -239,9 +239,16 @@ static int hci_uart_flush(struct hci_dev *hdev)
 
 	BT_DBG("hdev %p tty %p", hdev, tty);
 
+	disable_work_sync(&hu->write_work);
+
 	if (hu->tx_skb) {
 		kfree_skb(hu->tx_skb); hu->tx_skb = NULL;
 	}
+
+	if (test_and_clear_bit(HCI_UART_SENDING, &hu->tx_state))
+		wake_up_bit(&hu->tx_state, HCI_UART_SENDING);
+
+	enable_work(&hu->write_work);
 
 	/* Flush any pending characters in the driver and discipline. */
 	tty_ldisc_flush(tty);
@@ -271,11 +278,7 @@ static int hci_uart_open(struct hci_dev *hdev)
 /* Close device */
 static int hci_uart_close(struct hci_dev *hdev)
 {
-	struct hci_uart *hu = hci_get_drvdata(hdev);
-
 	BT_DBG("hdev %p", hdev);
-
-	cancel_work_sync(&hu->write_work);
 
 	hci_uart_flush(hdev);
 	hdev->flush = NULL;
