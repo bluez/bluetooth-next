@@ -1192,3 +1192,14 @@ struct mgmt_ev_mesh_device_found {
 struct mgmt_ev_mesh_pkt_cmplt {
 	__u8	handle;
 } __packed;
+
+#define MGMT_CONN_SEC_ENCRYPT_NONE		0x00
+#define MGMT_CONN_SEC_ENCRYPT_E0		0x01
+#define MGMT_CONN_SEC_ENCRYPT_AES_CCM		0x02
+
+#define MGMT_EV_SECURITY_LEVEL_CHANGED		0x0033
+struct mgmt_ev_security_level_changed {
+	struct mgmt_addr_info addr;
+	__u8   level;
+	__u8   enc_type;
+} __packed;
