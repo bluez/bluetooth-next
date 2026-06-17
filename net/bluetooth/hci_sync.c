@@ -5441,6 +5441,14 @@ int hci_dev_close_sync(struct hci_dev *hdev)
 
 	/* Drop last sent command */
 	if (hdev->sent_cmd) {
+		struct hci_conn *c;
+
+		rcu_read_lock();
+		list_for_each_entry_rcu(c, &hdev->conn_hash.list, list) {
+			cancel_delayed_work_sync(&c->disc_work);
+		}
+		rcu_read_unlock();
+
 		cancel_delayed_work_sync(&hdev->cmd_timer);
 		kfree_skb(hdev->sent_cmd);
 		hdev->sent_cmd = NULL;
