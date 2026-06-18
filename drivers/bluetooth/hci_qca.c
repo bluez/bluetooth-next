@@ -1693,7 +1693,7 @@ static void qca_hw_error(struct hci_dev *hdev, u8 code)
 	clear_bit(QCA_HW_ERROR_EVENT, &qca->flags);
 }
 
-static void qca_reset(struct hci_dev *hdev)
+static void qca_reset(struct hci_dev *hdev, u8 reset_type)
 {
 	struct hci_uart *hu = hci_get_drvdata(hdev);
 	struct qca_data *qca = hu->priv;

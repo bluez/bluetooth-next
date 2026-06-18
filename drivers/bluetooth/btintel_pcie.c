@@ -2486,7 +2486,7 @@ static void btintel_pcie_inc_recovery_count(struct pci_dev *pdev,
 }
 
 static int btintel_pcie_setup_hdev(struct btintel_pcie_data *data);
-static void btintel_pcie_reset(struct hci_dev *hdev);
+static void btintel_pcie_reset(struct hci_dev *hdev, u8 reset_type);
 
 static int btintel_pcie_acpi_reset_method(struct btintel_pcie_data *data)
 {
@@ -2680,7 +2680,7 @@ out:
 	pci_unlock_rescan_remove();
 }
 
-static void btintel_pcie_reset(struct hci_dev *hdev)
+static void btintel_pcie_reset(struct hci_dev *hdev, u8 reset_type)
 {
 	struct btintel_pcie_data *data;
 
@@ -2691,6 +2691,12 @@ static void btintel_pcie_reset(struct hci_dev *hdev)
 
 	if (test_and_set_bit(BTINTEL_PCIE_RECOVERY_IN_PROGRESS, &data->flags))
 		return;
+
+	data->reset_type = (reset_type == 1) ?
+			    BTINTEL_PCIE_IOSF_PRR_PLDR : BTINTEL_PCIE_IOSF_PRR_FLR;
+
+	bt_dev_info(hdev, "Reset triggered: %s",
+		    data->reset_type == BTINTEL_PCIE_IOSF_PRR_PLDR ? "PLDR" : "FLR");
 
 	pci_dev_get(data->pdev);
 	schedule_work(&data->reset_work);
@@ -2729,7 +2735,7 @@ static void btintel_pcie_hw_error(struct hci_dev *hdev, u8 code)
 		return;
 	}
 	btintel_pcie_inc_recovery_count(pdev, &hdev->dev);
-	btintel_pcie_reset(hdev);
+	btintel_pcie_reset(hdev, (code == 0x13) ? 1 : 0);
 }
 
 static bool btintel_pcie_wakeup(struct hci_dev *hdev)
@@ -3111,8 +3117,7 @@ static int btintel_pcie_resume(struct device *dev)
 	if (data->pm_sx_event == PM_EVENT_FREEZE ||
 	    data->pm_sx_event == PM_EVENT_HIBERNATE) {
 		set_bit(BTINTEL_PCIE_CORE_HALTED, &data->flags);
-		data->reset_type = BTINTEL_PCIE_IOSF_PRR_FLR;
-		btintel_pcie_reset(data->hdev);
+		btintel_pcie_reset(data->hdev, 0);
 		return 0;
 	}
 
@@ -3143,7 +3148,7 @@ static int btintel_pcie_resume(struct device *dev)
 			queue_work(data->coredump_workqueue, &data->coredump_work);
 		}
 		set_bit(BTINTEL_PCIE_CORE_HALTED, &data->flags);
-		btintel_pcie_reset(data->hdev);
+		btintel_pcie_reset(data->hdev, 0);
 	}
 	return err;
 }

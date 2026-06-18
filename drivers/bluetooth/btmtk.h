@@ -196,7 +196,7 @@ int btmtk_setup_firmware_79xx(struct hci_dev *hdev, const char *fwname,
 int btmtk_setup_firmware(struct hci_dev *hdev, const char *fwname,
 			 wmt_cmd_sync_func_t wmt_cmd_sync);
 
-void btmtk_reset_sync(struct hci_dev *hdev);
+void btmtk_reset_sync(struct hci_dev *hdev, u8 reset_type);
 
 int btmtk_register_coredump(struct hci_dev *hdev, const char *name,
 			    u32 fw_version);
@@ -244,7 +244,7 @@ static inline int btmtk_setup_firmware(struct hci_dev *hdev, const char *fwname,
 	return -EOPNOTSUPP;
 }
 
-static inline void btmtk_reset_sync(struct hci_dev *hdev)
+static inline void btmtk_reset_sync(struct hci_dev *hdev, u8 reset_type)
 {
 }
 

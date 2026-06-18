@@ -104,7 +104,7 @@ static void btmtk_coredump_notify(struct hci_dev *hdev, int state)
 	case HCI_DEVCOREDUMP_ABORT:
 	case HCI_DEVCOREDUMP_DONE:
 		data->cd_info.state = HCI_DEVCOREDUMP_IDLE;
-		btmtk_reset_sync(hdev);
+		btmtk_reset_sync(hdev, 0);
 		break;
 	}
 }
@@ -384,7 +384,7 @@ int btmtk_set_bdaddr(struct hci_dev *hdev, const bdaddr_t *bdaddr)
 }
 EXPORT_SYMBOL_GPL(btmtk_set_bdaddr);
 
-void btmtk_reset_sync(struct hci_dev *hdev)
+void btmtk_reset_sync(struct hci_dev *hdev, u8 reset_type)
 {
 	struct btmtk_data *reset_work = hci_get_priv(hdev);
 	int err;
@@ -1403,7 +1403,7 @@ int btmtk_usb_setup(struct hci_dev *hdev)
 		if (err < 0) {
 			/* retry once if setup firmware error */
 			if (!test_and_set_bit(BTMTK_FIRMWARE_DL_RETRY, &btmtk_data->flags))
-				btmtk_reset_sync(hdev);
+				btmtk_reset_sync(hdev, 0);
 			bt_dev_err(hdev, "Failed to set up firmware (%d)", err);
 			return err;
 		}

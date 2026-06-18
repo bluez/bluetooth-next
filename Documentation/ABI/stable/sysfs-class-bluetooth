@@ -3,7 +3,14 @@ Date:		14-Jan-2025
 KernelVersion:	6.13
 Contact:	linux-bluetooth@vger.kernel.org
 Description: 	This write-only attribute allows users to trigger the vendor reset
-		method on the Bluetooth device when arbitrary data is written.
+		method on the Bluetooth device. The value written selects the
+		reset level. Each driver interprets the level according to its
+		own capabilities:
+
+		  - 0: default reset
+		  - 1: deeper reset
+
+		Writing any value other than 1 defaults to level 0.
 		The reset may or may not be done through the device transport
 		(e.g., UART/USB), and can also be done through an out-of-band
 		approach such as GPIO.
