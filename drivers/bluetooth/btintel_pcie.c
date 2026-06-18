@@ -2686,11 +2686,15 @@ static void btintel_pcie_reset(struct hci_dev *hdev, u8 reset_type)
 
 	data = hci_get_drvdata(hdev);
 
-	if (!test_bit(BTINTEL_PCIE_SETUP_DONE, &data->flags))
+	if (test_and_set_bit(BTINTEL_PCIE_RECOVERY_IN_PROGRESS, &data->flags)) {
+		bt_dev_warn(hdev, "Reset rejected: recovery already in progress");
 		return;
+	}
 
-	if (test_and_set_bit(BTINTEL_PCIE_RECOVERY_IN_PROGRESS, &data->flags))
+	if (!test_bit(BTINTEL_PCIE_SETUP_DONE, &data->flags)) {
+		clear_bit(BTINTEL_PCIE_RECOVERY_IN_PROGRESS, &data->flags);
 		return;
+	}
 
 	data->reset_type = (reset_type == 1) ?
 			    BTINTEL_PCIE_IOSF_PRR_PLDR : BTINTEL_PCIE_IOSF_PRR_FLR;
