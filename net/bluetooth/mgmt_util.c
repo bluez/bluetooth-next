@@ -233,6 +233,33 @@ struct mgmt_pending_cmd *mgmt_pending_find(unsigned short channel, u16 opcode,
 	return NULL;
 }
 
+bool mgmt_pending_find_copy(unsigned short channel, u16 opcode,
+			    struct hci_dev *hdev, void *data, size_t len)
+{
+	struct mgmt_pending_cmd *cmd, *tmp;
+	bool found = false;
+
+	mutex_lock(&hdev->mgmt_pending_lock);
+
+	list_for_each_entry_safe(cmd, tmp, &hdev->mgmt_pending, list) {
+		if (hci_sock_get_channel(cmd->sk) != channel)
+			continue;
+
+		if (cmd->opcode != opcode)
+			continue;
+
+		if (cmd->param_len >= len) {
+			memcpy(data, cmd->param, len);
+			found = true;
+		}
+		break;
+	}
+
+	mutex_unlock(&hdev->mgmt_pending_lock);
+
+	return found;
+}
+
 void mgmt_pending_foreach(u16 opcode, struct hci_dev *hdev, bool remove,
 			  void (*cb)(struct mgmt_pending_cmd *cmd, void *data),
 			  void *data)

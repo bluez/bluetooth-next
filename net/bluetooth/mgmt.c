@@ -960,19 +960,25 @@ static struct mgmt_pending_cmd *pending_find(u16 opcode, struct hci_dev *hdev)
 	return mgmt_pending_find(HCI_CHANNEL_CONTROL, opcode, hdev);
 }
 
+static bool pending_find_copy(u16 opcode, struct hci_dev *hdev, void *data,
+			      size_t len)
+{
+	return mgmt_pending_find_copy(HCI_CHANNEL_CONTROL, opcode, hdev,
+				      data, len);
+}
+
 u8 mgmt_get_adv_discov_flags(struct hci_dev *hdev)
 {
-	struct mgmt_pending_cmd *cmd;
+	struct mgmt_mode cp;
 
 	/* If there's a pending mgmt command the flags will not yet have
 	 * their final values, so check for this first.
 	 */
-	cmd = pending_find(MGMT_OP_SET_DISCOVERABLE, hdev);
-	if (cmd) {
-		struct mgmt_mode *cp = cmd->param;
-		if (cp->val == 0x01)
+	if (pending_find_copy(MGMT_OP_SET_DISCOVERABLE, hdev, &cp,
+			      sizeof(cp))) {
+		if (cp.val == 0x01)
 			return LE_AD_GENERAL;
-		else if (cp->val == 0x02)
+		else if (cp.val == 0x02)
 			return LE_AD_LIMITED;
 	} else {
 		if (hci_dev_test_flag(hdev, HCI_LIMITED_DISCOVERABLE))
@@ -986,17 +992,13 @@ u8 mgmt_get_adv_discov_flags(struct hci_dev *hdev)
 
 bool mgmt_get_connectable(struct hci_dev *hdev)
 {
-	struct mgmt_pending_cmd *cmd;
+	struct mgmt_mode cp;
 
 	/* If there's a pending mgmt command the flag will not yet have
 	 * it's final value, so check for this first.
 	 */
-	cmd = pending_find(MGMT_OP_SET_CONNECTABLE, hdev);
-	if (cmd) {
-		struct mgmt_mode *cp = cmd->param;
-
-		return cp->val;
-	}
+	if (pending_find_copy(MGMT_OP_SET_CONNECTABLE, hdev, &cp, sizeof(cp)))
+		return cp.val;
 
 	return hci_dev_test_flag(hdev, HCI_CONNECTABLE);
 }
@@ -9829,18 +9831,15 @@ static void unpair_device_rsp(struct mgmt_pending_cmd *cmd, void *data)
 
 bool mgmt_powering_down(struct hci_dev *hdev)
 {
-	struct mgmt_pending_cmd *cmd;
-	struct mgmt_mode *cp;
+	struct mgmt_mode cp;
 
 	if (hci_dev_test_flag(hdev, HCI_POWERING_DOWN))
 		return true;
 
-	cmd = pending_find(MGMT_OP_SET_POWERED, hdev);
-	if (!cmd)
+	if (!pending_find_copy(MGMT_OP_SET_POWERED, hdev, &cp, sizeof(cp)))
 		return false;
 
-	cp = cmd->param;
-	if (!cp->val)
+	if (!cp.val)
 		return true;
 
 	return false;
