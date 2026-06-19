@@ -3769,14 +3769,14 @@ unlock:
 	hci_dev_unlock(hdev);
 }
 
-static inline void handle_cmd_cnt_and_timer(struct hci_dev *hdev, u8 ncmd)
+static inline void handle_cmd_cnt_and_timer_sync(struct hci_dev *hdev, u8 ncmd)
 {
-	cancel_delayed_work(&hdev->cmd_timer);
+	cancel_delayed_work_sync(&hdev->cmd_timer);
 
 	rcu_read_lock();
 	if (!test_bit(HCI_RESET, &hdev->flags)) {
 		if (ncmd) {
-			cancel_delayed_work(&hdev->ncmd_timer);
+			cancel_delayed_work_sync(&hdev->ncmd_timer);
 			atomic_set(&hdev->cmd_cnt, 1);
 		} else {
 			if (!hci_dev_test_flag(hdev, HCI_CMD_DRAIN_WORKQUEUE))
@@ -4308,7 +4308,7 @@ static void hci_cmd_complete_evt(struct hci_dev *hdev, void *data,
 		*status = skb->data[0];
 	}
 
-	handle_cmd_cnt_and_timer(hdev, ev->ncmd);
+	handle_cmd_cnt_and_timer_sync(hdev, ev->ncmd);
 
 	hci_req_cmd_complete(hdev, *opcode, *status, req_complete,
 			     req_complete_skb);
@@ -4422,7 +4422,7 @@ static void hci_cmd_status_evt(struct hci_dev *hdev, void *data,
 		}
 	}
 
-	handle_cmd_cnt_and_timer(hdev, ev->ncmd);
+	handle_cmd_cnt_and_timer_sync(hdev, ev->ncmd);
 
 	/* Indicate request completion if the command failed. Also, if
 	 * we're not waiting for a special event and we get a success
