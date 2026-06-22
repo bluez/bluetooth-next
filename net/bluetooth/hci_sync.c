@@ -3684,6 +3684,20 @@ int hci_reset_sync(struct hci_dev *hdev)
 	return -bt_to_errno(err);
 }
 
+/* Send a raw HCI reset for use by vendor drivers */
+int __hci_reset_sync(struct hci_dev *hdev)
+{
+	int err;
+
+	err = __hci_cmd_sync_status(hdev, HCI_OP_RESET, 0, NULL,
+				    HCI_INIT_TIMEOUT);
+	if (err < 0)
+		return err;
+
+	return -bt_to_errno(err);
+}
+EXPORT_SYMBOL(__hci_reset_sync);
+
 static int hci_init0_sync(struct hci_dev *hdev)
 {
 	int err;
