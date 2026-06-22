@@ -3678,8 +3678,10 @@ int hci_reset_sync(struct hci_dev *hdev)
 
 	err = __hci_cmd_sync_status(hdev, HCI_OP_RESET, 0, NULL,
 				    HCI_CMD_TIMEOUT);
+	if (err < 0)
+		return err;
 
-	return err;
+	return -bt_to_errno(err);
 }
 
 static int hci_init0_sync(struct hci_dev *hdev)
