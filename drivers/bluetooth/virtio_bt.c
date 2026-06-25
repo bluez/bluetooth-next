@@ -311,12 +311,12 @@ static int virtbt_probe(struct virtio_device *vdev)
 
 	err = virtio_find_vqs(vdev, VIRTBT_NUM_VQS, vbt->vqs, vqs_info, NULL);
 	if (err)
-		return err;
+		goto err_free_vbt;
 
 	hdev = hci_alloc_dev();
 	if (!hdev) {
 		err = -ENOMEM;
-		goto failed;
+		goto err_del_vqs;
 	}
 
 	vbt->hdev = hdev;
@@ -383,23 +383,28 @@ static int virtbt_probe(struct virtio_device *vdev)
 	if (virtio_has_feature(vdev, VIRTIO_BT_F_AOSP_EXT))
 		hci_set_aosp_capable(hdev);
 
-	if (hci_register_dev(hdev) < 0) {
-		hci_free_dev(hdev);
+	err = hci_register_dev(hdev);
+	if (err < 0) {
 		err = -EBUSY;
-		goto failed;
+		goto err_free_hdev;
 	}
 
 	virtio_device_ready(vdev);
 	err = virtbt_open_vdev(vbt);
 	if (err)
-		goto open_failed;
+		goto err_reset_vdev;
 
 	return 0;
 
-open_failed:
+err_reset_vdev:
+	virtio_reset_device(vdev);
+	hci_unregister_dev(hdev);
+err_free_hdev:
 	hci_free_dev(hdev);
-failed:
+err_del_vqs:
 	vdev->config->del_vqs(vdev);
+err_free_vbt:
+	kfree(vbt);
 	return err;
 }
 
@@ -408,10 +413,10 @@ static void virtbt_remove(struct virtio_device *vdev)
 	struct virtio_bluetooth *vbt = vdev->priv;
 	struct hci_dev *hdev = vbt->hdev;
 
-	hci_unregister_dev(hdev);
 	virtio_reset_device(vdev);
 	virtbt_close_vdev(vbt);
 
+	hci_unregister_dev(hdev);
 	hci_free_dev(hdev);
 	vbt->hdev = NULL;
 
