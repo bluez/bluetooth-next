@@ -683,7 +683,7 @@ int btmrvl_register_hdev(struct btmrvl_private *priv)
 	ret = hci_register_dev(hdev);
 	if (ret < 0) {
 		BT_ERR("Can not register HCI device");
-		goto err_hci_register_dev;
+		goto err_hci_register_dev_free;
 	}
 
 #ifdef CONFIG_DEBUG_FS
@@ -692,8 +692,9 @@ int btmrvl_register_hdev(struct btmrvl_private *priv)
 
 	return 0;
 
-err_hci_register_dev:
+err_hci_register_dev_free:
 	hci_free_dev(hdev);
+	priv->btmrvl_dev.hcidev = NULL;
 
 err_hdev:
 	/* Stop the thread servicing the interrupts */
@@ -702,7 +703,7 @@ err_hdev:
 	btmrvl_free_adapter(priv);
 	kfree(priv);
 
-	return -ENOMEM;
+	return ret;
 }
 EXPORT_SYMBOL_GPL(btmrvl_register_hdev);
 
