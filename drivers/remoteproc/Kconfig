@@ -163,6 +163,18 @@ config PRU_REMOTEPROC
 	  processors on various TI SoCs. It's safe to say N here if you're
 	  not interested in the PRU or if you are unsure.
 
+config QCOM_M0_BTSS_PIL
+	tristate "Qualcomm M0 BTSS Peripheral Image Loader"
+	depends on OF && ARCH_QCOM
+	select QCOM_MDT_LOADER
+	select QCOM_RPROC_COMMON
+	select QCOM_SCM
+	help
+	  Say y here to support the Secure Peripheral Imager Loader for the
+	  Qualcomm Bluetooth Subsystem running on the M0 remote processor found
+	  in the IPQ5018 SoC. The M0 core is started and stopped using a
+	  Secure Channel Manager call to TrustZone.
+
 config QCOM_PIL_INFO
 	tristate
 
