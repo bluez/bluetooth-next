@@ -279,10 +279,8 @@ static void iso_conn_del(struct hci_conn *hcon, int err)
 	iso_conn_unlock(conn);
 	iso_conn_put(conn);
 
-	if (!sk) {
-		iso_conn_put(conn);
+	if (!sk)
 		return;
-	}
 
 	lock_sock(sk);
 	iso_sock_clear_timer(sk);
