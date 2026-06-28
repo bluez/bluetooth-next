@@ -29,6 +29,7 @@ properties:
           - brcm,bcm43438-bt
           - brcm,bcm4345c5
           - brcm,bcm43540-bt
+          - brcm,bcm43752-bt
           - brcm,bcm4335a0
           - brcm,bcm4349-bt
           - cypress,cyw4373a0-bt
