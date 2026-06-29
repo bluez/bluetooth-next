@@ -1448,9 +1448,9 @@ static void anx7625_init_gpio(struct anx7625_data *platform)
 
 	if (platform->pdata.gpio_p_on && platform->pdata.gpio_reset) {
 		platform->pdata.low_power_mode = 1;
-		DRM_DEV_DEBUG_DRIVER(dev, "low power mode, pon %d, reset %d.\n",
-				     desc_to_gpio(platform->pdata.gpio_p_on),
-				     desc_to_gpio(platform->pdata.gpio_reset));
+		DRM_DEV_DEBUG_DRIVER(dev, "low power mode, pon %s, reset %s.\n",
+				     gpiod_name(platform->pdata.gpio_p_on),
+				     gpiod_name(platform->pdata.gpio_reset));
 	} else {
 		platform->pdata.low_power_mode = 0;
 		DRM_DEV_DEBUG_DRIVER(dev, "not low power mode.\n");

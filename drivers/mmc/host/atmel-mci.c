@@ -2255,11 +2255,11 @@ static int atmci_init_slot(struct atmel_mci *host,
 	slot->sdio_irq = sdio_irq;
 
 	dev_dbg(&mmc->class_dev,
-	        "slot[%u]: bus_width=%u, detect_pin=%d, "
-		"detect_is_active_high=%s, wp_pin=%d\n",
-		id, slot_data->bus_width, desc_to_gpio(slot_data->detect_pin),
+	        "slot[%u]: bus_width=%u, detect_pin=%s, "
+		"detect_is_active_high=%s, wp_pin=%s\n",
+		id, slot_data->bus_width, gpiod_name(slot_data->detect_pin),
 		str_true_false(!gpiod_is_active_low(slot_data->detect_pin)),
-		desc_to_gpio(slot_data->wp_pin));
+		gpiod_name(slot_data->wp_pin));
 
 	mmc->ops = &atmci_ops;
 	mmc->f_min = DIV_ROUND_UP(host->bus_hz, 512);

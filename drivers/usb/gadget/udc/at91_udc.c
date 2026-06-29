@@ -1896,8 +1896,8 @@ static int at91udc_probe(struct platform_device *pdev)
 					gpiod_to_irq(udc->board.vbus_pin),
 					at91_vbus_irq, 0, driver_name, udc);
 			if (retval) {
-				DBG("request vbus irq %d failed\n",
-				    desc_to_gpio(udc->board.vbus_pin));
+				DBG("request vbus irq %s failed\n",
+				    gpiod_name(udc->board.vbus_pin));
 				goto err_unprepare_iclk;
 			}
 		}

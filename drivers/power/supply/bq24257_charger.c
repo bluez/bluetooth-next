@@ -868,7 +868,7 @@ static void bq24257_pg_gpio_probe(struct bq24257_device *bq)
 	}
 
 	if (bq->pg)
-		dev_dbg(bq->dev, "probed PG pin = %d\n", desc_to_gpio(bq->pg));
+		dev_dbg(bq->dev, "probed PG pin = %s\n", gpiod_name(bq->pg));
 }
 
 static int bq24257_fw_probe(struct bq24257_device *bq)

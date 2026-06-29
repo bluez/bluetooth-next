@@ -4098,6 +4098,19 @@ int gpiod_set_consumer_name(struct gpio_desc *desc, const char *name)
 EXPORT_SYMBOL_GPL(gpiod_set_consumer_name);
 
 /**
+ * gpiod_name() - get a name to print for a gpio descriptor
+ * @desc: gpio or NULL pointer to query
+ *
+ * Returns:
+ * The desc->name field or a dummy string for unknown GPIOs.
+ */
+const char *gpiod_name(const struct gpio_desc *desc)
+{
+	return desc ? desc->name : "(no gpio)";
+}
+EXPORT_SYMBOL_GPL(gpiod_name);
+
+/**
  * gpiod_is_shared() - check if this GPIO can be shared by multiple consumers
  * @desc: GPIO to inspect
  *

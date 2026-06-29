@@ -758,8 +758,8 @@ int gpiochip_fwd_desc_add(struct gpiochip_fwd *fwd, struct gpio_desc *desc,
 
 	fwd->descs[offset] = desc;
 
-	dev_dbg(chip->parent, "%u => gpio %d irq %d\n", offset,
-		desc_to_gpio(desc), gpiod_to_irq(desc));
+	dev_dbg(chip->parent, "%u => gpio %s irq %d\n", offset,
+		gpiod_name(desc), gpiod_to_irq(desc));
 
 	return 0;
 }

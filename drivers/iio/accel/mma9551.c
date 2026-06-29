@@ -426,8 +426,8 @@ static int mma9551_gpio_probe(struct iio_dev *indio_dev)
 			return ret;
 		}
 
-		dev_dbg(dev, "gpio resource, no:%d irq:%d\n",
-			desc_to_gpio(gpio), data->irqs[i]);
+		dev_dbg(dev, "gpio resource, no:%s irq:%d\n",
+			gpiod_name(gpio), data->irqs[i]);
 	}
 
 	return 0;

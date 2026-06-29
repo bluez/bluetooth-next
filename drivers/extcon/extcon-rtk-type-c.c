@@ -1356,8 +1356,8 @@ static int extcon_rtk_type_c_probe(struct platform_device *pdev)
 				(int)PTR_ERR(gpio));
 		} else {
 			type_c->rd_ctrl_gpio_desc = gpio;
-			dev_dbg(dev, "%s get rd-ctrl-gpios (id=%d) OK\n",
-				__func__, desc_to_gpio(gpio));
+			dev_dbg(dev, "%s get rd-ctrl-gpios (id=%s) OK\n",
+				__func__, gpiod_name(gpio));
 		}
 	}
 

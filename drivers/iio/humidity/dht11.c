@@ -305,7 +305,7 @@ static int dht11_probe(struct platform_device *pdev)
 
 	dht11->irq = gpiod_to_irq(dht11->gpiod);
 	if (dht11->irq < 0) {
-		dev_err(dev, "GPIO %d has no interrupt\n", desc_to_gpio(dht11->gpiod));
+		dev_err(dev, "GPIO %s has no interrupt\n", gpiod_name(dht11->gpiod));
 		return -EINVAL;
 	}
 

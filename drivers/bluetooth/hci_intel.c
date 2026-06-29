@@ -1176,8 +1176,8 @@ no_irq:
 	list_add_tail(&idev->list, &intel_device_list);
 	mutex_unlock(&intel_device_list_lock);
 
-	dev_info(&pdev->dev, "registered, gpio(%d)/irq(%d).\n",
-		 desc_to_gpio(idev->reset), idev->irq);
+	dev_info(&pdev->dev, "registered, gpio(%s)/irq(%d).\n",
+		 gpiod_name(idev->reset), idev->irq);
 
 	return 0;
 }

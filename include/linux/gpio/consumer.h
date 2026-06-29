@@ -171,6 +171,8 @@ int gpiod_set_consumer_name(struct gpio_desc *desc, const char *name);
 
 bool gpiod_is_shared(const struct gpio_desc *desc);
 
+const char *gpiod_name(const struct gpio_desc *desc);
+
 /* Convert between the old gpio_ and new gpiod_ interfaces */
 struct gpio_desc *gpio_to_desc(unsigned gpio);
 int desc_to_gpio(const struct gpio_desc *desc);
@@ -531,6 +533,12 @@ static inline bool gpiod_is_shared(const struct gpio_desc *desc)
 	/* GPIO can never have been requested */
 	WARN_ON(desc);
 	return false;
+}
+
+static inline const char *gpiod_name(const struct gpio_desc *desc)
+{
+	WARN_ON(desc);
+	return "(no gpio)";
 }
 
 static inline struct gpio_desc *gpio_to_desc(unsigned gpio)

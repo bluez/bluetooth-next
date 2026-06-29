@@ -528,9 +528,8 @@ static int hycon_hy46xx_probe(struct i2c_client *client)
 		return error;
 
 	dev_dbg(&client->dev,
-		"HYCON HY46XX initialized: IRQ %d, Reset pin %d.\n",
-		client->irq,
-		tsdata->reset_gpio ? desc_to_gpio(tsdata->reset_gpio) : -1);
+		"HYCON HY46XX initialized: IRQ %d, Reset pin %s.\n",
+		client->irq, gpiod_name(tsdata->reset_gpio));
 
 	return 0;
 }
