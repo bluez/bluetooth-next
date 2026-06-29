@@ -413,6 +413,17 @@ config BT_MTKUART
 	  Say Y here to compile support for MediaTek Bluetooth UART devices
 	  into the kernel or say M to compile it as module (btmtkuart).
 
+config BT_QCOMIPC
+	tristate "Qualcomm IPQ5018 IPC based HCI support"
+	select BT_QCA
+	help
+	  Qualcomm IPQ5018 IPC based HCI driver.
+	  This driver is used to load firmware and bridge HCI data onto shared
+	  memory between the host and the Bluetooth controller.
+
+	  Say Y here to compile support for HCI over Qualcomm IPC into the
+	  kernel or say M to compile as a module.
+
 config BT_QCOMSMD
 	tristate "Qualcomm SMD based HCI support"
 	depends on RPMSG || (COMPILE_TEST && RPMSG=n)
