@@ -7514,13 +7514,29 @@ next:
 
 int l2cap_disconn_ind(struct hci_conn *hcon)
 {
-	struct l2cap_conn *conn = hcon->l2cap_data;
+	struct hci_dev *hdev = hcon->hdev;
+	struct l2cap_conn *conn;
+	u8 reason = HCI_ERROR_REMOTE_USER_TERM;
 
 	BT_DBG("hcon %p", hcon);
 
-	if (!conn)
-		return HCI_ERROR_REMOTE_USER_TERM;
-	return conn->disc_reason;
+	/* l2cap_conn_del() is always called under hci_dev_lock(), so hold
+	 * it while dereferencing hcon->l2cap_data and reading disc_reason
+	 * to serialize against the free. trylock because hci_conn_del()
+	 * drains this worker with disable_delayed_work_sync() under
+	 * hci_dev_lock(), so a blocking lock here would deadlock against
+	 * that drain.
+	 */
+	if (!hci_dev_trylock(hdev))
+		return reason;
+
+	conn = hcon->l2cap_data;
+	if (conn)
+		reason = conn->disc_reason;
+
+	hci_dev_unlock(hdev);
+
+	return reason;
 }
 
 static void l2cap_disconn_cfm(struct hci_conn *hcon, u8 reason)
