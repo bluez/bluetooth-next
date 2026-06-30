@@ -255,6 +255,12 @@ static int bpa10x_setup(struct hci_dev *hdev)
 	if (IS_ERR(skb))
 		return PTR_ERR(skb);
 
+	/* Reject a short or non-terminated response before the %s reads. */
+	if (skb->len < 2 || skb->data[skb->len - 1] != '\0') {
+		kfree_skb(skb);
+		return -EILSEQ;
+	}
+
 	bt_dev_info(hdev, "%s", (char *)(skb->data + 1));
 
 	hci_set_fw_info(hdev, "%s", skb->data + 1);
