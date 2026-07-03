@@ -7947,6 +7947,11 @@ static int conn_update_sync(struct hci_dev *hdev, void *data)
 	return hci_le_conn_update_sync(hdev, conn, params);
 }
 
+static void conn_update_sync_destroy(struct hci_dev *hdev, void *data, int err)
+{
+	kfree(data);
+}
+
 static int load_conn_param(struct sock *sk, struct hci_dev *hdev, void *data,
 			   u16 len)
 {
@@ -8054,9 +8059,28 @@ static int load_conn_param(struct sock *sk, struct hci_dev *hdev, void *data,
 			    (conn->le_conn_min_interval != min ||
 			     conn->le_conn_max_interval != max ||
 			     conn->le_conn_latency != latency ||
-			     conn->le_supv_timeout != timeout))
-				hci_cmd_sync_queue(hdev, conn_update_sync,
-						   hci_param, NULL);
+			     conn->le_supv_timeout != timeout)) {
+				struct hci_conn_params *update;
+
+				/* Queue a private snapshot so the live params
+				 * entry can be freed later.
+				 */
+				update = kzalloc_obj(*update);
+				if (!update)
+					continue;
+
+				update->addr = hci_param->addr;
+				update->addr_type = hci_param->addr_type;
+				update->conn_min_interval = min;
+				update->conn_max_interval = max;
+				update->conn_latency = latency;
+				update->supervision_timeout = timeout;
+
+				if (hci_cmd_sync_queue(hdev, conn_update_sync,
+						       update,
+						       conn_update_sync_destroy) < 0)
+					kfree(update);
+			}
 		}
 	}
 
