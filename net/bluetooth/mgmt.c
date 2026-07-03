@@ -9220,7 +9220,8 @@ static int add_ext_adv_data(struct sock *sk, struct hci_dev *hdev, void *data,
 	goto unlock;
 
 clear_new_instance:
-	hci_remove_adv_instance(hdev, cp->instance);
+	if (adv_instance->pending)
+		hci_remove_adv_instance(hdev, cp->instance);
 
 unlock:
 	hci_dev_unlock(hdev);
