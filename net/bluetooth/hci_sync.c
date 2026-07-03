@@ -487,6 +487,8 @@ int hci_clear_adv_instance_sync(struct hci_dev *hdev, struct sock *sk,
 	int err;
 	u8 rem_inst;
 
+	hci_dev_lock(hdev);
+
 	/* Cancel any timeout concerning the removed instance(s). */
 	if (!instance || hdev->cur_adv_instance == instance)
 		cancel_adv_timeout(hdev);
@@ -524,6 +526,8 @@ int hci_clear_adv_instance_sync(struct hci_dev *hdev, struct sock *sk,
 				mgmt_advertising_removed(sk, hdev, instance);
 		}
 	}
+
+	hci_dev_unlock(hdev);
 
 	if (!hdev_is_powered(hdev) || hci_dev_test_flag(hdev, HCI_ADVERTISING))
 		return 0;
