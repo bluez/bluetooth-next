@@ -7935,16 +7935,50 @@ unlock:
 	return err;
 }
 
+struct conn_update_sync_data {
+	bdaddr_t addr;
+	u8 addr_type;
+};
+
 static int conn_update_sync(struct hci_dev *hdev, void *data)
 {
-	struct hci_conn_params *params = data;
+	struct conn_update_sync_data *update = data;
+	struct hci_conn_params *params;
+	struct hci_cp_le_conn_update cp;
 	struct hci_conn *conn;
 
-	conn = hci_conn_hash_lookup_le(hdev, &params->addr, params->addr_type);
-	if (!conn)
-		return -ECANCELED;
+	hci_dev_lock(hdev);
 
-	return hci_le_conn_update_sync(hdev, conn, params);
+	params = hci_conn_params_lookup(hdev, &update->addr, update->addr_type);
+	if (!params)
+		goto cancel;
+
+	conn = hci_conn_hash_lookup_le(hdev, &update->addr, update->addr_type);
+	if (!conn || conn->role != HCI_ROLE_MASTER)
+		goto cancel;
+
+	memset(&cp, 0, sizeof(cp));
+	cp.handle		= cpu_to_le16(conn->handle);
+	cp.conn_interval_min	= cpu_to_le16(params->conn_min_interval);
+	cp.conn_interval_max	= cpu_to_le16(params->conn_max_interval);
+	cp.conn_latency		= cpu_to_le16(params->conn_latency);
+	cp.supervision_timeout	= cpu_to_le16(params->supervision_timeout);
+	cp.min_ce_len		= cpu_to_le16(0x0000);
+	cp.max_ce_len		= cpu_to_le16(0x0000);
+
+	hci_dev_unlock(hdev);
+
+	return __hci_cmd_sync_status(hdev, HCI_OP_LE_CONN_UPDATE,
+				     sizeof(cp), &cp, HCI_CMD_TIMEOUT);
+
+cancel:
+	hci_dev_unlock(hdev);
+	return -ECANCELED;
+}
+
+static void conn_update_sync_destroy(struct hci_dev *hdev, void *data, int err)
+{
+	kfree(data);
 }
 
 static int load_conn_param(struct sock *sk, struct hci_dev *hdev, void *data,
@@ -8054,9 +8088,21 @@ static int load_conn_param(struct sock *sk, struct hci_dev *hdev, void *data,
 			    (conn->le_conn_min_interval != min ||
 			     conn->le_conn_max_interval != max ||
 			     conn->le_conn_latency != latency ||
-			     conn->le_supv_timeout != timeout))
-				hci_cmd_sync_queue(hdev, conn_update_sync,
-						   hci_param, NULL);
+			     conn->le_supv_timeout != timeout)) {
+				struct conn_update_sync_data *update;
+
+				update = kzalloc_obj(*update);
+				if (!update)
+					continue;
+
+				bacpy(&update->addr, &hci_param->addr);
+				update->addr_type = hci_param->addr_type;
+
+				if (hci_cmd_sync_queue(hdev, conn_update_sync,
+						       update,
+						       conn_update_sync_destroy) < 0)
+					kfree(update);
+			}
 		}
 	}
 
