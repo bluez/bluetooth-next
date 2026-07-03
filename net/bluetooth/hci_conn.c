@@ -1200,6 +1200,11 @@ static void hci_conn_unlink(struct hci_conn *conn)
 	if (!conn->parent) {
 		struct hci_link *link, *t;
 
+		conn->sec_level = BT_SECURITY_SDP;
+		clear_bit(HCI_CONN_ENCRYPT, &conn->flags);
+		clear_bit(HCI_CONN_AES_CCM, &conn->flags);
+		mgmt_security_level_changed(conn);
+
 		list_for_each_entry_safe(link, t, &conn->link_list, list) {
 			struct hci_conn *child = link->conn;
 
@@ -1502,6 +1507,7 @@ struct hci_conn *hci_connect_le(struct hci_dev *hdev, bdaddr_t *dst,
 	}
 
 	conn->sec_level = BT_SECURITY_LOW;
+	mgmt_security_level_changed(conn);
 	conn->conn_timeout = conn_timeout;
 	conn->le_adv_phy = phy;
 	conn->le_adv_sec_phy = sec_phy;
@@ -1729,6 +1735,7 @@ struct hci_conn *hci_connect_le_scan(struct hci_dev *hdev, bdaddr_t *dst,
 	conn->state = BT_CONNECT;
 	set_bit(HCI_CONN_SCANNING, &conn->flags);
 	conn->sec_level = BT_SECURITY_LOW;
+	mgmt_security_level_changed(conn);
 	conn->pending_sec_level = sec_level;
 	conn->conn_timeout = conn_timeout;
 	conn->conn_reason = conn_reason;
@@ -1777,6 +1784,7 @@ struct hci_conn *hci_connect_acl(struct hci_dev *hdev, bdaddr_t *dst,
 		int err;
 
 		acl->sec_level = BT_SECURITY_LOW;
+		mgmt_security_level_changed(acl);
 		acl->pending_sec_level = sec_level;
 		acl->auth_type = auth_type;
 		acl->conn_timeout = timeout;
