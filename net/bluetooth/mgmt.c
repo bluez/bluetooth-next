@@ -5975,15 +5975,38 @@ static void start_discovery_complete(struct hci_dev *hdev, void *data, int err)
 
 	bt_dev_dbg(hdev, "err %d", err);
 
-	if (err == -ECANCELED || !mgmt_pending_valid(hdev, cmd))
+	if (err < 0) {
+		/* The queued start-discovery work failed before the normal
+		 * completion path could advance the state machine. The
+		 * caller already moved the state to DISCOVERY_STARTING
+		 * (under hdev->lock, before queueing). Reset it here so the
+		 * gate in start_discovery_internal()/start_service_discovery()
+		 * does not wedge in STARTING and reject every future Start
+		 * (Service) Discovery with MGMT_STATUS_BUSY.
+		 */
+		hci_dev_lock(hdev);
+		if (hdev->discovery.state == DISCOVERY_STARTING)
+			hci_discovery_set_state(hdev, DISCOVERY_STOPPED);
+		hci_dev_unlock(hdev);
+
+		if (err == -ECANCELED)
+			return;
+	}
+
+	if (!mgmt_pending_valid(hdev, cmd))
 		return;
 
 	mgmt_cmd_complete(cmd->sk, cmd->hdev->id, cmd->opcode, mgmt_status(err),
 			  cmd->param, 1);
 	mgmt_pending_free(cmd);
 
-	hci_discovery_set_state(hdev, err ? DISCOVERY_STOPPED:
+	/* Serialise discovery.state writes against any concurrent mgmt path
+	 * holding hdev->lock; this callback runs on req_workqueue without it.
+	 */
+	hci_dev_lock(hdev);
+	hci_discovery_set_state(hdev, err ? DISCOVERY_STOPPED :
 				DISCOVERY_FINDING);
+	hci_dev_unlock(hdev);
 }
 
 static int start_discovery_sync(struct hci_dev *hdev, void *data)
@@ -6051,14 +6074,22 @@ static int start_discovery_internal(struct sock *sk, struct hci_dev *hdev,
 		goto failed;
 	}
 
+	/* Publish the transient state BEFORE queueing the work. The
+	 * completion callback runs on hdev->req_workqueue serialised by
+	 * hci_req_sync_lock, which is independent of hdev->lock; setting
+	 * the state after the queue allowed the worker to win the race
+	 * and have its terminal STOPPED/FINDING write overwritten by this
+	 * trailing STARTING write, wedging discovery in STARTING.
+	 */
+	hci_discovery_set_state(hdev, DISCOVERY_STARTING);
+
 	err = hci_cmd_sync_queue(hdev, start_discovery_sync, cmd,
 				 start_discovery_complete);
 	if (err < 0) {
+		hci_discovery_set_state(hdev, DISCOVERY_STOPPED);
 		mgmt_pending_remove(cmd);
 		goto failed;
 	}
-
-	hci_discovery_set_state(hdev, DISCOVERY_STARTING);
 
 failed:
 	hci_dev_unlock(hdev);
@@ -6178,14 +6209,18 @@ static int start_service_discovery(struct sock *sk, struct hci_dev *hdev,
 		}
 	}
 
+	/* Publish the transient state BEFORE queueing; see the comment in
+	 * start_discovery_internal() for the race details.
+	 */
+	hci_discovery_set_state(hdev, DISCOVERY_STARTING);
+
 	err = hci_cmd_sync_queue(hdev, start_discovery_sync, cmd,
 				 start_discovery_complete);
 	if (err < 0) {
+		hci_discovery_set_state(hdev, DISCOVERY_STOPPED);
 		mgmt_pending_remove(cmd);
 		goto failed;
 	}
-
-	hci_discovery_set_state(hdev, DISCOVERY_STARTING);
 
 failed:
 	hci_dev_unlock(hdev);
@@ -6196,17 +6231,40 @@ static void stop_discovery_complete(struct hci_dev *hdev, void *data, int err)
 {
 	struct mgmt_pending_cmd *cmd = data;
 
-	if (err == -ECANCELED || !mgmt_pending_valid(hdev, cmd))
-		return;
-
 	bt_dev_dbg(hdev, "err %d", err);
+
+	if (err < 0) {
+		/* The queued stop-discovery work failed before the normal
+		 * completion path could advance the state machine. The
+		 * caller already moved the state to DISCOVERY_STOPPING
+		 * (under hdev->lock, before queueing). Reset it here so
+		 * the gate does not wedge in STOPPING.
+		 */
+		hci_dev_lock(hdev);
+		if (hdev->discovery.state == DISCOVERY_STOPPING)
+			hci_discovery_set_state(hdev, DISCOVERY_STOPPED);
+		hci_dev_unlock(hdev);
+
+		if (err == -ECANCELED)
+			return;
+	}
+
+	if (!mgmt_pending_valid(hdev, cmd))
+		return;
 
 	mgmt_cmd_complete(cmd->sk, cmd->hdev->id, cmd->opcode, mgmt_status(err),
 			  cmd->param, 1);
 	mgmt_pending_free(cmd);
 
-	if (!err)
+	if (!err) {
+		/* Serialise discovery.state writes against any concurrent
+		 * mgmt path holding hdev->lock; this callback runs on
+		 * req_workqueue without it.
+		 */
+		hci_dev_lock(hdev);
 		hci_discovery_set_state(hdev, DISCOVERY_STOPPED);
+		hci_dev_unlock(hdev);
+	}
 }
 
 static int stop_discovery_sync(struct hci_dev *hdev, void *data)
@@ -6248,14 +6306,18 @@ static int stop_discovery(struct sock *sk, struct hci_dev *hdev, void *data,
 		goto unlock;
 	}
 
+	/* Publish the transient state BEFORE queueing; see the comment in
+	 * start_discovery_internal() for the race details.
+	 */
+	hci_discovery_set_state(hdev, DISCOVERY_STOPPING);
+
 	err = hci_cmd_sync_queue(hdev, stop_discovery_sync, cmd,
 				 stop_discovery_complete);
 	if (err < 0) {
+		hci_discovery_set_state(hdev, DISCOVERY_STOPPED);
 		mgmt_pending_remove(cmd);
 		goto unlock;
 	}
-
-	hci_discovery_set_state(hdev, DISCOVERY_STOPPING);
 
 unlock:
 	hci_dev_unlock(hdev);
