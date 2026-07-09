@@ -6271,6 +6271,10 @@ static int confirm_name(struct sock *sk, struct hci_dev *hdev, void *data,
 
 	bt_dev_dbg(hdev, "sock %p", sk);
 
+	if (len < sizeof(*cp))
+		return mgmt_cmd_complete(sk, hdev->id, MGMT_OP_CONFIRM_NAME,
+					 MGMT_STATUS_INVALID_PARAMS, NULL, 0);
+
 	hci_dev_lock(hdev);
 
 	if (!hci_discovery_active(hdev)) {
