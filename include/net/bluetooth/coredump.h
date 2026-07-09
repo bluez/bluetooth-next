@@ -8,6 +8,10 @@
 
 #define DEVCOREDUMP_TIMEOUT	msecs_to_jiffies(10000)	/* 10 sec */
 
+/* total size shared by coredump and driver's dmp_hdr() */
+#define MAX_HCI_DEVCD_HDR_SIZE	512
+#define HCI_DEVCD_HDR_END	"--- Start dump ---\n"
+
 typedef void (*coredump_t)(struct hci_dev *hdev);
 typedef void (*dmp_hdr_t)(struct hci_dev *hdev, struct sk_buff *skb);
 typedef void (*notify_change_t)(struct hci_dev *hdev, int state);
