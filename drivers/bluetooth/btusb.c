@@ -1261,6 +1261,14 @@ static int btusb_recv_event(struct btusb_data *data, struct sk_buff *skb)
 	return data->recv_event(data->hdev, skb);
 }
 
+static int __maybe_unused btusb_recv_event_hdev(struct hci_dev *hdev,
+						struct sk_buff *skb)
+{
+	struct btusb_data *data = hci_get_drvdata(hdev);
+
+	return btusb_recv_event(data, skb);
+}
+
 static int btusb_recv_intr(struct btusb_data *data, void *buffer, int count)
 {
 	struct sk_buff *skb;
@@ -1341,6 +1349,14 @@ static int btusb_recv_acl(struct btusb_data *data, struct sk_buff *skb)
 	schedule_delayed_work(&data->rx_work, data->intr_interval);
 
 	return 0;
+}
+
+static int __maybe_unused btusb_recv_acl_hdev(struct hci_dev *hdev,
+					      struct sk_buff *skb)
+{
+	struct btusb_data *data = hci_get_drvdata(hdev);
+
+	return btusb_recv_acl(data, skb);
 }
 
 static int btusb_recv_bulk(struct btusb_data *data, void *buffer, int count)
