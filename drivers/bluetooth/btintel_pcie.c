@@ -2991,6 +2991,7 @@ exit_error:
 	btintel_pcie_reset_bt(data);
 
 	destroy_workqueue(data->dump_workqueue);
+	destroy_workqueue(data->workqueue);
 
 	pci_clear_master(pdev);
 
