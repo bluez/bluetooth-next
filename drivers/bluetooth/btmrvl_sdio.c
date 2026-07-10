@@ -93,11 +93,6 @@ static int btmrvl_sdio_probe_of(struct device *dev,
 			ret = devm_request_irq(dev, cfg->irq_bt,
 					       btmrvl_wake_irq_bt,
 					       IRQF_NO_AUTOEN, "bt_wake", card);
-			if (ret) {
-				dev_err(dev,
-					"Failed to request irq_bt %d (%d)\n",
-					cfg->irq_bt, ret);
-			}
 
 			/* Configure wakeup (enabled by default) */
 			ret = devm_device_init_wakeup(dev);

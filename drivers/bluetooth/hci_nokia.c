@@ -729,10 +729,8 @@ static int nokia_bluetooth_serdev_probe(struct serdev_device *serdev)
 		wakeup_handler,
 		IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING | IRQF_ONESHOT,
 		"wakeup", btdev);
-	if (err) {
-		dev_err(dev, "could request wakeup irq: %d", err);
+	if (err)
 		return err;
-	}
 
 	btdev->wakeup_bt = devm_gpiod_get(dev, "bluetooth-wakeup",
 					   GPIOD_OUT_LOW);
