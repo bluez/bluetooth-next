@@ -524,6 +524,11 @@ static netdev_tx_t bt_xmit(struct sk_buff *skb, struct net_device *netdev)
 	 *   0 - this is a multicast packet
 	 *   1 - this is unicast packet
 	 */
+	if (skb->protocol != htons(ETH_P_IPV6)) {
+		kfree_skb(skb);
+		return NET_XMIT_DROP;
+	}
+
 	err = setup_header(skb, netdev, &addr, &addr_type);
 	if (err < 0) {
 		kfree_skb(skb);
