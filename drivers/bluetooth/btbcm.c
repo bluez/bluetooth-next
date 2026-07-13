@@ -479,7 +479,8 @@ static int btbcm_print_local_name(struct hci_dev *hdev)
 	if (IS_ERR(skb))
 		return PTR_ERR(skb);
 
-	bt_dev_info(hdev, "%s", (char *)(skb->data + 1));
+	bt_dev_info(hdev, "%.*s", HCI_MAX_NAME_LENGTH,
+		    (char *)(skb->data + 1));
 	kfree_skb(skb);
 
 	return 0;
@@ -766,7 +767,8 @@ int btbcm_setup_apple(struct hci_dev *hdev)
 	/* Read Local Name */
 	skb = btbcm_read_local_name(hdev);
 	if (!IS_ERR(skb)) {
-		bt_dev_info(hdev, "%s", (char *)(skb->data + 1));
+		bt_dev_info(hdev, "%.*s", HCI_MAX_NAME_LENGTH,
+			    (char *)(skb->data + 1));
 		kfree_skb(skb);
 	}
 
