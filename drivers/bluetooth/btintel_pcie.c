@@ -2967,7 +2967,7 @@ static int btintel_pcie_probe(struct pci_dev *pdev,
 
 	err = btintel_pcie_enable_bt(data);
 	if (err)
-		goto exit_error;
+		goto exit_error_free;
 
 	/* CNV information (CNVi and CNVr) is in CSR */
 	data->cnvi = btintel_pcie_rd_reg32(data, BTINTEL_PCIE_CSR_HW_REV_REG);
@@ -2976,15 +2976,19 @@ static int btintel_pcie_probe(struct pci_dev *pdev,
 
 	err = btintel_pcie_start_rx(data);
 	if (err)
-		goto exit_error;
+		goto exit_error_free;
 
 	err = btintel_pcie_setup_hdev(data);
 	if (err)
-		goto exit_error;
+		goto exit_error_free;
 
 	bt_dev_dbg(data->hdev, "cnvi: 0x%8.8x cnvr: 0x%8.8x", data->cnvi,
 		   data->cnvr);
 	return 0;
+
+exit_error_free:
+	/* Free DMA buffers and descriptors allocated in btintel_pcie_alloc() */
+	btintel_pcie_free(data);
 
 exit_error:
 	/* reset device before exit */
