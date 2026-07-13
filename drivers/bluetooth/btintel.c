@@ -1363,12 +1363,22 @@ static void btintel_reset_to_bootloader(struct hci_dev *hdev)
 	skb = __hci_cmd_sync(hdev, BTINTEL_HCI_OP_RESET, sizeof(params),
 			     &params, HCI_INIT_TIMEOUT);
 	if (IS_ERR(skb)) {
-		bt_dev_err(hdev, "FW download error recovery failed (%ld)",
-			   PTR_ERR(skb));
-		return;
+		/* The controller acts on Intel Reset by resetting and
+		 * re-enumerating on the bus, which can happen before the
+		 * command complete event is delivered. The resulting
+		 * -ENODEV means the reset took effect, not that recovery
+		 * failed.
+		 */
+		if (PTR_ERR(skb) != -ENODEV) {
+			bt_dev_err(hdev,
+				   "FW download error recovery failed (%ld)",
+				   PTR_ERR(skb));
+			return;
+		}
+	} else {
+		kfree_skb(skb);
 	}
 	bt_dev_info(hdev, "Intel reset sent to retry FW download");
-	kfree_skb(skb);
 
 	/* Current Intel BT controllers(ThP/JfP) hold the USB reset
 	 * lines for 2ms when it receives Intel Reset in bootloader mode.
