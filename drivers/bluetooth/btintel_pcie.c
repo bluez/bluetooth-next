@@ -1982,6 +1982,9 @@ static int btintel_pcie_setup_rxq_bufs(struct btintel_pcie_data *data,
 
 static void btintel_pcie_free(struct btintel_pcie_data *data)
 {
+	if (!data->dma_pool)
+		return;
+
 	btintel_pcie_free_rxq_bufs(data, &data->rxq);
 	btintel_pcie_free_txq_bufs(data, &data->txq);
 
@@ -2042,6 +2045,7 @@ static int btintel_pcie_alloc(struct btintel_pcie_data *data)
 				 &p_addr);
 	if (!v_addr) {
 		dma_pool_destroy(data->dma_pool);
+		data->dma_pool = NULL;
 		err = -ENOMEM;
 		goto exit_error;
 	}
@@ -2134,6 +2138,7 @@ exit_error_txq:
 exit_error_pool:
 	dma_pool_free(data->dma_pool, data->dma_v_addr, data->dma_p_addr);
 	dma_pool_destroy(data->dma_pool);
+	data->dma_pool = NULL;
 exit_error:
 	return err;
 }
@@ -2989,6 +2994,7 @@ static int btintel_pcie_probe(struct pci_dev *pdev,
 exit_error:
 	/* reset device before exit */
 	btintel_pcie_reset_bt(data);
+	btintel_pcie_free(data);
 
 	destroy_workqueue(data->dump_workqueue);
 
