@@ -1461,11 +1461,11 @@ int btrtl_get_uart_settings(struct hci_dev *hdev,
 {
 	struct rtl_vendor_config *config;
 	struct rtl_vendor_config_entry *entry;
-	int i, total_data_len;
+	int i, declared_data_len, physical_data_len;
 	bool found = false;
 
-	total_data_len = btrtl_dev->cfg_len - sizeof(*config);
-	if (total_data_len <= 0) {
+	physical_data_len = btrtl_dev->cfg_len - sizeof(*config);
+	if (physical_data_len <= 0) {
 		rtl_dev_warn(hdev, "no config loaded");
 		return -EINVAL;
 	}
@@ -1476,13 +1476,24 @@ int btrtl_get_uart_settings(struct hci_dev *hdev,
 		return -EINVAL;
 	}
 
-	if (total_data_len < le16_to_cpu(config->total_len)) {
+	declared_data_len = le16_to_cpu(config->total_len);
+	if (declared_data_len > physical_data_len) {
 		rtl_dev_err(hdev, "config is too short");
 		return -EINVAL;
 	}
 
-	for (i = 0; i < total_data_len; ) {
+	for (i = 0; i < declared_data_len; ) {
+		if (declared_data_len - i < sizeof(*entry)) {
+			rtl_dev_err(hdev, "truncated config entry header");
+			return -EINVAL;
+		}
+
 		entry = ((void *)config->entry) + i;
+
+		if (entry->len > declared_data_len - i - sizeof(*entry)) {
+			rtl_dev_err(hdev, "truncated config entry payload");
+			return -EINVAL;
+		}
 
 		switch (le16_to_cpu(entry->offset)) {
 		case 0xc:
