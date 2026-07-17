@@ -269,17 +269,32 @@ err_free_wc:
 }
 
 static int btmtksdio_tx_packet(struct btmtksdio_dev *bdev,
-			       struct sk_buff *skb)
+			       struct sk_buff **pskb)
 {
+	struct sk_buff *skb = *pskb;
 	struct mtkbtsdio_hdr *sdio_hdr;
+	unsigned int padded_len, pad_len;
 	int err;
 
-	/* Make sure that there are enough rooms for SDIO header */
+	/* Ensure SKB is not cloned before any modification.
+	 * If cloned (e.g., L2CAP retransmission queues), create a
+	 * private copy to avoid corrupting shared data buffer.
+	 */
+	skb = skb_unshare(skb, GFP_ATOMIC);
+	if (!skb) {
+		*pskb = NULL;
+		return -ENOMEM;
+	}
+	*pskb = skb;
+
+	/* Make sure that there are enough rooms for SDIO header.
+	 * After skb_unshare(), we have exclusive ownership of the buffer.
+	 */
 	if (unlikely(skb_headroom(skb) < sizeof(*sdio_hdr))) {
 		err = pskb_expand_head(skb, sizeof(*sdio_hdr), 0,
 				       GFP_ATOMIC);
 		if (err < 0)
-			return err;
+			goto err_free_skb;
 	}
 
 	/* Prepend MediaTek SDIO Specific Header */
@@ -290,21 +305,50 @@ static int btmtksdio_tx_packet(struct btmtksdio_dev *bdev,
 	sdio_hdr->reserved = cpu_to_le16(0);
 	sdio_hdr->bt_type = hci_skb_pkt_type(skb);
 
-	clear_bit(BTMTKSDIO_HW_TX_READY, &bdev->tx_state);
-	err = sdio_writesb(bdev->func, MTK_REG_CTDR, skb->data,
-			   round_up(skb->len, MTK_SDIO_BLOCK_SIZE));
-	if (err < 0)
-		goto err_skb_pull;
+	/* Calculate padded length for block-aligned DMA transfer.
+	 * SDIO requires transfers to be block-aligned (MTK_SDIO_BLOCK_SIZE).
+	 * Pad with zeros to prevent DMA from reading beyond skb buffer.
+	 */
+	padded_len = round_up(skb->len, MTK_SDIO_BLOCK_SIZE);
+	pad_len = padded_len - skb->len;
 
-	bdev->hdev->stat.byte_tx += skb->len;
+	if (pad_len > 0) {
+		/* Ensure sufficient tailroom for padding */
+		if (unlikely(skb_tailroom(skb) < pad_len)) {
+			err = pskb_expand_head(skb, 0, pad_len, GFP_ATOMIC);
+			if (err < 0)
+				goto err_skb_pull;
+			/* Reassign sdio_hdr after buffer reallocation */
+			sdio_hdr = (void *)skb->data;
+		}
+
+		/* Zero-fill padding to prevent information disclosure */
+		skb_put_zero(skb, pad_len);
+	}
+
+	clear_bit(BTMTKSDIO_HW_TX_READY, &bdev->tx_state);
+	err = sdio_writesb(bdev->func, MTK_REG_CTDR, skb->data, padded_len);
+	if (err < 0)
+		goto err_skb_trim;
+
+	/* Record actual transmitted data (excluding padding) */
+	bdev->hdev->stat.byte_tx += le16_to_cpu(sdio_hdr->len);
 
 	kfree_skb(skb);
+	*pskb = NULL;
 
 	return 0;
 
+err_skb_trim:
+	if (pad_len > 0)
+		skb_trim(skb, skb->len - pad_len);
 err_skb_pull:
 	skb_pull(skb, sizeof(*sdio_hdr));
-
+err_free_skb:
+	/* On error, keep skb valid for caller to requeue.
+	 * Do NOT free skb here - let caller handle it.
+	 */
+	*pskb = skb;
 	return err;
 }
 
@@ -606,10 +650,11 @@ static void btmtksdio_txrx_work(struct work_struct *work)
 		if (test_bit(BTMTKSDIO_HW_TX_READY, &bdev->tx_state)) {
 			skb = skb_dequeue(&bdev->txq);
 			if (skb) {
-				err = btmtksdio_tx_packet(bdev, skb);
+				err = btmtksdio_tx_packet(bdev, &skb);
 				if (err < 0) {
 					bdev->hdev->stat.err_tx++;
-					skb_queue_head(&bdev->txq, skb);
+					if (skb)
+						skb_queue_head(&bdev->txq, skb);
 				}
 			}
 		}
