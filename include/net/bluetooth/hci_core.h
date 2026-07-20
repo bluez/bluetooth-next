@@ -645,6 +645,8 @@ struct hci_dev {
 	int (*setup)(struct hci_dev *hdev);
 	int (*shutdown)(struct hci_dev *hdev);
 	int (*send)(struct hci_dev *hdev, struct sk_buff *skb);
+	bool (*is_vendor)(struct hci_dev *hdev, const struct sk_buff *skb);
+	void (*recv_vendor)(struct hci_dev *hdev, struct sk_buff *skb);
 	void (*notify)(struct hci_dev *hdev, unsigned int evt);
 	void (*hw_error)(struct hci_dev *hdev, u8 code);
 	int (*post_init)(struct hci_dev *hdev);
@@ -659,6 +661,15 @@ struct hci_dev {
 				     __u8 **vnd_data);
 	u8 (*classify_pkt_type)(struct hci_dev *hdev, struct sk_buff *skb);
 };
+
+static inline bool hci_is_vendor_frame(struct hci_dev *hdev,
+				       const struct sk_buff *skb)
+{
+	if (!hdev->is_vendor)
+		return false;
+
+	return hdev->is_vendor(hdev, skb);
+}
 
 #define hci_set_quirk(hdev, nr) set_bit((nr), (hdev)->quirk_flags)
 #define hci_clear_quirk(hdev, nr) clear_bit((nr), (hdev)->quirk_flags)
@@ -2326,6 +2337,8 @@ static inline int hci_check_conn_params(u16 min, u16 max, u16 latency,
 
 int hci_register_cb(struct hci_cb *hcb);
 int hci_unregister_cb(struct hci_cb *hcb);
+
+int hci_send_vendor_frame(struct hci_dev *hdev, struct sk_buff *skb);
 
 int __hci_cmd_send(struct hci_dev *hdev, u16 opcode, u32 plen,
 		   const void *param);

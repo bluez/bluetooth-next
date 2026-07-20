@@ -229,12 +229,16 @@ void hci_send_to_sock(struct hci_dev *hdev, struct sk_buff *skb)
 		} else if (hci_pi(sk)->channel == HCI_CHANNEL_USER) {
 			if (!bt_cb(skb)->incoming)
 				continue;
-			if (hci_skb_pkt_type(skb) != HCI_EVENT_PKT &&
-			    hci_skb_pkt_type(skb) != HCI_ACLDATA_PKT &&
-			    hci_skb_pkt_type(skb) != HCI_SCODATA_PKT &&
-			    hci_skb_pkt_type(skb) != HCI_ISODATA_PKT &&
-			    hci_skb_pkt_type(skb) != HCI_DRV_PKT)
+			if (hci_is_vendor_frame(hdev, skb)) {
+				if (!hci_sock_test_flag(sk, HCI_SOCK_RCV_VENDOR_PKT))
+					continue;
+			} else if (hci_skb_pkt_type(skb) != HCI_EVENT_PKT &&
+				   hci_skb_pkt_type(skb) != HCI_ACLDATA_PKT &&
+				   hci_skb_pkt_type(skb) != HCI_SCODATA_PKT &&
+				   hci_skb_pkt_type(skb) != HCI_ISODATA_PKT &&
+				   hci_skb_pkt_type(skb) != HCI_DRV_PKT) {
 				continue;
+			}
 		} else {
 			/* Don't send frame to other channel types */
 			continue;
@@ -359,6 +363,7 @@ void hci_send_to_monitor(struct hci_dev *hdev, struct sk_buff *skb)
 	struct sk_buff *skb_copy = NULL;
 	struct hci_mon_hdr *hdr;
 	__le16 opcode;
+	bool is_vendor_frame = false;
 
 	if (!atomic_read(&monitor_promisc))
 		return;
@@ -400,7 +405,26 @@ void hci_send_to_monitor(struct hci_dev *hdev, struct sk_buff *skb)
 		opcode = cpu_to_le16(HCI_MON_VENDOR_DIAG);
 		break;
 	default:
-		return;
+		is_vendor_frame = hci_is_vendor_frame(hdev, skb);
+		if (!is_vendor_frame)
+			return;
+		if (bt_cb(skb)->incoming)
+			opcode = cpu_to_le16(HCI_MON_VENDOR_RX_PKT);
+		else
+			opcode = cpu_to_le16(HCI_MON_VENDOR_TX_PKT);
+		break;
+	}
+
+	if (is_vendor_frame) {
+		skb_copy = __pskb_copy_fclone(skb, HCI_MON_HDR_SIZE + 1,
+					      GFP_ATOMIC, true);
+		if (!skb_copy)
+			return;
+
+		*(u8 *)skb_push(skb_copy, 1) = hci_skb_pkt_type(skb);
+		hdr = skb_push(skb_copy, HCI_MON_HDR_SIZE);
+		hdr->len = cpu_to_le16(skb->len + 1);
+		goto out_comm;
 	}
 
 	/* Create a private copy with headroom */
@@ -408,14 +432,15 @@ void hci_send_to_monitor(struct hci_dev *hdev, struct sk_buff *skb)
 	if (!skb_copy)
 		return;
 
-	hci_sock_copy_creds(skb->sk, skb_copy);
-
 	/* Put header before the data */
 	hdr = skb_push(skb_copy, HCI_MON_HDR_SIZE);
-	hdr->opcode = opcode;
-	hdr->index = cpu_to_le16(hdev->id);
 	hdr->len = cpu_to_le16(skb->len);
 
+out_comm:
+	hdr->opcode = opcode;
+	hdr->index = cpu_to_le16(hdev->id);
+
+	hci_sock_copy_creds(skb->sk, skb_copy);
 	hci_send_to_channel(HCI_CHANNEL_MONITOR, skb_copy,
 			    HCI_SOCK_TRUSTED, NULL);
 	kfree_skb(skb_copy);
@@ -1868,7 +1893,8 @@ static int hci_sock_sendmsg(struct socket *sock, struct msghdr *msg,
 		    hci_skb_pkt_type(skb) != HCI_ACLDATA_PKT &&
 		    hci_skb_pkt_type(skb) != HCI_SCODATA_PKT &&
 		    hci_skb_pkt_type(skb) != HCI_ISODATA_PKT &&
-		    hci_skb_pkt_type(skb) != HCI_DRV_PKT) {
+		    hci_skb_pkt_type(skb) != HCI_DRV_PKT &&
+		    !hci_is_vendor_frame(hdev, skb)) {
 			err = -EINVAL;
 			goto drop;
 		}
@@ -2017,6 +2043,7 @@ static int hci_sock_setsockopt(struct socket *sock, int level, int optname,
 {
 	struct sock *sk = sock->sk;
 	int err = 0;
+	int opt_int;
 	u16 opt;
 
 	BT_DBG("sk %p, opt %d", sk, optname);
@@ -2048,6 +2075,23 @@ static int hci_sock_setsockopt(struct socket *sock, int level, int optname,
 			break;
 
 		hci_pi(sk)->mtu = opt;
+		break;
+
+	case BT_RCV_VENDOR_PKT:
+		if (hci_pi(sk)->channel != HCI_CHANNEL_USER) {
+			err = -ENOPROTOOPT;
+			break;
+		}
+
+		err = copy_safe_from_sockptr(&opt_int, sizeof(opt_int),
+					     optval, optlen);
+		if (err)
+			break;
+
+		if (opt_int)
+			hci_sock_set_flag(sk, HCI_SOCK_RCV_VENDOR_PKT);
+		else
+			hci_sock_clear_flag(sk, HCI_SOCK_RCV_VENDOR_PKT);
 		break;
 
 	default:
@@ -2132,6 +2176,7 @@ static int hci_sock_getsockopt(struct socket *sock, int level, int optname,
 {
 	struct sock *sk = sock->sk;
 	int err = 0;
+	int opt_int;
 	u16 mtu;
 
 	BT_DBG("sk %p, opt %d", sk, optname);
@@ -2150,6 +2195,19 @@ static int hci_sock_getsockopt(struct socket *sock, int level, int optname,
 		mtu = hci_pi(sk)->mtu;
 		if (copy_to_iter(&mtu, sizeof(mtu), &sopt->iter_out) !=
 		    sizeof(mtu))
+			err = -EFAULT;
+		break;
+
+	case BT_RCV_VENDOR_PKT:
+		if (hci_pi(sk)->channel != HCI_CHANNEL_USER) {
+			err = -ENOPROTOOPT;
+			break;
+		}
+
+		opt_int = hci_sock_test_flag(sk, HCI_SOCK_RCV_VENDOR_PKT) ?
+			  1 : 0;
+		if (copy_to_iter(&opt_int, sizeof(opt_int),
+				 &sopt->iter_out) != sizeof(opt_int))
 			err = -EFAULT;
 		break;
 

@@ -2920,6 +2920,8 @@ int hci_recv_frame(struct hci_dev *hdev, struct sk_buff *skb)
 	case HCI_DRV_PKT:
 		break;
 	default:
+		if (hci_is_vendor_frame(hdev, skb))
+			break;
 		kfree_skb(skb);
 		return -EINVAL;
 	}
@@ -3052,6 +3054,18 @@ static int hci_send_conn_frame(struct hci_dev *hdev, struct hci_conn *conn,
 	hci_conn_tx_queue(conn, skb);
 	return hci_send_frame(hdev, skb);
 }
+
+int hci_send_vendor_frame(struct hci_dev *hdev, struct sk_buff *skb)
+{
+	if (hci_is_vendor_frame(hdev, skb))
+		return hci_send_frame(hdev, skb);
+
+	bt_dev_err(hdev, "invalid vendor frame with pkt_type 0x%2.2x",
+		   hci_skb_pkt_type(skb));
+	kfree_skb(skb);
+	return -EINVAL;
+}
+EXPORT_SYMBOL(hci_send_vendor_frame);
 
 /* Send HCI command */
 int hci_send_cmd(struct hci_dev *hdev, __u16 opcode, __u32 plen,
@@ -4058,6 +4072,14 @@ static void hci_rx_work(struct work_struct *work)
 			break;
 
 		default:
+			if (hci_is_vendor_frame(hdev, skb)) {
+				BT_DBG("%s Vendor packet with type 0x%2.2x",
+				       hdev->name, hci_skb_pkt_type(skb));
+				if (hdev->recv_vendor) {
+					hdev->recv_vendor(hdev, skb);
+					break;
+				}
+			}
 			kfree_skb(skb);
 			break;
 		}
