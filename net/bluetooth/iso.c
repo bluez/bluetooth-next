@@ -30,6 +30,7 @@ struct iso_conn {
 	/* @lock: spinlock protecting changes to iso_conn fields */
 	spinlock_t	lock;
 	struct sock	*sk;
+	bool		hcon_dropped;
 
 	struct delayed_work	timeout_work;
 
@@ -107,7 +108,8 @@ static void iso_conn_free(struct kref *ref)
 
 	if (conn->hcon) {
 		conn->hcon->iso_data = NULL;
-		hci_conn_drop(conn->hcon);
+		if (!conn->hcon_dropped)
+			hci_conn_drop(conn->hcon);
 	}
 
 	/* Ensure no more work items will run since hci_conn has been dropped */
@@ -306,6 +308,7 @@ static int __iso_chan_add(struct iso_conn *conn, struct sock *sk,
 
 	iso_pi(sk)->conn = conn;
 	conn->sk = sk;
+	conn->hcon_dropped = false;
 
 	if (parent)
 		bt_accept_enqueue(parent, sk, true);
@@ -836,8 +839,10 @@ static void iso_sock_disconn(struct sock *sk)
 
 	sk->sk_state = BT_DISCONN;
 	iso_conn_lock(iso_pi(sk)->conn);
-	hci_conn_drop(iso_pi(sk)->conn->hcon);
-	iso_pi(sk)->conn->hcon = NULL;
+	if (!iso_pi(sk)->conn->hcon_dropped) {
+		iso_pi(sk)->conn->hcon_dropped = true;
+		hci_conn_drop(iso_pi(sk)->conn->hcon);
+	}
 	iso_conn_unlock(iso_pi(sk)->conn);
 }
 
