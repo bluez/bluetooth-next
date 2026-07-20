@@ -1708,8 +1708,10 @@ static void l2cap_sock_teardown_cb(struct l2cap_chan *chan, int err)
 		sk->sk_err = err;
 
 		if (parent) {
+			sock_hold(parent);
 			bt_accept_unlink(sk);
 			parent->sk_data_ready(parent);
+			sock_put(parent);
 		} else {
 			sk->sk_state_change(sk);
 		}
