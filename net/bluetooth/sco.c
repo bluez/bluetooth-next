@@ -212,7 +212,6 @@ static struct sco_conn *sco_conn_add(struct hci_conn *hcon)
 
 	hcon->sco_data = conn;
 	conn->hcon = hcon;
-	conn->mtu = hcon->mtu;
 
 	if (hcon->mtu > 0)
 		conn->mtu = hcon->mtu;
