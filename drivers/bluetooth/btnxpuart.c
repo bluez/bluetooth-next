@@ -1041,6 +1041,16 @@ static int nxp_recv_fw_req_v1(struct hci_dev *hdev, struct sk_buff *skb)
 		 * and we need to re-send the previous header again.
 		 */
 		if (len == nxpdev->fw_v1_expected_len) {
+			u32 off = nxpdev->fw_dnld_v1_offset;
+			size_t sz = nxpdev->fw->size;
+
+			if (len == HDR_LEN &&
+			    (off >= sz || sz - off < HDR_LEN)) {
+				bt_dev_err(hdev,
+					   "FW req OOB: offset %u, size %zu",
+					   off, sz);
+				goto free_skb;
+			}
 			if (len == HDR_LEN)
 				nxpdev->fw_v1_expected_len = nxp_get_data_len(nxpdev->fw->data +
 									nxpdev->fw_dnld_v1_offset);
@@ -1053,7 +1063,8 @@ static int nxp_recv_fw_req_v1(struct hci_dev *hdev, struct sk_buff *skb)
 		}
 	}
 
-	if (nxpdev->fw_dnld_v1_offset + len <= nxpdev->fw->size)
+	if (nxpdev->fw_dnld_v1_offset < nxpdev->fw->size &&
+	    len <= nxpdev->fw->size - nxpdev->fw_dnld_v1_offset)
 		serdev_device_write_buf(nxpdev->serdev, nxpdev->fw->data +
 					nxpdev->fw_dnld_v1_offset, len);
 	nxpdev->fw_v1_sent_bytes = len;
