@@ -2780,7 +2780,10 @@ static void btintel_pcie_request_reset(struct btintel_pcie_data *data,
 	data->reset_type = type;
 
 	pci_dev_get(data->pdev);
-	schedule_work(&data->reset_work);
+	if (!schedule_work(&data->reset_work)) {
+		pci_dev_put(data->pdev);
+		clear_bit(BTINTEL_PCIE_RECOVERY_IN_PROGRESS, &data->flags);
+	}
 }
 
 static void btintel_pcie_hci_reset(struct hci_dev *hdev)
@@ -2789,6 +2792,36 @@ static void btintel_pcie_hci_reset(struct hci_dev *hdev)
 
 	btintel_pcie_request_reset(data, BTINTEL_PCIE_IOSF_PRR_FLR);
 }
+
+static ssize_t vendor_rst_store(struct device *dev,
+				struct device_attribute *attr,
+				const char *buf, size_t count)
+{
+	unsigned int val;
+	struct pci_dev *pdev = to_pci_dev(dev);
+	struct btintel_pcie_data *data = pci_get_drvdata(pdev);
+
+	if (!data || !data->hdev)
+		return -ENODEV;
+
+	if (kstrtouint(buf, 10, &val) || val != 0) {
+		bt_dev_warn(data->hdev, "PLDR rejected: invalid input");
+		return -EINVAL;
+	}
+
+	bt_dev_info(data->hdev, "PLDR triggered via sysfs");
+	btintel_pcie_request_reset(data, BTINTEL_PCIE_IOSF_PRR_PLDR);
+
+	return count;
+}
+
+static ssize_t vendor_rst_show(struct device *dev,
+			       struct device_attribute *attr, char *buf)
+{
+	return sysfs_emit(buf, "0 - PLDR\n");
+}
+
+static DEVICE_ATTR_RW(vendor_rst);
 
 static void btintel_pcie_hw_error(struct hci_dev *hdev, u8 code)
 {
@@ -3009,6 +3042,11 @@ static int btintel_pcie_probe(struct pci_dev *pdev,
 	if (err)
 		goto exit_error;
 
+	err = device_create_file(&pdev->dev, &dev_attr_vendor_rst);
+	if (err)
+		bt_dev_warn(data->hdev, "Failed to create vendor_rst sysfs (%d)",
+			    err);
+
 	bt_dev_dbg(data->hdev, "cnvi: 0x%8.8x cnvr: 0x%8.8x", data->cnvi,
 		   data->cnvr);
 	return 0;
@@ -3044,6 +3082,8 @@ static void btintel_pcie_remove(struct pci_dev *pdev)
 	disable_work_sync(&data->coredump_work);
 	disable_work_sync(&data->hwexp_work);
 	disable_work_sync(&data->fwtrigger_work);
+
+	device_remove_file(&pdev->dev, &dev_attr_vendor_rst);
 
 	/* Cancel pending reset work. Skip only when remove() is called from
 	 * within the reset work itself (PLDR device_reprobe path) to avoid
