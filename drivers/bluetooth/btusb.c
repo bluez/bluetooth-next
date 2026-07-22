@@ -34,6 +34,8 @@ static bool disable_scofix;
 static bool force_scofix;
 static bool enable_autosuspend = IS_ENABLED(CONFIG_BT_HCIBTUSB_AUTOSUSPEND);
 static bool enable_poll_sync = IS_ENABLED(CONFIG_BT_HCIBTUSB_POLL_SYNC);
+static bool enable_early_acl_hold =
+	IS_ENABLED(CONFIG_BT_HCIBTUSB_EARLY_ACL_HOLD);
 static bool reset = true;
 
 static struct usb_driver btusb_driver;
@@ -956,6 +958,8 @@ struct btqca_data {
 };
 
 #define BTUSB_MAX_ISOC_FRAMES	10
+#define BTUSB_RX_RECHECK_DELAY	msecs_to_jiffies(1)
+#define BTUSB_EARLY_ACL_HOLD_MIN_US	5000U
 
 #define BTUSB_INTR_RUNNING	0
 #define BTUSB_BULK_RUNNING	1
@@ -987,7 +991,10 @@ struct btusb_data {
 	unsigned long flags;
 
 	bool poll_sync;
+	bool early_acl_hold;
 	int intr_interval;
+	unsigned long early_acl_timeout;
+	ktime_t last_event;
 	struct work_struct  work;
 	struct work_struct  waker;
 	struct delayed_work rx_work;
@@ -1252,14 +1259,100 @@ static inline void btusb_free_frags(struct btusb_data *data)
 	spin_unlock_irqrestore(&data->rxlock, flags);
 }
 
-static int btusb_recv_event(struct btusb_data *data, struct sk_buff *skb)
+static void btusb_rx_queue_purge(struct btusb_data *data)
 {
-	if (data->intr_interval) {
-		/* Trigger dequeue immediately if an event is received */
-		schedule_delayed_work(&data->rx_work, 0);
+	unsigned long flags;
+
+	spin_lock_irqsave(&data->rxlock, flags);
+	skb_queue_purge(&data->acl_q);
+	spin_unlock_irqrestore(&data->rxlock, flags);
+}
+
+static ktime_t btusb_rx_deadline(struct sk_buff *skb, unsigned long timeout)
+{
+	return ktime_add_ns(skb->tstamp, jiffies_to_nsecs(timeout));
+}
+
+static bool btusb_rx_hold_expired(struct sk_buff *skb, unsigned long timeout,
+				  ktime_t now)
+{
+	return !ktime_before(now, btusb_rx_deadline(skb, timeout));
+}
+
+static unsigned long btusb_rx_hold_delay(struct sk_buff *skb,
+					 unsigned long timeout, ktime_t now)
+{
+	s64 remaining = ktime_to_ns(ktime_sub(btusb_rx_deadline(skb, timeout),
+					      now));
+
+	if (remaining <= 0)
+		return 0;
+
+	return max_t(unsigned long, 1, nsecs_to_jiffies(remaining));
+}
+
+static bool btusb_poll_sync_should_hold(struct btusb_data *data,
+					struct sk_buff *skb, ktime_t now)
+{
+	unsigned long interval = READ_ONCE(data->intr_interval);
+
+	if (!interval || !ktime_before(data->last_event, skb->tstamp))
+		return false;
+
+	return !btusb_rx_hold_expired(skb, interval, now);
+}
+
+static bool btusb_acl_should_hold(struct btusb_data *data,
+				  struct sk_buff *skb, ktime_t now)
+{
+	unsigned long timeout = READ_ONCE(data->early_acl_timeout);
+	u16 handle;
+
+	if (!timeout || hci_dev_test_flag(data->hdev, HCI_USER_CHANNEL) ||
+	    btusb_rx_hold_expired(skb, timeout, now) ||
+	    skb->len < HCI_ACL_HDR_SIZE)
+		return false;
+
+	handle = le16_to_cpu(hci_acl_hdr(skb)->handle);
+
+	/* Only use the returned connection as an existence snapshot. */
+	return !hci_conn_hash_lookup_handle(data->hdev, hci_handle(handle));
+}
+
+static unsigned long btusb_rx_delay(struct btusb_data *data,
+				    struct sk_buff *skb, ktime_t now,
+				    bool poll_hold, bool acl_hold)
+{
+	unsigned long timeout;
+
+	if (poll_hold) {
+		timeout = READ_ONCE(data->intr_interval);
+		return btusb_rx_hold_delay(skb, timeout, now);
 	}
 
-	return data->recv_event(data->hdev, skb);
+	if (acl_hold) {
+		timeout = READ_ONCE(data->early_acl_timeout);
+		return min(BTUSB_RX_RECHECK_DELAY,
+			   btusb_rx_hold_delay(skb, timeout, now));
+	}
+
+	return 0;
+}
+
+static int btusb_recv_event(struct btusb_data *data, struct sk_buff *skb)
+{
+	int err;
+
+	err = data->recv_event(data->hdev, skb);
+
+	if (READ_ONCE(data->intr_interval))
+		data->last_event = ktime_get();
+
+	if (READ_ONCE(data->intr_interval) ||
+	    READ_ONCE(data->early_acl_timeout))
+		mod_delayed_work(system_wq, &data->rx_work, 0);
+
+	return err;
 }
 
 static int btusb_recv_intr(struct btusb_data *data, void *buffer, int count)
@@ -1332,14 +1425,31 @@ static int btusb_recv_intr(struct btusb_data *data, void *buffer, int count)
 
 static int btusb_recv_acl(struct btusb_data *data, struct sk_buff *skb)
 {
-	/* Only queue ACL packet if intr_interval is set as it means
-	 * force_poll_sync has been enabled.
-	 */
-	if (!data->intr_interval)
+	bool poll_hold, acl_hold;
+	bool queue_empty;
+	ktime_t now;
+
+	if (!READ_ONCE(data->intr_interval) &&
+	    !READ_ONCE(data->early_acl_timeout))
+		return data->recv_acl(data->hdev, skb);
+
+	now = ktime_get();
+	/* hci_recv_frame() replaces this temporary monotonic arrival time. */
+	skb_set_delivery_time(skb, now, SKB_CLOCK_MONOTONIC);
+
+	queue_empty = skb_queue_empty(&data->acl_q);
+	poll_hold = btusb_poll_sync_should_hold(data, skb, now);
+	acl_hold = btusb_acl_should_hold(data, skb, now);
+
+	if (queue_empty && !poll_hold && !acl_hold)
 		return data->recv_acl(data->hdev, skb);
 
 	skb_queue_tail(&data->acl_q, skb);
-	schedule_delayed_work(&data->rx_work, data->intr_interval);
+
+	if (queue_empty)
+		schedule_delayed_work(&data->rx_work,
+				      btusb_rx_delay(data, skb, now,
+						     poll_hold, acl_hold));
 
 	return 0;
 }
@@ -1539,6 +1649,10 @@ static int btusb_submit_intr_urb(struct hci_dev *hdev, gfp_t mem_flags)
 	struct btusb_data *data = hci_get_drvdata(hdev);
 	struct urb *urb;
 	unsigned char *buf;
+	unsigned long early_acl_timeout = 0;
+	int intr_interval = 0;
+	unsigned int hold_us;
+	unsigned int interval_us;
 	unsigned int pipe;
 	int err, size;
 
@@ -1587,27 +1701,52 @@ static int btusb_submit_intr_urb(struct hci_dev *hdev, gfp_t mem_flags)
 	}
 
 	/* Only initialize intr_interval if URB poll sync is enabled */
-	if (!data->poll_sync)
-		goto done;
-
-	/* The units are frames (milliseconds) for full and low speed devices,
-	 * and microframes (1/8 millisecond) for highspeed and SuperSpeed
-	 * devices.
-	 *
-	 * This is done once on open/resume so it shouldn't change even if
-	 * force_poll_sync changes.
-	 */
-	switch (urb->dev->speed) {
-	case USB_SPEED_SUPER_PLUS:
-	case USB_SPEED_SUPER:	/* units are 125us */
-		data->intr_interval = usecs_to_jiffies(urb->interval * 125);
-		break;
-	default:
-		data->intr_interval = msecs_to_jiffies(urb->interval);
-		break;
+	if (data->poll_sync) {
+		/* The units are frames (milliseconds) for full and low speed
+		 * devices, and microframes (1/8 millisecond) for highspeed and
+		 * SuperSpeed devices.
+		 *
+		 * This is done once on open/resume so it shouldn't change even
+		 * if force_poll_sync changes.
+		 */
+		switch (urb->dev->speed) {
+		case USB_SPEED_SUPER_PLUS:
+		case USB_SPEED_SUPER:
+			intr_interval = usecs_to_jiffies(urb->interval * 125);
+			break;
+		default:
+			intr_interval = msecs_to_jiffies(urb->interval);
+			break;
+		}
 	}
 
-done:
+	interval_us = 0;
+	if (data->early_acl_hold && urb->interval > 0) {
+		switch (urb->dev->speed) {
+		case USB_SPEED_SUPER_PLUS:
+		case USB_SPEED_SUPER:
+		case USB_SPEED_HIGH:
+			interval_us = urb->interval * 125;
+			break;
+		case USB_SPEED_FULL:
+			interval_us = urb->interval * USEC_PER_MSEC;
+			break;
+		default:
+			break;
+		}
+	}
+
+	if (interval_us) {
+		/* Allow an event which misses one polling window to arrive in
+		 * the next.
+		 */
+		hold_us = max(BTUSB_EARLY_ACL_HOLD_MIN_US, interval_us * 2);
+		early_acl_timeout = usecs_to_jiffies(hold_us);
+	}
+
+	WRITE_ONCE(data->intr_interval, intr_interval);
+	WRITE_ONCE(data->early_acl_timeout, early_acl_timeout);
+
 	usb_free_urb(urb);
 
 	return err;
@@ -2077,11 +2216,10 @@ static int btusb_close(struct hci_dev *hdev)
 
 	BT_DBG("%s", hdev->name);
 
-	cancel_delayed_work(&data->rx_work);
+	/* Stop queued RX delivery before shutting down the endpoints. */
+	cancel_delayed_work_sync(&data->rx_work);
 	cancel_work_sync(&data->work);
 	cancel_work_sync(&data->waker);
-
-	skb_queue_purge(&data->acl_q);
 
 	clear_bit(BTUSB_ISOC_RUNNING, &data->flags);
 	clear_bit(BTUSB_BULK_RUNNING, &data->flags);
@@ -2089,6 +2227,11 @@ static int btusb_close(struct hci_dev *hdev)
 	clear_bit(BTUSB_DIAG_RUNNING, &data->flags);
 
 	btusb_stop_traffic(data);
+
+	/* An in-flight URB completion may have requeued RX work. */
+	cancel_delayed_work_sync(&data->rx_work);
+
+	btusb_rx_queue_purge(data);
 	btusb_free_frags(data);
 
 	err = usb_autopm_get_interface(data->intf);
@@ -2114,9 +2257,9 @@ static int btusb_flush(struct hci_dev *hdev)
 
 	BT_DBG("%s", hdev->name);
 
-	cancel_delayed_work(&data->rx_work);
+	cancel_delayed_work_sync(&data->rx_work);
 
-	skb_queue_purge(&data->acl_q);
+	btusb_rx_queue_purge(data);
 
 	usb_kill_anchored_urbs(&data->tx_anchor);
 	btusb_free_frags(data);
@@ -2497,11 +2640,40 @@ static void btusb_rx_work(struct work_struct *work)
 {
 	struct btusb_data *data = container_of(work, struct btusb_data,
 					       rx_work.work);
+	unsigned long delay;
+	unsigned long flags;
 	struct sk_buff *skb;
+	bool poll_hold, acl_hold;
+	ktime_t now;
 
-	/* Dequeue ACL data received during the interval */
-	while ((skb = skb_dequeue(&data->acl_q)))
-		data->recv_acl(data->hdev, skb);
+	for (;;) {
+		spin_lock_irqsave(&data->rxlock, flags);
+		now = ktime_get();
+		skb = skb_peek(&data->acl_q);
+
+		if (!skb) {
+			spin_unlock_irqrestore(&data->rxlock, flags);
+			return;
+		}
+
+		poll_hold = btusb_poll_sync_should_hold(data, skb, now);
+		acl_hold = btusb_acl_should_hold(data, skb, now);
+		if (!poll_hold && !acl_hold) {
+			skb = skb_dequeue(&data->acl_q);
+			data->recv_acl(data->hdev, skb);
+			spin_unlock_irqrestore(&data->rxlock, flags);
+			continue;
+		}
+
+		delay = btusb_rx_delay(data, skb, now, poll_hold, acl_hold);
+		spin_unlock_irqrestore(&data->rxlock, flags);
+
+		/* A zero-delay event kick that raced with this worker remains
+		 * pending; schedule_delayed_work() cannot move it later.
+		 */
+		schedule_delayed_work(&data->rx_work, delay);
+		return;
+	}
 }
 
 static int btusb_setup_bcm92035(struct hci_dev *hdev)
@@ -3965,6 +4137,51 @@ static const struct file_operations force_poll_sync_fops = {
 	.llseek		= default_llseek,
 };
 
+static ssize_t force_early_acl_hold_read(struct file *file,
+					 char __user *user_buf, size_t count,
+					 loff_t *ppos)
+{
+	struct btusb_data *data = file->private_data;
+	char buf[3];
+
+	buf[0] = data->early_acl_hold ? 'Y' : 'N';
+	buf[1] = '\n';
+	buf[2] = '\0';
+	return simple_read_from_buffer(user_buf, count, ppos, buf, 2);
+}
+
+static ssize_t force_early_acl_hold_write(struct file *file,
+					  const char __user *user_buf,
+					  size_t count, loff_t *ppos)
+{
+	struct btusb_data *data = file->private_data;
+	bool enable;
+	int err;
+
+	err = kstrtobool_from_user(user_buf, count, &enable);
+	if (err)
+		return err;
+
+	/* Only allow changes while the adapter is down */
+	if (test_bit(HCI_UP, &data->hdev->flags))
+		return -EPERM;
+
+	if (data->early_acl_hold == enable)
+		return -EALREADY;
+
+	data->early_acl_hold = enable;
+
+	return count;
+}
+
+static const struct file_operations force_early_acl_hold_fops = {
+	.owner		= THIS_MODULE,
+	.open		= simple_open,
+	.read		= force_early_acl_hold_read,
+	.write		= force_early_acl_hold_write,
+	.llseek		= default_llseek,
+};
+
 #define BTUSB_HCI_DRV_OP_SUPPORTED_ALTSETTINGS \
 		hci_opcode_pack(HCI_DRV_OGF_DRIVER_SPECIFIC, 0x0000)
 #define BTUSB_HCI_DRV_SUPPORTED_ALTSETTINGS_SIZE	0
@@ -4462,6 +4679,7 @@ static int btusb_probe(struct usb_interface *intf,
 		usb_enable_autosuspend(data->udev);
 
 	data->poll_sync = enable_poll_sync;
+	data->early_acl_hold = enable_early_acl_hold;
 
 	err = hci_register_dev(hdev);
 	if (err < 0)
@@ -4471,6 +4689,8 @@ static int btusb_probe(struct usb_interface *intf,
 
 	debugfs_create_file("force_poll_sync", 0644, hdev->debugfs, data,
 			    &force_poll_sync_fops);
+	debugfs_create_file("force_early_acl_hold", 0644, hdev->debugfs, data,
+			    &force_early_acl_hold_fops);
 
 	return 0;
 
