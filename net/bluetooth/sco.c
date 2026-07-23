@@ -81,9 +81,6 @@ static void sco_conn_free(struct kref *ref)
 
 	BT_DBG("conn %p", conn);
 
-	if (conn->sk)
-		sco_pi(conn->sk)->conn = NULL;
-
 	if (conn->hcon) {
 		conn->hcon->sco_data = NULL;
 		hci_conn_drop(conn->hcon);
@@ -265,10 +262,8 @@ static void sco_conn_del(struct hci_conn *hcon, int err)
 	sco_conn_unlock(conn);
 	sco_conn_put(conn);
 
-	if (!sk) {
-		sco_conn_put(conn);
+	if (!sk)
 		return;
-	}
 
 	/* Kill socket */
 	lock_sock(sk);
@@ -283,7 +278,7 @@ static void __sco_chan_add(struct sco_conn *conn, struct sock *sk,
 {
 	BT_DBG("conn %p", conn);
 
-	sco_pi(sk)->conn = conn;
+	sco_pi(sk)->conn = sco_conn_hold(conn);
 	conn->sk = sk;
 
 	if (parent)
@@ -366,12 +361,14 @@ static int sco_connect(struct sock *sk)
 	 */
 	if (sk->sk_state != BT_OPEN && sk->sk_state != BT_BOUND) {
 		release_sock(sk);
+		sco_conn_put(conn);
 		hci_conn_drop(hcon);
 		err = -EBADFD;
 		goto unlock;
 	}
 
 	err = sco_chan_add(conn, sk, NULL);
+	sco_conn_put(conn);
 	if (err) {
 		release_sock(sk);
 		hci_conn_drop(hcon);
@@ -1452,7 +1449,6 @@ static void sco_conn_ready(struct sco_conn *conn)
 		bacpy(&sco_pi(sk)->src, &conn->hcon->src);
 		bacpy(&sco_pi(sk)->dst, &conn->hcon->dst);
 
-		sco_conn_hold(conn);
 		hci_conn_hold(conn->hcon);
 		__sco_chan_add(conn, sk, parent);
 
