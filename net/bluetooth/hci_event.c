@@ -609,6 +609,44 @@ static u8 hci_cc_write_voice_setting(struct hci_dev *hdev, void *data,
 	return rp->status;
 }
 
+static u8 hci_cc_write_link_supervision_timeout(struct hci_dev *hdev, void *data,
+						struct sk_buff *skb)
+{
+	struct hci_ev_status *rp = data;
+	struct hci_cp_write_link_supervision_timeout *sent;
+	struct hci_conn *conn;
+	u16 handle;
+	u8 status = rp->status;
+
+	bt_dev_dbg(hdev, "status 0x%2.2x", status);
+
+	sent = hci_sent_cmd_data(hdev, HCI_OP_WRITE_LINK_SUPERVISION_TIMEOUT);
+	if (!sent)
+		return status;
+
+	handle = le16_to_cpu(sent->handle);
+
+	hci_dev_lock(hdev);
+
+	conn = hci_conn_hash_lookup_handle(hdev, handle);
+	if (!conn) {
+		status = 0xFF;
+		goto done;
+	}
+
+	if (!status) {
+		conn->link_supervision_timeout = __le16_to_cpu(sent->timeout);
+		bt_dev_dbg(hdev, "handle 0x%4.4x timeout set to 0x%4.4x (%u ms)",
+			   handle, conn->link_supervision_timeout,
+			   conn->link_supervision_timeout * 5 / 8);
+	}
+
+done:
+	hci_dev_unlock(hdev);
+
+	return status;
+}
+
 static u8 hci_cc_read_num_supported_iac(struct hci_dev *hdev, void *data,
 					struct sk_buff *skb)
 {
@@ -3243,6 +3281,16 @@ static void hci_conn_complete_evt(struct hci_dev *hdev, void *data,
 			hci_send_cmd(hdev, HCI_OP_CHANGE_CONN_PTYPE, sizeof(cp),
 				     &cp);
 		}
+
+		if (conn->type == ACL_LINK && conn->role == HCI_ROLE_MASTER) {
+			struct hci_cp_write_link_supervision_timeout cp;
+
+			cp.handle = ev->handle;
+			cp.timeout = 0x1F40;	/* 8000 * 0.625ms = 5000ms */
+			hci_send_cmd(hdev, HCI_OP_WRITE_LINK_SUPERVISION_TIMEOUT,
+				     sizeof(cp), &cp);
+		}
+
 	}
 
 	if (conn->type == ACL_LINK)
@@ -4100,6 +4148,8 @@ static const struct hci_cc {
 	HCI_CC_STATUS(HCI_OP_WRITE_CLASS_OF_DEV, hci_cc_write_class_of_dev),
 	HCI_CC(HCI_OP_READ_VOICE_SETTING, hci_cc_read_voice_setting,
 	       sizeof(struct hci_rp_read_voice_setting)),
+	HCI_CC(HCI_OP_WRITE_LINK_SUPERVISION_TIMEOUT, hci_cc_write_link_supervision_timeout,
+	       sizeof(struct hci_rp_write_link_supervision_timeout)),
 	HCI_CC_STATUS(HCI_OP_WRITE_VOICE_SETTING, hci_cc_write_voice_setting),
 	HCI_CC(HCI_OP_READ_NUM_SUPPORTED_IAC, hci_cc_read_num_supported_iac,
 	       sizeof(struct hci_rp_read_num_supported_iac)),
