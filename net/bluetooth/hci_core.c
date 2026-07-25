@@ -4056,6 +4056,14 @@ static void hci_rx_work(struct work_struct *work)
 			hci_isodata_packet(hdev, skb);
 			break;
 
+		case HCI_DRV_PKT:
+			kfree_skb(skb);
+			break;
+
+		case HCI_DIAG_PKT:
+			kfree_skb(skb);
+			break;
+
 		default:
 			kfree_skb(skb);
 			break;
