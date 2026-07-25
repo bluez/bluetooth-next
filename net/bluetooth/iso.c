@@ -2075,7 +2075,7 @@ static bool iso_match_dst(struct sock *sk, void *data)
 static void iso_conn_ready(struct iso_conn *conn)
 {
 	struct sock *parent = NULL;
-	struct sock *sk = conn->sk;
+	struct sock *sk;
 	struct hci_ev_le_big_sync_established *ev = NULL;
 	struct hci_ev_le_pa_sync_established *ev2 = NULL;
 	struct hci_ev_le_per_adv_report *ev3 = NULL;
@@ -2083,6 +2083,10 @@ static void iso_conn_ready(struct iso_conn *conn)
 	struct hci_dev *hdev;
 
 	BT_DBG("conn %p", conn);
+
+	iso_conn_lock(conn);
+	sk = iso_sock_hold(conn);
+	iso_conn_unlock(conn);
 
 	if (sk) {
 		/* Attempt to update source address in case of BIS Sender if
@@ -2104,7 +2108,8 @@ static void iso_conn_ready(struct iso_conn *conn)
 			}
 		}
 
-		iso_sock_ready(conn->sk);
+		iso_sock_ready(sk);
+		sock_put(sk);
 	} else {
 		hcon = conn->hcon;
 		if (!hcon)
