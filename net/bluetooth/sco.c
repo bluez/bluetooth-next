@@ -276,6 +276,9 @@ static void sco_conn_del(struct hci_conn *hcon, int err)
 	sco_chan_del(sk, err);
 	release_sock(sk);
 	sock_put(sk);
+
+	/* Drop the association reference, as the !sk branch above does */
+	sco_conn_put(conn);
 }
 
 static void __sco_chan_add(struct sco_conn *conn, struct sock *sk,
@@ -296,10 +299,16 @@ static int sco_chan_add(struct sco_conn *conn, struct sock *sk,
 	int err = 0;
 
 	sco_conn_lock(conn);
-	if (conn->sk || sco_pi(sk)->conn)
+	if (conn->sk || sco_pi(sk)->conn) {
 		err = -EBUSY;
-	else
+	} else {
+		/* Take the socket reference, which sco_chan_del() drops when
+		 * the socket detaches.  Without it the socket and the hcon
+		 * would share the single reference from sco_conn_add().
+		 */
+		sco_conn_hold(conn);
 		__sco_chan_add(conn, sk, parent);
+	}
 
 	sco_conn_unlock(conn);
 	return err;
@@ -1452,6 +1461,13 @@ static void sco_conn_ready(struct sco_conn *conn)
 		bacpy(&sco_pi(sk)->src, &conn->hcon->src);
 		bacpy(&sco_pi(sk)->dst, &conn->hcon->dst);
 
+		/* Two references are needed here: the socket one, dropped by
+		 * sco_chan_del(), and the association one, dropped by
+		 * sco_conn_del().  Unlike the outgoing path, the reference
+		 * from sco_conn_add() cannot serve as the latter, because
+		 * sco_connect_cfm() puts it as soon as this function returns.
+		 */
+		sco_conn_hold(conn);
 		sco_conn_hold(conn);
 		hci_conn_hold(conn->hcon);
 		__sco_chan_add(conn, sk, parent);
