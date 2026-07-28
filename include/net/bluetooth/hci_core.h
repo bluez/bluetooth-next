@@ -2079,6 +2079,9 @@ void hci_conn_del_sysfs(struct hci_conn *conn);
 #define le_cs_host_capable(dev) \
 	((dev)->le_features[5] & HCI_LE_CS_HOST)
 
+#define le_sci_capable(dev) \
+	((dev)->le_features[9] & HCI_LE_SCI)
+
 #define mws_transport_config_capable(dev) (((dev)->commands[30] & 0x08) && \
 	(!hci_test_quirk((dev), HCI_QUIRK_BROKEN_MWS_TRANSPORT_CONFIG)))
 
