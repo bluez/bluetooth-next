@@ -84,12 +84,14 @@ static void sco_conn_free(struct kref *ref)
 	if (conn->sk)
 		sco_pi(conn->sk)->conn = NULL;
 
-	if (conn->hcon) {
-		conn->hcon->sco_data = NULL;
-		hci_conn_drop(conn->hcon);
-	}
+	/* hcon->sco_data is cleared and the association's reference on the
+	 * sco_conn is dropped in sco_conn_del() under hdev->lock, and the
+	 * hci_conn is now owned by the socket (held in __sco_chan_add() and
+	 * dropped in sco_chan_del()/sco_sock_destruct()), so there is nothing
+	 * left to release towards hcon here.
+	 */
 
-	/* Ensure no more work items will run since hci_conn has been dropped */
+	/* Ensure no more work items will run before the connection is freed */
 	disable_delayed_work_sync(&conn->timeout_work);
 
 	kfree(conn);
@@ -188,8 +190,11 @@ static void sco_sock_clear_timer(struct sock *sk)
 }
 
 /* ---- SCO connections ---- */
-/* Consumes a reference on @hcon, which the returned sco_conn owns until it is
- * freed. On failure (NULL return) the reference is left for the caller to drop.
+/* Returns a new reference the caller must drop with sco_conn_put(). The
+ * hcon->sco_data association holds its own reference on the sco_conn for the
+ * connection's lifetime; it is dropped in sco_conn_del() under hdev->lock.
+ * @hcon is not consumed: the hci_conn reference is taken and owned by the
+ * socket in __sco_chan_add().
  */
 static struct sco_conn *sco_conn_add(struct hci_conn *hcon)
 {
@@ -201,9 +206,6 @@ static struct sco_conn *sco_conn_add(struct hci_conn *hcon)
 			sco_conn_lock(conn);
 			conn->hcon = hcon;
 			sco_conn_unlock(conn);
-		} else {
-			/* conn already owns a reference on hcon */
-			hci_conn_drop(hcon);
 		}
 		return conn;
 	}
@@ -227,7 +229,10 @@ static struct sco_conn *sco_conn_add(struct hci_conn *hcon)
 
 	BT_DBG("hcon %p conn %p", hcon, conn);
 
-	return conn;
+	/* kref_init() above set the association reference owned by
+	 * hcon->sco_data; hand the caller its own reference.
+	 */
+	return sco_conn_hold(conn);
 }
 
 /* Delete channel.
@@ -242,9 +247,20 @@ static void sco_chan_del(struct sock *sk, int err)
 	BT_DBG("sk %p, conn %p, err %d", sk, conn, err);
 
 	if (conn) {
+		struct hci_conn *hcon;
+
 		sco_conn_lock(conn);
 		conn->sk = NULL;
+		hcon = conn->hcon;
 		sco_conn_unlock(conn);
+
+		/* Release the socket's own reference on the hci_conn taken in
+		 * __sco_chan_add() so that closing the socket still tears the
+		 * link down even while the sco_conn is kept alive by the
+		 * hcon->sco_data association reference.
+		 */
+		if (hcon)
+			hci_conn_drop(hcon);
 		sco_conn_put(conn);
 	}
 
@@ -265,6 +281,15 @@ static void sco_conn_del(struct hci_conn *hcon, int err)
 		return;
 
 	BT_DBG("hcon %p conn %p, err %d", hcon, conn, err);
+
+	/* Detach the connection from the hci_conn and drop the reference held
+	 * by the hcon->sco_data association.  The caller holds hdev->lock,
+	 * which serialises this NULL store and put against the read of
+	 * hcon->sco_data in sco_recv_scodata(), closing the use-after-free
+	 * where the RX path could upgrade an already-freed sco_conn.
+	 */
+	hcon->sco_data = NULL;
+	sco_conn_put(conn);
 
 	sco_conn_lock(conn);
 	sk = sco_sock_hold(conn);
@@ -289,6 +314,13 @@ static void __sco_chan_add(struct sco_conn *conn, struct sock *sk,
 
 	sco_pi(sk)->conn = sco_conn_hold(conn);
 	conn->sk = sk;
+
+	/* The socket owns a reference on the hci_conn for as long as it stays
+	 * attached; it is dropped in sco_chan_del()/sco_sock_destruct().  This
+	 * keeps close() tearing the link down now that the sco_conn can outlive
+	 * the socket through the hcon->sco_data association reference.
+	 */
+	hci_conn_hold(conn->hcon);
 
 	if (parent)
 		bt_accept_enqueue(parent, sk, true);
@@ -371,6 +403,7 @@ static int sco_connect(struct sock *sk)
 	if (sk->sk_state != BT_OPEN && sk->sk_state != BT_BOUND) {
 		release_sock(sk);
 		sco_conn_put(conn);
+		hci_conn_drop(hcon);
 		err = -EBADFD;
 		goto unlock;
 	}
@@ -379,6 +412,7 @@ static int sco_connect(struct sock *sk)
 	sco_conn_put(conn);
 	if (err) {
 		release_sock(sk);
+		hci_conn_drop(hcon);
 		goto unlock;
 	}
 
@@ -394,6 +428,11 @@ static int sco_connect(struct sock *sk)
 	}
 
 	release_sock(sk);
+
+	/* The socket took its own hci_conn reference in __sco_chan_add(); drop
+	 * the one returned by hci_connect_sco().
+	 */
+	hci_conn_drop(hcon);
 
 unlock:
 	hci_dev_unlock(hdev);
@@ -495,9 +534,26 @@ static struct sock *sco_get_sock_listen(bdaddr_t *src)
 
 static void sco_sock_destruct(struct sock *sk)
 {
+	struct sco_conn *conn = sco_pi(sk)->conn;
+
 	BT_DBG("sk %p", sk);
 
-	sco_conn_put(sco_pi(sk)->conn);
+	/* If the channel was not already torn down via sco_chan_del(), drop the
+	 * socket's own references here.  sco_chan_del() clears sco_pi(sk)->conn,
+	 * so the hci_conn and sco_conn references are released exactly once.
+	 */
+	if (conn) {
+		struct hci_conn *hcon;
+
+		sco_conn_lock(conn);
+		hcon = conn->hcon;
+		sco_conn_unlock(conn);
+
+		if (hcon)
+			hci_conn_drop(hcon);
+		sco_pi(sk)->conn = NULL;
+		sco_conn_put(conn);
+	}
 
 	skb_queue_purge(&sk->sk_receive_queue);
 	skb_queue_purge(&sk->sk_write_queue);
@@ -1511,12 +1567,10 @@ static void sco_connect_cfm(struct hci_conn *hcon, __u8 status)
 	if (!status) {
 		struct sco_conn *conn;
 
-		conn = sco_conn_add(hci_conn_hold(hcon));
+		conn = sco_conn_add(hcon);
 		if (conn) {
 			sco_conn_ready(conn);
 			sco_conn_put(conn);
-		} else {
-			hci_conn_drop(hcon);
 		}
 	} else
 		sco_conn_del(hcon, bt_to_errno(status));
