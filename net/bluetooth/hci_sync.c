@@ -4541,6 +4541,10 @@ static int hci_le_set_event_mask_sync(struct hci_dev *hdev)
 		events[6] |= 0x02;	/* LE CS Subevent Result Continue event */
 		events[6] |= 0x04;	/* LE CS Test End Complete event */
 	}
+
+	if (le_sci_capable(hdev))
+		events[6] |= 0x40;	/* LE Connection Rate Change event */
+
 	return __hci_cmd_sync_status(hdev, HCI_OP_LE_SET_EVENT_MASK,
 				     sizeof(events), events, HCI_CMD_TIMEOUT);
 }
@@ -4709,12 +4713,46 @@ static int hci_le_set_host_feature_sync(struct hci_dev *hdev, u16 bit, u8 value)
 				     sizeof(cp), &cp, HCI_CMD_TIMEOUT);
 }
 
+static int hci_le_read_conn_interval_sync(struct hci_dev *hdev)
+{
+	if (!le_sci_capable(hdev))
+		return 0;
+
+	return __hci_cmd_sync_status(hdev, HCI_OP_LE_READ_CONN_INTERVAL,
+				     0, NULL, HCI_CMD_TIMEOUT);
+}
+
+static int hci_le_set_def_rate_sync(struct hci_dev *hdev)
+{
+	struct hci_cp_le_set_def_rate cp;
+
+	if (!le_sci_capable(hdev))
+		return 0;
+
+	memset(&cp, 0, sizeof(cp));
+
+	/* Use the HIDS 1.2 recommended Full Range mode values as the default
+	 * rate parameters (see HOGP v1.2 spec). Connection intervals are in
+	 * units of 0.125 ms and the supervision timeout is in units of 10 ms.
+	 */
+	cp.interval_min = cpu_to_le16(0x000a);	/* 1.25 ms */
+	cp.interval_max = cpu_to_le16(0x0078);	/* 15 ms */
+	cp.subrate_min = cpu_to_le16(0x0001);
+	cp.subrate_max = cpu_to_le16(0x0004);
+	cp.max_latency = cpu_to_le16(0x0000);
+	cp.cont_num = cpu_to_le16(0x0001);
+	cp.supv_timeout = cpu_to_le16(0x000c);	/* 120 ms */
+
+	return __hci_cmd_sync_status(hdev, HCI_OP_LE_SET_DEF_RATE,
+				     sizeof(cp), &cp, HCI_CMD_TIMEOUT);
+}
+
 /* Set Host Features, each feature needs to be sent separately since
  * HCI_OP_LE_SET_HOST_FEATURE doesn't support setting all of them at once.
  */
 static int hci_le_set_host_features_sync(struct hci_dev *hdev)
 {
-	int err;
+	int err = 0;
 
 	if (cis_capable(hdev)) {
 		/* Connected Isochronous Channels (Host Support) */
@@ -4725,9 +4763,16 @@ static int hci_le_set_host_features_sync(struct hci_dev *hdev)
 			return err;
 	}
 
-	if (le_cs_capable(hdev))
+	if (le_cs_capable(hdev)) {
 		/* Channel Sounding (Host Support) */
 		err = hci_le_set_host_feature_sync(hdev, 47, 0x01);
+		if (err)
+			return err;
+	}
+
+	if (le_sci_capable(hdev))
+		/* Shorter Connection Intervals (Host Support) */
+		err = hci_le_set_host_feature_sync(hdev, 73, 0x01);
 
 	return err;
 }
@@ -4760,6 +4805,10 @@ static const struct hci_init_stage le_init3[] = {
 	HCI_INIT(hci_set_le_support_sync),
 	/* HCI_OP_LE_SET_HOST_FEATURE */
 	HCI_INIT(hci_le_set_host_features_sync),
+	/* HCI_OP_LE_READ_CONN_INTERVAL */
+	HCI_INIT(hci_le_read_conn_interval_sync),
+	/* HCI_OP_LE_SET_DEF_RATE */
+	HCI_INIT(hci_le_set_def_rate_sync),
 	{}
 };
 
