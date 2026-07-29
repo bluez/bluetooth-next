@@ -702,6 +702,7 @@ struct hci_conn {
 	__u8		le_features[248];
 	__u16		pkt_type;
 	__u16		link_policy;
+	__u16		link_supervision_timeout_ms;
 	__u8		key_type;
 	__u8		auth_type;
 	__u8		sec_level;
