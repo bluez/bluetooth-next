@@ -3544,6 +3544,7 @@ static int btusb_setup_qca_load_rampatch(struct hci_dev *hdev,
 	struct qca_rampatch_version *rver;
 	const struct firmware *fw;
 	const char *fw_subdir;
+	size_t min_size;
 	u32 ver_rom, ver_patch, rver_rom;
 	u16 rver_rom_low, rver_rom_high, rver_patch;
 	char fwname[80];
@@ -3568,6 +3569,15 @@ static int btusb_setup_qca_load_rampatch(struct hci_dev *hdev,
 	}
 
 	bt_dev_info(hdev, "using rampatch file: %s", fwname);
+
+	min_size = max_t(size_t, info->rampatch_hdr,
+			 info->ver_offset + sizeof(*rver));
+	if (fw->size < min_size) {
+		bt_dev_err(hdev, "rampatch file is truncated (%zu < %zu)",
+			   fw->size, min_size);
+		err = -EINVAL;
+		goto done;
+	}
 
 	rver = (struct qca_rampatch_version *)(fw->data + info->ver_offset);
 	rver_rom_low = le16_to_cpu(rver->rom_version_low);
