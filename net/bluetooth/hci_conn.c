@@ -723,10 +723,13 @@ static void le_conn_timeout(struct work_struct *work)
 		hci_dev_lock(hdev);
 		hci_conn_failed(conn, HCI_ERROR_ADVERTISING_TIMEOUT);
 		hci_dev_unlock(hdev);
-		return;
+		goto done;
 	}
 
 	hci_abort_conn(conn, HCI_ERROR_REMOTE_USER_TERM);
+
+done:
+	hci_conn_put(conn);
 }
 
 struct iso_list_data {
@@ -1269,7 +1272,8 @@ void hci_conn_del(struct hci_conn *conn)
 			hdev->acl_cnt += conn->sent;
 		break;
 	case LE_LINK:
-		cancel_delayed_work(&conn->le_conn_timeout);
+		if (cancel_delayed_work(&conn->le_conn_timeout))
+			hci_conn_put(conn);
 
 		if (hdev->le_pkts) {
 			if (!hci_conn_num(hdev, LE_LINK) ||
