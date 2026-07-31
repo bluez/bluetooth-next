@@ -486,6 +486,10 @@ struct mgmt_ctrl {
 	u16 opcode;
 };
 
+struct hci_acl_ctrl {
+	unsigned long expires;
+};
+
 struct bt_skb_cb {
 	u8 pkt_type;
 	u8 force_active;
@@ -496,6 +500,7 @@ struct bt_skb_cb {
 	union {
 		struct l2cap_ctrl l2cap;
 		struct hci_ctrl hci;
+		struct hci_acl_ctrl hci_acl;
 		struct mgmt_ctrl mgmt;
 		struct scm_creds creds;
 	};
@@ -509,6 +514,7 @@ struct bt_skb_cb {
 #define hci_skb_opcode(skb) bt_cb((skb))->hci.opcode
 #define hci_skb_event(skb) bt_cb((skb))->hci.req_event
 #define hci_skb_sk(skb) bt_cb((skb))->hci.sk
+#define hci_skb_acl_expires(skb) bt_cb((skb))->hci_acl.expires
 
 static inline struct sk_buff *bt_skb_alloc(unsigned int len, gfp_t how)
 {

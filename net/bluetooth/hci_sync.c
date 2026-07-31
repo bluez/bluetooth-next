@@ -5334,9 +5334,11 @@ int hci_dev_open_sync(struct hci_dev *hdev)
 		 */
 		flush_work(&hdev->rx_work);
 		flush_work(&hdev->cmd_work);
+		cancel_delayed_work_sync(&hdev->unknown_acl_work);
 
 		skb_queue_purge(&hdev->cmd_q);
 		skb_queue_purge(&hdev->rx_q);
+		skb_queue_purge(&hdev->unknown_acl_q);
 
 		if (hdev->flush)
 			hdev->flush(hdev);
@@ -5441,6 +5443,8 @@ int hci_dev_close_sync(struct hci_dev *hdev)
 
 	if (!test_and_clear_bit(HCI_UP, &hdev->flags)) {
 		cancel_delayed_work_sync(&hdev->cmd_timer);
+		cancel_delayed_work_sync(&hdev->unknown_acl_work);
+		skb_queue_purge(&hdev->unknown_acl_q);
 		hci_dev_clear_flag(hdev, HCI_CMD_DRAIN_WORKQUEUE);
 		return err;
 	}
@@ -5450,6 +5454,7 @@ int hci_dev_close_sync(struct hci_dev *hdev)
 	/* Flush RX and TX works */
 	flush_work(&hdev->tx_work);
 	flush_work(&hdev->rx_work);
+	cancel_delayed_work_sync(&hdev->unknown_acl_work);
 
 	if (hdev->discov_timeout > 0) {
 		hdev->discov_timeout = 0;
@@ -5520,6 +5525,7 @@ int hci_dev_close_sync(struct hci_dev *hdev)
 
 	/* Drop queues */
 	skb_queue_purge(&hdev->rx_q);
+	skb_queue_purge(&hdev->unknown_acl_q);
 	skb_queue_purge(&hdev->cmd_q);
 	skb_queue_purge(&hdev->raw_q);
 

@@ -47,6 +47,7 @@
 static void hci_rx_work(struct work_struct *work);
 static void hci_cmd_work(struct work_struct *work);
 static void hci_tx_work(struct work_struct *work);
+static void hci_unknown_acl_work(struct work_struct *work);
 
 /* HCI device list */
 LIST_HEAD(hci_dev_list);
@@ -2511,6 +2512,7 @@ struct hci_dev *hci_alloc_dev_priv(int sizeof_priv)
 	INIT_WORK(&hdev->rx_work, hci_rx_work);
 	INIT_WORK(&hdev->cmd_work, hci_cmd_work);
 	INIT_WORK(&hdev->tx_work, hci_tx_work);
+	INIT_DELAYED_WORK(&hdev->unknown_acl_work, hci_unknown_acl_work);
 	INIT_WORK(&hdev->power_on, hci_power_on);
 	INIT_WORK(&hdev->error_reset, hci_error_reset);
 
@@ -2519,6 +2521,7 @@ struct hci_dev *hci_alloc_dev_priv(int sizeof_priv)
 	INIT_DELAYED_WORK(&hdev->power_off, hci_power_off);
 
 	skb_queue_head_init(&hdev->rx_q);
+	skb_queue_head_init(&hdev->unknown_acl_q);
 	skb_queue_head_init(&hdev->cmd_q);
 	skb_queue_head_init(&hdev->raw_q);
 
@@ -2669,6 +2672,7 @@ void hci_unregister_dev(struct hci_dev *hdev)
 	disable_work_sync(&hdev->rx_work);
 	disable_work_sync(&hdev->cmd_work);
 	disable_work_sync(&hdev->tx_work);
+	disable_delayed_work_sync(&hdev->unknown_acl_work);
 	disable_work_sync(&hdev->power_on);
 	disable_work_sync(&hdev->error_reset);
 	disable_delayed_work_sync(&hdev->cmd_timer);
@@ -3793,8 +3797,11 @@ static void hci_tx_work(struct work_struct *work)
 
 /* ----- HCI RX task (incoming data processing) ----- */
 
+#define HCI_UNKNOWN_ACL_TIMEOUT_MS 4
+
 /* ACL data packet */
-static void hci_acldata_packet(struct hci_dev *hdev, struct sk_buff *skb)
+static int hci_acldata_packet(struct hci_dev *hdev, struct sk_buff *skb,
+			      bool retry)
 {
 	struct hci_acl_hdr *hdr;
 	__u16 handle, flags;
@@ -3804,7 +3811,7 @@ static void hci_acldata_packet(struct hci_dev *hdev, struct sk_buff *skb)
 	if (!hdr) {
 		bt_dev_err(hdev, "ACL packet too small");
 		kfree_skb(skb);
-		return;
+		return -EINVAL;
 	}
 
 	handle = __le16_to_cpu(hdr->handle);
@@ -3814,15 +3821,93 @@ static void hci_acldata_packet(struct hci_dev *hdev, struct sk_buff *skb)
 	bt_dev_dbg(hdev, "len %d handle 0x%4.4x flags 0x%4.4x", skb->len,
 		   handle, flags);
 
-	hdev->stat.acl_rx++;
+	if (!retry)
+		hdev->stat.acl_rx++;
 
 	err = l2cap_recv_acldata(hdev, handle, skb, flags);
-	if (err == -ENOENT)
-		bt_dev_err(hdev, "ACL packet for unknown connection handle %d",
-			   handle);
-	else if (err)
+	if (err == -ENOENT) {
+		skb_push(skb, sizeof(*hdr));
+		return err;
+	}
+
+	if (err)
 		bt_dev_dbg(hdev, "ACL packet recv for handle %d failed: %d",
 			   handle, err);
+
+	return err;
+}
+
+static bool hci_unknown_acl_expired(struct sk_buff *skb)
+{
+	return time_after_eq(jiffies, hci_skb_acl_expires(skb));
+}
+
+static u16 hci_unknown_acl_handle(struct sk_buff *skb)
+{
+	return hci_handle(le16_to_cpu(hci_acl_hdr(skb)->handle));
+}
+
+static void hci_drop_unknown_acl(struct hci_dev *hdev, struct sk_buff *skb)
+{
+	bt_dev_err(hdev, "ACL packet for unknown connection handle %d",
+		   hci_unknown_acl_handle(skb));
+	kfree_skb(skb);
+}
+
+static void hci_queue_unknown_acl(struct hci_dev *hdev, struct sk_buff *skb)
+{
+	bt_dev_warn_ratelimited(hdev,
+				"Queuing ACL packet for unknown connection handle %d",
+				hci_unknown_acl_handle(skb));
+	hci_skb_acl_expires(skb) =
+		jiffies + msecs_to_jiffies(HCI_UNKNOWN_ACL_TIMEOUT_MS);
+	skb_queue_tail(&hdev->unknown_acl_q, skb);
+	queue_delayed_work(hdev->workqueue, &hdev->unknown_acl_work,
+			   msecs_to_jiffies(HCI_UNKNOWN_ACL_TIMEOUT_MS));
+}
+
+static void hci_retry_unknown_acl(struct hci_dev *hdev)
+{
+	unsigned int count = skb_queue_len(&hdev->unknown_acl_q);
+	struct sk_buff *skb;
+	unsigned long delay;
+
+	if (hci_dev_test_flag(hdev, HCI_USER_CHANNEL)) {
+		cancel_delayed_work(&hdev->unknown_acl_work);
+		skb_queue_purge(&hdev->unknown_acl_q);
+		return;
+	}
+
+	while (count-- && (skb = skb_dequeue(&hdev->unknown_acl_q))) {
+		if (hci_acldata_packet(hdev, skb, true) != -ENOENT)
+			continue;
+
+		if (hci_unknown_acl_expired(skb)) {
+			hci_drop_unknown_acl(hdev, skb);
+			continue;
+		}
+
+		skb_queue_tail(&hdev->unknown_acl_q, skb);
+	}
+
+	if (skb_queue_empty(&hdev->unknown_acl_q)) {
+		cancel_delayed_work(&hdev->unknown_acl_work);
+		return;
+	}
+
+	skb = skb_peek(&hdev->unknown_acl_q);
+	delay = time_after(hci_skb_acl_expires(skb), jiffies) ?
+		hci_skb_acl_expires(skb) - jiffies : 0;
+	queue_delayed_work(hdev->workqueue, &hdev->unknown_acl_work,
+			   max_t(unsigned long, 1, delay));
+}
+
+static void hci_unknown_acl_work(struct work_struct *work)
+{
+	struct hci_dev *hdev = container_of(work, struct hci_dev,
+					   unknown_acl_work.work);
+
+	hci_retry_unknown_acl(hdev);
 }
 
 /* SCO data packet */
@@ -4039,11 +4124,21 @@ static void hci_rx_work(struct work_struct *work)
 		case HCI_EVENT_PKT:
 			BT_DBG("%s Event packet", hdev->name);
 			hci_event_packet(hdev, skb);
+			if (!skb_queue_empty(&hdev->unknown_acl_q))
+				hci_retry_unknown_acl(hdev);
 			break;
 
 		case HCI_ACLDATA_PKT:
 			BT_DBG("%s ACL data packet", hdev->name);
-			hci_acldata_packet(hdev, skb);
+			if (hci_acldata_packet(hdev, skb, false) == -ENOENT) {
+				if (hci_test_quirk(hdev,
+						   HCI_QUIRK_OUT_OF_ORDER_ACL) &&
+				    hci_dev_test_flag(hdev,
+						      HCI_OUT_OF_ORDER_ACL_ENABLED))
+					hci_queue_unknown_acl(hdev, skb);
+				else
+					hci_drop_unknown_acl(hdev, skb);
+			}
 			break;
 
 		case HCI_SCODATA_PKT:

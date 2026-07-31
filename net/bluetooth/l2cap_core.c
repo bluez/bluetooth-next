@@ -7799,7 +7799,7 @@ int l2cap_recv_acldata(struct hci_dev *hdev, u16 handle,
 	hcon = hci_conn_hash_lookup_handle(hdev, handle);
 	if (!hcon) {
 		hci_dev_unlock(hdev);
-		kfree_skb(skb);
+		/* Leave ownership with HCI so it can retry the packet. */
 		return -ENOENT;
 	}
 

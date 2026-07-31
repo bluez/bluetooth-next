@@ -34,6 +34,8 @@ static bool disable_scofix;
 static bool force_scofix;
 static bool enable_autosuspend = IS_ENABLED(CONFIG_BT_HCIBTUSB_AUTOSUSPEND);
 static bool enable_poll_sync = IS_ENABLED(CONFIG_BT_HCIBTUSB_POLL_SYNC);
+static bool enable_early_acl_hold =
+	IS_ENABLED(CONFIG_BT_HCIBTUSB_EARLY_ACL_HOLD);
 static bool reset = true;
 
 static struct usb_driver btusb_driver;
@@ -3964,6 +3966,57 @@ static const struct file_operations force_poll_sync_fops = {
 	.llseek		= default_llseek,
 };
 
+static ssize_t force_early_acl_hold_read(struct file *file,
+					 char __user *user_buf, size_t count,
+					 loff_t *ppos)
+{
+	struct btusb_data *data = file->private_data;
+	char buf[3];
+
+	buf[0] = hci_dev_test_flag(data->hdev,
+				   HCI_OUT_OF_ORDER_ACL_ENABLED) ? 'Y' : 'N';
+	buf[1] = '\n';
+	buf[2] = '\0';
+
+	return simple_read_from_buffer(user_buf, count, ppos, buf, 2);
+}
+
+static ssize_t force_early_acl_hold_write(struct file *file,
+					  const char __user *user_buf,
+					  size_t count, loff_t *ppos)
+{
+	struct btusb_data *data = file->private_data;
+	bool enabled;
+	int err;
+
+	err = kstrtobool_from_user(user_buf, count, &enabled);
+	if (err)
+		return err;
+
+	/* Only allow changes while the adapter is down */
+	if (test_bit(HCI_UP, &data->hdev->flags))
+		return -EPERM;
+
+	if (hci_dev_test_flag(data->hdev, HCI_OUT_OF_ORDER_ACL_ENABLED) ==
+	    enabled)
+		return -EALREADY;
+
+	if (enabled)
+		hci_dev_set_flag(data->hdev, HCI_OUT_OF_ORDER_ACL_ENABLED);
+	else
+		hci_dev_clear_flag(data->hdev, HCI_OUT_OF_ORDER_ACL_ENABLED);
+
+	return count;
+}
+
+static const struct file_operations force_early_acl_hold_fops = {
+	.owner		= THIS_MODULE,
+	.open		= simple_open,
+	.read		= force_early_acl_hold_read,
+	.write		= force_early_acl_hold_write,
+	.llseek		= default_llseek,
+};
+
 #define BTUSB_HCI_DRV_OP_SUPPORTED_ALTSETTINGS \
 		hci_opcode_pack(HCI_DRV_OGF_DRIVER_SPECIFIC, 0x0000)
 #define BTUSB_HCI_DRV_SUPPORTED_ALTSETTINGS_SIZE	0
@@ -4460,6 +4513,10 @@ static int btusb_probe(struct usb_interface *intf,
 	if (enable_autosuspend)
 		usb_enable_autosuspend(data->udev);
 
+	hci_set_quirk(hdev, HCI_QUIRK_OUT_OF_ORDER_ACL);
+	if (enable_early_acl_hold)
+		hci_dev_set_flag(hdev, HCI_OUT_OF_ORDER_ACL_ENABLED);
+
 	data->poll_sync = enable_poll_sync;
 
 	err = hci_register_dev(hdev);
@@ -4470,6 +4527,8 @@ static int btusb_probe(struct usb_interface *intf,
 
 	debugfs_create_file("force_poll_sync", 0644, hdev->debugfs, data,
 			    &force_poll_sync_fops);
+	debugfs_create_file("force_early_acl_hold", 0644, hdev->debugfs, data,
+			    &force_early_acl_hold_fops);
 
 	return 0;
 

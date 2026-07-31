@@ -375,6 +375,14 @@ enum {
 	 */
 	HCI_QUIRK_BROKEN_READ_PAGE_SCAN_TYPE,
 
+	/* When this quirk is set, ACL packets received before their connection
+	 * handle is registered may be queued briefly. This can happen on
+	 * transports with separate event and ACL data channels.
+	 *
+	 * This quirk must be set before hci_register_dev is called.
+	 */
+	HCI_QUIRK_OUT_OF_ORDER_ACL,
+
 	__HCI_NUM_QUIRKS,
 };
 
@@ -468,6 +476,7 @@ enum {
 	HCI_OFFLOAD_CODECS_ENABLED,
 	HCI_LE_SIMULTANEOUS_ROLES,
 	HCI_CMD_DRAIN_WORKQUEUE,
+	HCI_OUT_OF_ORDER_ACL_ENABLED,
 
 	HCI_MESH_EXPERIMENTAL,
 	HCI_MESH,

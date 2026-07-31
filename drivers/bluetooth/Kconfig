@@ -56,6 +56,18 @@ config BT_HCIBTUSB_POLL_SYNC
 	  Say Y here to enable USB poll_sync for Bluetooth USB devices by
 	  default.
 
+config BT_HCIBTUSB_EARLY_ACL_HOLD
+	bool "Enable USB early ACL packet hold by default"
+	depends on BT_HCIBTUSB
+	default n
+	help
+	  Hold ACL packets for a nominal 4 milliseconds when their connection
+	  handle has not been registered yet. This works around USB controllers
+	  whose event endpoint can lag behind their ACL data endpoint.
+
+	  The default can be overridden per adapter using the
+	  force_early_acl_hold debugfs entry while the adapter is down.
+
 config BT_HCIBTUSB_BCM
 	bool "Broadcom protocol support"
 	depends on BT_HCIBTUSB

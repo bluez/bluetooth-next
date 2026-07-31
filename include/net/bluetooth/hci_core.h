@@ -515,10 +515,12 @@ struct hci_dev {
 	struct work_struct	rx_work;
 	struct work_struct	cmd_work;
 	struct work_struct	tx_work;
+	struct delayed_work	unknown_acl_work;
 
 	struct delayed_work	le_scan_disable;
 
 	struct sk_buff_head	rx_q;
+	struct sk_buff_head	unknown_acl_q;
 	struct sk_buff_head	raw_q;
 	struct sk_buff_head	cmd_q;
 
@@ -859,6 +861,7 @@ extern struct mutex hci_cb_list_lock;
 /* ----- HCI interface to upper protocols ----- */
 int l2cap_connect_ind(struct hci_dev *hdev, bdaddr_t *bdaddr);
 int l2cap_disconn_ind(struct hci_conn *hcon);
+/* The caller retains ownership of skb only when -ENOENT is returned. */
 int l2cap_recv_acldata(struct hci_dev *hdev, u16 handle, struct sk_buff *skb,
 		       u16 flags);
 
