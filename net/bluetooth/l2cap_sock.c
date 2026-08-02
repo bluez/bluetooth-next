@@ -1227,9 +1227,42 @@ static int l2cap_sock_recvmsg(struct socket *sock, struct msghdr *msg,
 	if (sk->sk_state == BT_CONNECT2 && test_bit(BT_SK_DEFER_SETUP,
 						    &bt_sk(sk)->flags)) {
 		if (pi->chan->mode == L2CAP_MODE_EXT_FLOWCTL) {
+			struct l2cap_chan *chan = pi->chan;
+			struct l2cap_conn *conn;
+
 			sk->sk_state = BT_CONNECTED;
-			pi->chan->state = BT_CONNECTED;
-			__l2cap_ecred_conn_rsp_defer(pi->chan);
+			chan->state = BT_CONNECTED;
+
+			/* __l2cap_ecred_conn_rsp_defer() walks and mutates
+			 * conn->chan_l (via __l2cap_chan_list_id() and
+			 * l2cap_chan_del()), which is serialised by conn->lock
+			 * and is concurrently modified by the RX worker.  The
+			 * established lock order is
+			 * conn->lock -> chan->lock -> sk_lock, so the socket
+			 * lock must be dropped before taking conn->lock to
+			 * avoid inverting it (lockdep deadlock).  Pin the conn
+			 * across the unlocked window; chan needs no extra
+			 * reference because the socket holds one until
+			 * sk->sk_socket is cleared, which cannot happen while
+			 * this call is in progress.
+			 */
+			conn = l2cap_conn_hold_unless_zero(chan->conn);
+			release_sock(sk);
+			if (conn) {
+				mutex_lock(&conn->lock);
+				/* The RX worker may have torn the channel down
+				 * (FLAG_DEL, removed from conn->chan_l) while the
+				 * socket lock was dropped; skip the response in
+				 * that case. conn->lock below serialises the
+				 * chan_l walk against the RX worker's
+				 * l2cap_chan_del().
+				 */
+				if (!test_bit(FLAG_DEL, &chan->flags))
+					__l2cap_ecred_conn_rsp_defer(chan);
+				mutex_unlock(&conn->lock);
+				l2cap_conn_put(conn);
+			}
+			lock_sock(sk);
 		} else if (bdaddr_type_is_le(pi->chan->src_type)) {
 			sk->sk_state = BT_CONNECTED;
 			pi->chan->state = BT_CONNECTED;
