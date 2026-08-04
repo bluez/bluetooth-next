@@ -183,6 +183,7 @@ struct qca_data {
 	u64 rx_votes_on;
 	u64 tx_votes_off;
 	u64 rx_votes_off;
+	bool diag_as_acl;
 	u64 votes_on;
 	u64 votes_off;
 };
@@ -699,6 +700,7 @@ static void qca_debugfs_init(struct hci_dev *hdev)
 	debugfs_create_u32("wake_retrans", mode, ibs_dir, &qca->wake_retrans);
 	debugfs_create_u32("tx_idle_delay", mode, ibs_dir,
 			   &qca->tx_idle_delay);
+	debugfs_create_bool("diag_as_acl", 0644, hdev->debugfs, &qca->diag_as_acl);
 }
 
 /* Flush protocol data */
@@ -999,12 +1001,14 @@ static int qca_ibs_wake_ack(struct hci_dev *hdev, struct sk_buff *skb)
 
 static int qca_recv_acl_data(struct hci_dev *hdev, struct sk_buff *skb)
 {
+	struct hci_uart *hu = hci_get_drvdata(hdev);
+	struct qca_data *qca = hu->priv;
 	/* We receive debug logs from chip as an ACL packets.
 	 * Instead of sending the data to ACL to decode the
 	 * received data, we are pushing them to the above layers
 	 * as a diagnostic packet.
 	 */
-	if (get_unaligned_le16(skb->data) == QCA_DEBUG_HANDLE)
+	if (!READ_ONCE(qca->diag_as_acl) && get_unaligned_le16(skb->data) == QCA_DEBUG_HANDLE)
 		return hci_recv_diag(hdev, skb);
 
 	return hci_recv_frame(hdev, skb);
