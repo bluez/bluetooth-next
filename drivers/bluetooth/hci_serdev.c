@@ -397,18 +397,22 @@ void hci_uart_unregister_device(struct hci_uart *hu)
 	struct hci_dev *hdev = hu->hdev;
 
 	cancel_work_sync(&hu->init_ready);
-	if (test_bit(HCI_UART_REGISTERED, &hu->flags))
-		hci_unregister_dev(hdev);
-	hci_free_dev(hdev);
 
-	cancel_work_sync(&hu->write_work);
-
-	hu->proto->close(hu);
-
+	/* Clear HCI_UART_PROTO_READY first to prevent the write_wakeup
+	 * callback from re-scheduling write_work via hci_uart_tx_wakeup().
+	 */
 	if (test_bit(HCI_UART_PROTO_READY, &hu->flags)) {
 		clear_bit(HCI_UART_PROTO_READY, &hu->flags);
 		serdev_device_close(hu->serdev);
 	}
+
+	cancel_work_sync(&hu->write_work);
+
+	if (test_bit(HCI_UART_REGISTERED, &hu->flags))
+		hci_unregister_dev(hdev);
+
+	hu->proto->close(hu);
+	hci_free_dev(hdev);
 	percpu_free_rwsem(&hu->proto_lock);
 }
 EXPORT_SYMBOL_GPL(hci_uart_unregister_device);
