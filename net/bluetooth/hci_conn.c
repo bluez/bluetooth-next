@@ -628,6 +628,15 @@ static void hci_conn_timeout(struct work_struct *work)
 
 	BT_DBG("hcon %p state %s", conn, state_to_string(conn->state));
 
+	if (test_bit(HCI_CONN_EARLY_ACL, &conn->flags)) {
+		bt_dev_err(conn->hdev,
+			   "ACL packet for unknown connection handle %d",
+			   conn->handle);
+		conn->state = BT_CLOSED;
+		hci_abort_conn(conn, HCI_ERROR_UNKNOWN_CONN_ID);
+		return;
+	}
+
 	WARN_ON(refcnt < 0);
 
 	/* FIXME: It was observed that in pairing failed scenario, refcnt

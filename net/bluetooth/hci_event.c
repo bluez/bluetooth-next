@@ -5695,6 +5695,44 @@ unlock:
 	hci_dev_unlock(hdev);
 }
 
+static struct hci_conn *hci_early_acl_lookup(struct hci_dev *hdev, u16 handle)
+{
+	struct hci_conn *conn;
+
+	conn = hci_conn_hash_lookup_handle(hdev, handle);
+	if (!conn || !test_bit(HCI_CONN_EARLY_ACL, &conn->flags))
+		return NULL;
+
+	return conn;
+}
+
+static void hci_early_acl_discard(struct hci_conn *conn)
+{
+	cancel_delayed_work(&conn->disc_work);
+	if (conn->state == BT_OPEN)
+		bt_dev_err(conn->hdev,
+			   "ACL packet for unknown connection handle %d",
+			   conn->handle);
+
+	clear_bit(HCI_CONN_EARLY_ACL, &conn->flags);
+	hci_disconn_cfm(conn, HCI_ERROR_LOCAL_HOST_TERM);
+	hci_conn_del(conn);
+}
+
+static struct hci_conn *hci_early_acl_adopt(struct hci_conn *conn, u8 role,
+					    bdaddr_t *bdaddr, u8 bdaddr_type)
+{
+	if (conn->state != BT_OPEN || role != HCI_ROLE_SLAVE)
+		return NULL;
+
+	cancel_delayed_work(&conn->disc_work);
+	clear_bit(HCI_CONN_EARLY_ACL, &conn->flags);
+	bacpy(&conn->dst, bdaddr);
+	conn->dst_type = bdaddr_type;
+
+	return conn;
+}
+
 static void le_conn_update_addr(struct hci_conn *conn, bdaddr_t *bdaddr,
 				u8 bdaddr_type, bdaddr_t *local_rpa)
 {
@@ -5755,6 +5793,7 @@ static void le_conn_complete_evt(struct hci_dev *hdev, u8 status,
 				 u16 supervision_timeout)
 {
 	struct hci_conn_params *params;
+	struct hci_conn *early = NULL;
 	struct hci_conn *conn;
 	struct smp_irk *irk;
 	u8 addr_type;
@@ -5762,6 +5801,8 @@ static void le_conn_complete_evt(struct hci_dev *hdev, u8 status,
 
 	hci_dev_lock(hdev);
 	hci_store_wake_reason(hdev, bdaddr, bdaddr_type);
+	if (!status)
+		early = hci_early_acl_lookup(hdev, handle);
 
 	/* All controllers implicitly stop advertising in the event of a
 	 * connection, so ensure that the state bit is cleared.
@@ -5778,6 +5819,9 @@ static void le_conn_complete_evt(struct hci_dev *hdev, u8 status,
 	 *    it even attempts to connect (e.g. hcon->state == BT_OPEN).
 	 */
 	conn = hci_conn_hash_lookup_role(hdev, LE_LINK, role, bdaddr);
+	if (early && (!conn || conn == early))
+		conn = hci_early_acl_adopt(early, role, bdaddr, bdaddr_type);
+
 	if (!conn ||
 	    (conn->role == HCI_ROLE_MASTER && conn->state != BT_CONNECT)) {
 		/* In case of error status and there is no connection pending
@@ -5823,10 +5867,13 @@ static void le_conn_complete_evt(struct hci_dev *hdev, u8 status,
 	 * As the connection handle is set here for the first time, it indicates
 	 * whether the connection is already set up.
 	 */
-	if (!HCI_CONN_HANDLE_UNSET(conn->handle)) {
+	if (conn != early && !HCI_CONN_HANDLE_UNSET(conn->handle)) {
 		bt_dev_err(hdev, "Ignoring HCI_Connection_Complete for existing connection");
 		goto unlock;
 	}
+
+	if (early && conn != early)
+		hci_early_acl_discard(early);
 
 	le_conn_update_addr(conn, bdaddr, bdaddr_type, local_rpa);
 
