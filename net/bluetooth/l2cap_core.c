@@ -7816,9 +7816,23 @@ int l2cap_recv_acldata(struct hci_dev *hdev, u16 handle,
 
 	hcon = hci_conn_hash_lookup_handle(hdev, handle);
 	if (!hcon) {
-		hci_dev_unlock(hdev);
-		kfree_skb(skb);
-		return -ENOENT;
+		if (!hci_dev_test_flag(hdev, HCI_LE_ADV)) {
+			hci_dev_unlock(hdev);
+			kfree_skb(skb);
+			return -ENOENT;
+		}
+
+		hcon = hci_conn_add(hdev, LE_LINK, BDADDR_ANY, 0,
+				    HCI_ROLE_SLAVE, handle);
+		if (IS_ERR(hcon)) {
+			hci_dev_unlock(hdev);
+			kfree_skb(skb);
+			return PTR_ERR(hcon);
+		}
+
+		set_bit(HCI_CONN_EARLY_ACL, &hcon->flags);
+		queue_delayed_work(hdev->workqueue, &hcon->disc_work,
+				   HCI_EARLY_ACL_TIMEOUT);
 	}
 
 	lockdep_assert_held(&hcon->hdev->lock);
