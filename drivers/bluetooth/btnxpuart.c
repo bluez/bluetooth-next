@@ -1044,11 +1044,19 @@ static int nxp_recv_fw_req_v1(struct hci_dev *hdev, struct sk_buff *skb)
 		 * and we need to re-send the previous header again.
 		 */
 		if (len == nxpdev->fw_v1_expected_len) {
-			if (len == HDR_LEN)
+			if (len == HDR_LEN) {
+				if (nxpdev->fw_dnld_v1_offset >= nxpdev->fw->size ||
+				    nxpdev->fw->size - nxpdev->fw_dnld_v1_offset < HDR_LEN) {
+					bt_dev_err(hdev, "FW request out of bounds: offset %u, expected_len %u, fw size %zu",
+						   nxpdev->fw_dnld_v1_offset, len,
+						   nxpdev->fw->size);
+					goto free_skb;
+				}
 				nxpdev->fw_v1_expected_len = nxp_get_data_len(nxpdev->fw->data +
 									nxpdev->fw_dnld_v1_offset);
-			else
+			} else {
 				nxpdev->fw_v1_expected_len = HDR_LEN;
+			}
 		} else if (len == HDR_LEN) {
 			/* FW download out of sync. Send previous chunk again */
 			nxpdev->fw_dnld_v1_offset -= nxpdev->fw_v1_sent_bytes;
@@ -1056,7 +1064,8 @@ static int nxp_recv_fw_req_v1(struct hci_dev *hdev, struct sk_buff *skb)
 		}
 	}
 
-	if (nxpdev->fw_dnld_v1_offset + len <= nxpdev->fw->size)
+	if (nxpdev->fw_dnld_v1_offset < nxpdev->fw->size &&
+	    len <= nxpdev->fw->size - nxpdev->fw_dnld_v1_offset)
 		serdev_device_write_buf(nxpdev->serdev, nxpdev->fw->data +
 					nxpdev->fw_dnld_v1_offset, len);
 	nxpdev->fw_v1_sent_bytes = len;
