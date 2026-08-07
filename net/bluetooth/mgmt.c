@@ -10894,22 +10894,3 @@ void mgmt_exit(void)
 {
 	hci_mgmt_chan_unregister(&chan);
 }
-
-void mgmt_cleanup(struct sock *sk)
-{
-	struct mgmt_mesh_tx *mesh_tx;
-	struct hci_dev *hdev;
-
-	read_lock(&hci_dev_list_lock);
-
-	list_for_each_entry(hdev, &hci_dev_list, list) {
-		do {
-			mesh_tx = mgmt_mesh_next(hdev, sk);
-
-			if (mesh_tx)
-				mesh_send_complete(hdev, mesh_tx, true);
-		} while (mesh_tx);
-	}
-
-	read_unlock(&hci_dev_list_lock);
-}
