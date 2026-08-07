@@ -19,6 +19,7 @@
 
 struct mgmt_mesh_tx {
 	struct list_head list;
+	refcount_t ref;
 	int index;
 	size_t param_len;
 	struct sock *sk;
@@ -72,4 +73,6 @@ struct mgmt_mesh_tx *mgmt_mesh_find(struct hci_dev *hdev, u8 handle);
 struct mgmt_mesh_tx *mgmt_mesh_next(struct hci_dev *hdev, struct sock *sk);
 struct mgmt_mesh_tx *mgmt_mesh_add(struct sock *sk, struct hci_dev *hdev,
 				   void *data, u16 len);
+struct mgmt_mesh_tx *mgmt_mesh_get(struct mgmt_mesh_tx *mesh_tx);
+void mgmt_mesh_put(struct mgmt_mesh_tx *mesh_tx);
 void mgmt_mesh_remove(struct mgmt_mesh_tx *mesh_tx);
