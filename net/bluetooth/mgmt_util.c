@@ -422,6 +422,7 @@ struct mgmt_mesh_tx *mgmt_mesh_add(struct sock *sk, struct hci_dev *hdev,
 	if (!mesh_tx)
 		return NULL;
 
+	refcount_set(&mesh_tx->ref, 1);
 	hdev->mesh_send_ref++;
 	if (!hdev->mesh_send_ref)
 		hdev->mesh_send_ref++;
@@ -438,9 +439,27 @@ struct mgmt_mesh_tx *mgmt_mesh_add(struct sock *sk, struct hci_dev *hdev,
 	return mesh_tx;
 }
 
-void mgmt_mesh_remove(struct mgmt_mesh_tx *mesh_tx)
+struct mgmt_mesh_tx *mgmt_mesh_get(struct mgmt_mesh_tx *mesh_tx)
 {
-	list_del(&mesh_tx->list);
+	refcount_inc(&mesh_tx->ref);
+
+	return mesh_tx;
+}
+
+void mgmt_mesh_put(struct mgmt_mesh_tx *mesh_tx)
+{
+	if (!refcount_dec_and_test(&mesh_tx->ref))
+		return;
+
 	sock_put(mesh_tx->sk);
 	kfree(mesh_tx);
+}
+
+void mgmt_mesh_remove(struct mgmt_mesh_tx *mesh_tx)
+{
+	if (list_empty(&mesh_tx->list))
+		return;
+
+	list_del_init(&mesh_tx->list);
+	mgmt_mesh_put(mesh_tx);
 }
