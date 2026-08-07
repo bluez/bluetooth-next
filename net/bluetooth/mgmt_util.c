@@ -369,6 +369,8 @@ void mgmt_mesh_foreach(struct hci_dev *hdev,
 {
 	struct mgmt_mesh_tx *mesh_tx, *tmp;
 
+	lockdep_assert_held(&hdev->lock);
+
 	list_for_each_entry_safe(mesh_tx, tmp, &hdev->mesh_pending, list) {
 		if (!sk || mesh_tx->sk == sk)
 			cb(mesh_tx, data);
@@ -378,6 +380,8 @@ void mgmt_mesh_foreach(struct hci_dev *hdev,
 struct mgmt_mesh_tx *mgmt_mesh_next(struct hci_dev *hdev, struct sock *sk)
 {
 	struct mgmt_mesh_tx *mesh_tx;
+
+	lockdep_assert_held(&hdev->lock);
 
 	if (list_empty(&hdev->mesh_pending))
 		return NULL;
@@ -394,6 +398,8 @@ struct mgmt_mesh_tx *mgmt_mesh_find(struct hci_dev *hdev, u8 handle)
 {
 	struct mgmt_mesh_tx *mesh_tx;
 
+	lockdep_assert_held(&hdev->lock);
+
 	if (list_empty(&hdev->mesh_pending))
 		return NULL;
 
@@ -409,6 +415,8 @@ struct mgmt_mesh_tx *mgmt_mesh_add(struct sock *sk, struct hci_dev *hdev,
 				   void *data, u16 len)
 {
 	struct mgmt_mesh_tx *mesh_tx;
+
+	lockdep_assert_held(&hdev->lock);
 
 	mesh_tx = kzalloc_obj(*mesh_tx);
 	if (!mesh_tx)
