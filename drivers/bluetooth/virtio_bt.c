@@ -12,7 +12,7 @@
 #include <net/bluetooth/hci_core.h>
 
 #define VERSION "0.1"
-#define VIRTBT_RX_BUF_SIZE 1000
+#define VIRTBT_RX_BUF_SIZE	(HCI_MAX_FRAME_SIZE + 1)
 
 enum {
 	VIRTBT_VQ_TX,
@@ -23,24 +23,39 @@ enum {
 struct virtio_bluetooth {
 	struct virtio_device *vdev;
 	struct virtqueue *vqs[VIRTBT_NUM_VQS];
-	struct work_struct rx;
+	struct work_struct rx_refill;
+	/* Serializes RX virtqueue operations and teardown. */
+	spinlock_t rx_lock;
 	struct hci_dev *hdev;
+	unsigned int rx_buf_count;
+	bool stopped;
 };
 
-static int virtbt_add_inbuf(struct virtio_bluetooth *vbt)
+static int virtbt_add_inbuf(struct virtio_bluetooth *vbt, gfp_t gfp)
 {
 	struct virtqueue *vq = vbt->vqs[VIRTBT_VQ_RX];
 	struct scatterlist sg[1];
 	struct sk_buff *skb;
+	unsigned long flags;
 	int err;
 
-	skb = alloc_skb(VIRTBT_RX_BUF_SIZE, GFP_KERNEL);
+	skb = alloc_skb(VIRTBT_RX_BUF_SIZE, gfp);
 	if (!skb)
 		return -ENOMEM;
 
 	sg_init_one(sg, skb->data, VIRTBT_RX_BUF_SIZE);
 
-	err = virtqueue_add_inbuf(vq, sg, 1, skb, GFP_KERNEL);
+	spin_lock_irqsave(&vbt->rx_lock, flags);
+	if (vbt->stopped) {
+		err = -ESHUTDOWN;
+	} else {
+		/* The lock serializes RX callback and refill worker producers. */
+		err = virtqueue_add_inbuf(vq, sg, 1, skb, GFP_ATOMIC);
+		if (!err)
+			vbt->rx_buf_count++;
+	}
+	spin_unlock_irqrestore(&vbt->rx_lock, flags);
+
 	if (err < 0) {
 		kfree_skb(skb);
 		return err;
@@ -56,10 +71,20 @@ static int virtbt_open(struct hci_dev *hdev)
 
 static int virtbt_open_vdev(struct virtio_bluetooth *vbt)
 {
-	if (virtbt_add_inbuf(vbt) < 0)
+	struct virtqueue *vq = vbt->vqs[VIRTBT_VQ_RX];
+	int err;
+
+	if (!virtqueue_get_vring_size(vq))
 		return -EIO;
 
-	virtqueue_kick(vbt->vqs[VIRTBT_VQ_RX]);
+	do {
+		err = virtbt_add_inbuf(vbt, GFP_KERNEL);
+	} while (!err);
+
+	if (!vbt->rx_buf_count)
+		return err;
+
+	virtqueue_kick(vq);
 	return 0;
 }
 
@@ -70,9 +95,15 @@ static int virtbt_close(struct hci_dev *hdev)
 
 static int virtbt_close_vdev(struct virtio_bluetooth *vbt)
 {
+	unsigned long flags;
 	int i;
 
-	cancel_work_sync(&vbt->rx);
+	spin_lock_irqsave(&vbt->rx_lock, flags);
+	vbt->stopped = true;
+	virtqueue_disable_cb(vbt->vqs[VIRTBT_VQ_RX]);
+	spin_unlock_irqrestore(&vbt->rx_lock, flags);
+
+	cancel_work_sync(&vbt->rx_refill);
 
 	for (i = 0; i < ARRAY_SIZE(vbt->vqs); i++) {
 		struct virtqueue *vq = vbt->vqs[i];
@@ -82,6 +113,10 @@ static int virtbt_close_vdev(struct virtio_bluetooth *vbt)
 			kfree_skb(skb);
 		cond_resched();
 	}
+
+	spin_lock_irqsave(&vbt->rx_lock, flags);
+	vbt->rx_buf_count = 0;
+	spin_unlock_irqrestore(&vbt->rx_lock, flags);
 
 	return 0;
 }
@@ -238,31 +273,17 @@ static void virtbt_rx_handle(struct virtio_bluetooth *vbt, struct sk_buff *skb)
 	hci_recv_frame(vbt->hdev, skb);
 }
 
-static void virtbt_rx_work(struct work_struct *work)
+static void virtbt_rx_refill_work(struct work_struct *work)
 {
 	struct virtio_bluetooth *vbt = container_of(work,
-						    struct virtio_bluetooth, rx);
-	struct sk_buff *skb;
-	unsigned int len;
+						    struct virtio_bluetooth, rx_refill);
+	bool kick = false;
 
-	skb = virtqueue_get_buf(vbt->vqs[VIRTBT_VQ_RX], &len);
-	if (!skb)
-		return;
+	while (!virtbt_add_inbuf(vbt, GFP_KERNEL))
+		kick = true;
 
-	if (!len || len > VIRTBT_RX_BUF_SIZE) {
-		bt_dev_err_ratelimited(vbt->hdev,
-				       "rx reply len %u outside [1, %u]\n",
-				       len, VIRTBT_RX_BUF_SIZE);
-		kfree_skb(skb);
-	} else {
-		skb_put(skb, len);
-		virtbt_rx_handle(vbt, skb);
-	}
-
-	if (virtbt_add_inbuf(vbt) < 0)
-		return;
-
-	virtqueue_kick(vbt->vqs[VIRTBT_VQ_RX]);
+	if (kick)
+		virtqueue_kick(vbt->vqs[VIRTBT_VQ_RX]);
 }
 
 static void virtbt_tx_done(struct virtqueue *vq)
@@ -277,8 +298,63 @@ static void virtbt_tx_done(struct virtqueue *vq)
 static void virtbt_rx_done(struct virtqueue *vq)
 {
 	struct virtio_bluetooth *vbt = vq->vdev->priv;
+	bool cb_enabled = true;
+	bool kick = false;
 
-	schedule_work(&vbt->rx);
+	for (;;) {
+		struct sk_buff *skb;
+		unsigned int len;
+		unsigned long flags;
+
+		spin_lock_irqsave(&vbt->rx_lock, flags);
+		if (vbt->stopped) {
+			spin_unlock_irqrestore(&vbt->rx_lock, flags);
+			return;
+		}
+
+		if (cb_enabled) {
+			virtqueue_disable_cb(vq);
+			cb_enabled = false;
+		}
+
+		skb = virtqueue_get_buf(vq, &len);
+		if (skb)
+			vbt->rx_buf_count--;
+
+		if (!skb) {
+			if (kick) {
+				spin_unlock_irqrestore(&vbt->rx_lock, flags);
+				kick = false;
+				virtqueue_kick(vq);
+				continue;
+			}
+
+			if (virtqueue_enable_cb(vq)) {
+				spin_unlock_irqrestore(&vbt->rx_lock, flags);
+				return;
+			}
+			cb_enabled = true;
+		}
+		spin_unlock_irqrestore(&vbt->rx_lock, flags);
+
+		if (!skb)
+			continue;
+
+		if (!len || len > VIRTBT_RX_BUF_SIZE) {
+			bt_dev_err_ratelimited(vbt->hdev,
+					       "rx reply len %u outside [1, %u]\n",
+					       len, VIRTBT_RX_BUF_SIZE);
+			kfree_skb(skb);
+		} else {
+			skb_put(skb, len);
+			virtbt_rx_handle(vbt, skb);
+		}
+
+		if (virtbt_add_inbuf(vbt, GFP_ATOMIC) < 0)
+			schedule_work(&vbt->rx_refill);
+		else
+			kick = true;
+	}
 }
 
 static int virtbt_probe(struct virtio_device *vdev)
@@ -311,7 +387,8 @@ static int virtbt_probe(struct virtio_device *vdev)
 	vdev->priv = vbt;
 	vbt->vdev = vdev;
 
-	INIT_WORK(&vbt->rx, virtbt_rx_work);
+	INIT_WORK(&vbt->rx_refill, virtbt_rx_refill_work);
+	spin_lock_init(&vbt->rx_lock);
 
 	err = virtio_find_vqs(vdev, VIRTBT_NUM_VQS, vbt->vqs, vqs_info, NULL);
 	if (err)
