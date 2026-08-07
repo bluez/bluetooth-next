@@ -12,7 +12,7 @@
 #include <net/bluetooth/hci_core.h>
 
 #define VERSION "0.1"
-#define VIRTBT_RX_BUF_SIZE 1000
+#define VIRTBT_RX_BUF_SIZE	(HCI_MAX_FRAME_SIZE + 1)
 
 enum {
 	VIRTBT_VQ_TX,
