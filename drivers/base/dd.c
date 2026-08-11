@@ -1436,3 +1436,85 @@ void driver_detach(const struct device_driver *drv)
 		put_device(dev);
 	}
 }
+
+struct device_reprobe {
+	struct delayed_work work;
+	struct device *dev;
+	const struct device_driver *drv;
+};
+
+static void device_reprobe_work_fn(struct work_struct *work)
+{
+	struct device_reprobe *rp = container_of(work, struct device_reprobe,
+						 work.work);
+	struct device *dev = rp->dev;
+	struct device *parent = dev->parent;
+	bool detached = false;
+
+	__device_driver_lock(dev, parent);
+	/*
+	 * rp->drv is only ever compared, never dereferenced: the driver it
+	 * points to may have been unregistered and freed by now.
+	 */
+	if (!dev->p->dead && !dev->p->shutdown_done &&
+	    dev->driver && dev->driver == rp->drv) {
+		__device_release_driver(dev, parent);
+		detached = true;
+	}
+	__device_driver_unlock(dev, parent);
+
+	if (detached && device_attach(dev) < 0)
+		dev_err(dev, "re-probe failed, device left unbound\n");
+
+	put_device(dev);
+	kfree(rp);
+}
+
+/**
+ * device_schedule_reprobe - schedule a deferred detach and re-probe
+ * @dev: device to detach and re-probe
+ * @delay_ms: delay in milliseconds before the re-probe runs
+ *
+ * Schedule a detach and re-probe of @dev after @delay_ms milliseconds.
+ * The re-probe is skipped if, by the time the scheduled work runs, the
+ * device has been removed, the system shutdown sequence has reached the
+ * device, or @dev is no longer bound to the driver that was bound at
+ * scheduling time. In particular an administrative unbind is never
+ * undone by a stale re-probe.
+ *
+ * The work function is built-in text, so the bound driver may call this
+ * from its own code without holding a module reference. If the driver
+ * module is unloaded before the work runs, driver unregistration unbinds
+ * @dev first and the scheduled work does nothing.
+ *
+ * Multiple pending re-probes for the same device are individually safe;
+ * a caller that wants at most one pending re-probe must gate scheduling
+ * itself.
+ *
+ * May only be called from process context.
+ *
+ * Returns: 0 on success, -EINVAL if @dev is not a registered device
+ * bound to a driver, -ENOMEM on allocation failure.
+ */
+int device_schedule_reprobe(struct device *dev, unsigned int delay_ms)
+{
+	struct device_reprobe *rp;
+
+	if (!dev->bus || !dev->p || !device_is_registered(dev))
+		return -EINVAL;
+	if (!dev->driver)
+		return -EINVAL;
+
+	rp = kzalloc_obj(*rp);
+	if (!rp)
+		return -ENOMEM;
+
+	rp->dev = get_device(dev);
+	rp->drv = READ_ONCE(dev->driver);
+	INIT_DELAYED_WORK(&rp->work, device_reprobe_work_fn);
+	queue_delayed_work(system_unbound_wq, &rp->work,
+			   msecs_to_jiffies(delay_ms));
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(device_schedule_reprobe);
