@@ -2277,6 +2277,21 @@ static void iso_conn_ready(struct iso_conn *conn)
 
 		lock_sock(parent);
 
+		/* The listener socket may have been closed concurrently
+		 * between iso_get_sock() and lock_sock(): the reference
+		 * taken by iso_get_sock() may be the last one, in which
+		 * case the socket is freed as soon as we drop it at the
+		 * end of this function.  Recheck that the parent is still
+		 * a valid, listening socket before creating a child
+		 * socket from it.
+		 */
+		if (parent->sk_state != BT_LISTEN ||
+		    sock_flag(parent, SOCK_ZAPPED)) {
+			release_sock(parent);
+			sock_put(parent);
+			return;
+		}
+
 		sk = iso_sock_alloc(sock_net(parent), NULL,
 				    BTPROTO_ISO, GFP_ATOMIC, 0);
 		if (!sk) {
