@@ -198,7 +198,7 @@ int btmtk_setup_firmware_79xx(struct hci_dev *hdev, const char *fwname,
 
 				err = wmt_cmd_sync(hdev, &wmt_params);
 				if (err < 0) {
-					bt_dev_err(hdev, "Failed to send wmt patch dwnld (%d)",
+					bt_dev_err(hdev, "Failed to get wmt patch status (%d)",
 						   err);
 					goto err_release_fw;
 				}
@@ -251,7 +251,7 @@ int btmtk_setup_firmware_79xx(struct hci_dev *hdev, const char *fwname,
 					err = -EIO;
 					goto err_release_fw;
 				} else if (err < 0) {
-					bt_dev_err(hdev, "Failed to send wmt patch dwnld (%d)",
+					bt_dev_err(hdev, "Failed to send wmt patch data (%d)",
 						   err);
 					goto err_release_fw;
 				}
@@ -1412,7 +1412,7 @@ int btmtk_usb_setup(struct hci_dev *hdev)
 
 		err = btmtk_usb_hci_wmt_sync(hdev, &wmt_params);
 		if (err < 0) {
-			bt_dev_err(hdev, "Failed to send wmt func ctrl (%d)", err);
+			bt_dev_err(hdev, "Failed to enable protocol (%d)", err);
 			return err;
 		}
 
@@ -1538,7 +1538,7 @@ int btmtk_usb_shutdown(struct hci_dev *hdev)
 
 	err = btmtk_usb_hci_wmt_sync(hdev, &wmt_params);
 	if (err < 0) {
-		bt_dev_err(hdev, "Failed to send wmt func ctrl (%d)", err);
+		bt_dev_err(hdev, "Failed to disable device (%d)", err);
 		usb_autopm_put_interface(data->intf);
 		return err;
 	}
