@@ -401,7 +401,7 @@ static int btintel_pcie_send_sync(struct btintel_pcie_data *data,
 
 	tfd_index = data->ia.tr_hia[BTINTEL_PCIE_TXQ_NUM];
 
-	if (tfd_index > txq->count)
+	if (tfd_index >= txq->count)
 		return -ERANGE;
 
 	/* Firmware raises alive interrupt on HCI_OP_RESET or
@@ -502,7 +502,7 @@ static int btintel_pcie_submit_rx(struct btintel_pcie_data *data)
 
 	frbd_index = data->ia.tr_hia[BTINTEL_PCIE_RXQ_NUM];
 
-	if (frbd_index > rxq->count)
+	if (frbd_index >= rxq->count)
 		return -ERANGE;
 
 	/* Prepare for RX submit. It updates the FRBD with the address of DMA
@@ -1094,12 +1094,15 @@ static void btintel_pcie_msix_tx_handle(struct btintel_pcie_data *data)
 	txq = &data->txq;
 
 	while (cr_tia != cr_hia) {
+		if (cr_tia >= txq->count)
+			return;
+
 		data->tx_wait_done = true;
 		wake_up(&data->tx_wait_q);
 
 		urbd0 = &txq->urbd0s[cr_tia];
 
-		if (urbd0->tfd_index > txq->count)
+		if (urbd0->tfd_index >= txq->count)
 			return;
 
 		cr_tia = (cr_tia + 1) % txq->count;
@@ -1646,8 +1649,20 @@ static void btintel_pcie_msix_rx_handle(struct btintel_pcie_data *data)
 	 * process all received CDs in this interrupt.
 	 */
 	while (cr_tia != cr_hia) {
+		if (cr_tia >= rxq->count) {
+			bt_dev_err(hdev, "RXQ: invalid cr_tia %u (count %u)",
+				   cr_tia, rxq->count);
+			return;
+		}
+
 		urbd1 = &rxq->urbd1s[cr_tia];
 		ipc_print_urbd1(data->hdev, urbd1, cr_tia);
+
+		if (urbd1->frbd_tag >= rxq->count) {
+			bt_dev_err(hdev, "RXQ: invalid frbd_tag %u (count %u)",
+				   urbd1->frbd_tag, rxq->count);
+			return;
+		}
 
 		buf = &rxq->bufs[urbd1->frbd_tag];
 		if (!buf) {
