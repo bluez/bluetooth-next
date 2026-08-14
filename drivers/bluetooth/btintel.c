@@ -289,7 +289,9 @@ void btintel_hw_error(struct hci_dev *hdev, u8 code)
 		goto unlock;
 	}
 
-	bt_dev_err(hdev, "Exception info %s", (char *)(skb->data + 1));
+	/* The exception info field is not guaranteed to be NUL terminated */
+	bt_dev_err(hdev, "Exception info %.*s", (int)(skb->len - 1),
+		   (char *)(skb->data + 1));
 
 	kfree_skb(skb);
 
