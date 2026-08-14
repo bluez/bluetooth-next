@@ -1472,7 +1472,7 @@ struct hci_std_codecs_hdr {
 } __packed;
 
 struct hci_std_codecs {
-	struct hci_std_codecs_hdr;
+	struct hci_std_codecs_hdr num;
 	__u8	codec[];
 } __packed;
 
@@ -1512,7 +1512,7 @@ struct hci_std_codecs_v2_hdr {
 } __packed;
 
 struct hci_std_codecs_v2 {
-	struct hci_std_codecs_v2_hdr;
+	struct hci_std_codecs_v2_hdr num;
 	struct hci_std_codec_v2 codec[];
 } __packed;
 
