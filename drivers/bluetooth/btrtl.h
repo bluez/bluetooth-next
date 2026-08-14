@@ -12,7 +12,30 @@
 #define rtl_dev_info(dev, fmt, ...) bt_dev_info(dev, "RTL: " fmt, ##__VA_ARGS__)
 #define rtl_dev_dbg(dev, fmt, ...) bt_dev_dbg(dev, "RTL: " fmt, ##__VA_ARGS__)
 
-struct btrtl_device_info;
+#ifndef kzalloc_obj
+#define kzalloc_obj(obj) kzalloc(sizeof(obj), GFP_KERNEL)
+#endif
+#ifndef kmalloc_obj
+#define kmalloc_obj(obj) kmalloc(sizeof(obj), GFP_KERNEL)
+#endif
+
+
+#define RTL_VSC_OP_DOWNLOAD_CMD			0xfc20
+#define RTL_VSC_OP_READ_VENDER			0xfc61
+#define RTL_VSC_OP_WRITE_VENDOR			0xfc62
+#define RTL_VSC_OP_READ_ROM_VER			0xfc6d
+#define RTL_VSC_OP_READ_CHIP_ID			0xfc6f
+#define RTL_VSC_OP_COREDUMP			0xfcff
+#define RTL_VSC_OP_CHECK_DOWNLOAD_STATE		0xfdcf
+#define RTL_VSC_OP_WDG_RESET_CMD		0xfc8e
+
+#define FW_TYPE_V0		0
+#define FW_TYPE_V1		1
+#define FW_TYPE_V2		2
+#define FW_TYPE_V3_1		3
+#define FW_TYPE_V3_2		4
+#define is_v3_fw(type)	((type) == FW_TYPE_V3_1 || (type) == FW_TYPE_V3_2)
+#define CHIP_ID_V3_BASE		55
 
 struct rtl_chip_type_evt {
 	__u8 status;
@@ -103,8 +126,14 @@ struct rtl_vendor_cmd {
 	__u8 param[5];
 } __packed;
 
+struct rtl_rp_read_chip_id {
+	__u8 status;
+	__u8 chip_id;
+} __packed;
+
 enum {
 	REALTEK_ALT6_CONTINUOUS_TX_CHIP,
+	REALTEK_DOWNLOADING,
 
 	__REALTEK_NUM_FLAGS,
 };
@@ -130,7 +159,79 @@ struct btrealtek_data {
 #define btrealtek_get_flag(hdev)					\
 	(((struct btrealtek_data *)hci_get_priv(hdev))->flags)
 
+#define btrealtek_wake_up_flag(hdev, nr)				\
+	do {								\
+		struct btrealtek_data *rtl = hci_get_priv((hdev));	\
+		wake_up_bit(rtl->flags, (nr));				\
+	} while (0)
 #define btrealtek_test_flag(hdev, nr)	test_bit((nr), btrealtek_get_flag(hdev))
+#define btrealtek_test_and_clear_flag(hdev, nr)				\
+		test_and_clear_bit((nr), btrealtek_get_flag(hdev))
+#define btrealtek_wait_on_flag_timeout(hdev, nr, m, to)			\
+		wait_on_bit_timeout(btrealtek_get_flag(hdev), (nr), m, to)
+#define btrealtek_clear_flag(hdev, nr)					\
+		do {							\
+			struct btrealtek_data *rtl = hci_get_priv((hdev));	\
+			clear_bit((nr), rtl->flags);			\
+		} while (0)
+
+struct id_table {
+	__u16 match_flags;
+	__u16 lmp_subver;
+	__u16 hci_rev;
+	__u8 hci_ver;
+	__u8 hci_bus;
+	__u8 chip_type;
+	bool config_needed;
+	bool has_rom_version;
+	bool has_msft_ext;
+	char *fw_name;
+	char *cfg_name;
+	char *hw_info;
+};
+
+struct btrtl_device_info {
+	const struct id_table *ic_info;
+	u8 rom_version;
+	u8 *fw_data;
+	int fw_len;
+	u8 *cfg_data;
+	int cfg_len;
+	bool drop_fw;
+	int project_id;
+	u32 opcode;
+	u8 fw_type;
+	u8 key_id;
+	struct list_head patch_subsecs;
+	struct list_head patch_images;
+};
+
+struct btrtl_enh_ops {
+	int (*parse_firmware_v3)(struct hci_dev *hdev,
+				 struct btrtl_device_info *btrtl_dev);
+	int (*download_firmware_v3)(struct hci_dev *hdev,
+				    struct btrtl_device_info *btrtl_dev);
+	void (*free_patch_images)(struct btrtl_device_info *btrtl_dev);
+	int (*recv_event)(struct hci_dev *hdev, struct sk_buff *skb);
+};
+/* Symbol exported by btrtl_enh.ko for symbol_get/symbol_put */
+extern struct btrtl_enh_ops rtl_enh_ops;
+
+
+
+
+
+/* Internal functions shared between btrtl_core.c and btrtl_enh.c */
+void btrtl_free_patch_images(struct btrtl_device_info *btrtl_dev);
+void *rtl_iov_pull_data(struct rtl_iovec *iov, u32 len);
+struct sk_buff *btrtl_read_local_version(struct hci_dev *hdev);
+int btrtl_read_chip_id(struct hci_dev *hdev, u8 *chip_id);
+int rtl_download_firmware(struct hci_dev *hdev, u8 fw_type,
+			  const unsigned char *data, int fw_len);
+int rtlbt_parse_firmware_v3(struct hci_dev *hdev,
+			    struct btrtl_device_info *btrtl_dev);
+int rtl_download_firmware_v3(struct hci_dev *hdev,
+			     struct btrtl_device_info *btrtl_dev);
 
 #if IS_ENABLED(CONFIG_BT_RTL)
 
@@ -148,6 +249,7 @@ int btrtl_get_uart_settings(struct hci_dev *hdev,
 			    unsigned int *controller_baudrate,
 			    u32 *device_baudrate, bool *flow_control);
 void btrtl_set_driver_name(struct hci_dev *hdev, const char *driver_name);
+int btrtl_recv_event(struct hci_dev *hdev, struct sk_buff *skb);
 
 #else
 
@@ -155,6 +257,11 @@ static inline struct btrtl_device_info *btrtl_initialize(struct hci_dev *hdev,
 							 const char *postfix)
 {
 	return ERR_PTR(-EOPNOTSUPP);
+}
+
+static inline int btrtl_recv_event(struct hci_dev *hdev, struct sk_buff *skb)
+{
+	return -EOPNOTSUPP;
 }
 
 static inline void btrtl_free(struct btrtl_device_info *btrtl_dev)
