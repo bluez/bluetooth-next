@@ -67,6 +67,7 @@ static struct usb_driver btusb_driver;
 #define BTUSB_INTEL_NO_WBS_SUPPORT	BIT(26)
 #define BTUSB_ACTIONS_SEMI		BIT(27)
 #define BTUSB_BARROT			BIT(28)
+#define BTUSB_FORCE_GENERIC		BIT(29)
 
 static const struct usb_device_id btusb_table[] = {
 	/* Generic Bluetooth USB device */
@@ -618,6 +619,10 @@ static const struct usb_device_id quirks_table[] = {
 						     BTUSB_WIDEBAND_SPEECH },
 	{ USB_DEVICE(0x0489, 0xe130), .driver_info = BTUSB_REALTEK |
 						     BTUSB_WIDEBAND_SPEECH },
+
+	/* Device reporting itself as "CSR BS8510" */
+	{ USB_DEVICE_VER(0x0bda, 0x0002, 0x7558, 0x7558),
+	  .driver_info = BTUSB_FORCE_GENERIC },
 
 	/* Realtek Bluetooth devices */
 	{ USB_VENDOR_AND_INTERFACE_INFO(0x0bda, 0xe0, 0x01, 0x01),
@@ -4121,6 +4126,9 @@ static int btusb_probe(struct usb_interface *intf,
 		if (match)
 			id = match;
 	}
+
+	if (id->driver_info & BTUSB_FORCE_GENERIC)
+		dev_info(&intf->dev, "using generic HCI handling\n");
 
 	if (id->driver_info & BTUSB_IGNORE)
 		return -ENODEV;
