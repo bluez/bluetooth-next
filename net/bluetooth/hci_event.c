@@ -5763,10 +5763,12 @@ static void le_conn_complete_evt(struct hci_dev *hdev, u8 status,
 	hci_dev_lock(hdev);
 	hci_store_wake_reason(hdev, bdaddr, bdaddr_type);
 
-	/* All controllers implicitly stop advertising in the event of a
-	 * connection, so ensure that the state bit is cleared.
+	/* Advertising stops when a connection is created, and when the
+	 * controller gives up advertising on its own. It keeps advertising
+	 * when the host cancelled an outgoing connection.
 	 */
-	hci_dev_clear_flag(hdev, HCI_LE_ADV);
+	if (status != HCI_ERROR_UNKNOWN_CONN_ID)
+		hci_dev_clear_flag(hdev, HCI_LE_ADV);
 
 	/* Check for existing connection:
 	 *
