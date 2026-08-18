@@ -6477,6 +6477,60 @@ void usb_queue_reset_device(struct usb_interface *iface)
 EXPORT_SYMBOL_GPL(usb_queue_reset_device);
 
 /**
+ * usb_queue_reenumerate_device - queue logical disconnect and re-enumeration
+ * @iface: USB interface belonging to the device to re-enumerate
+ *
+ * Request that USB core logically disconnect the device and subsequently
+ * re-enumerate its parent hub port.  The actual device teardown and
+ * re-enumeration are handled asynchronously by the hub workqueue.
+ *
+ * This is intended for failures where resetting the existing usb_device is
+ * insufficient and the driver needs USB core to perform a full logical
+ * disconnect/re-enumeration cycle.
+ *
+ * Return: 0 if re-enumeration was queued successfully, or a negative error
+ * code otherwise.
+ */
+int usb_queue_reenumerate_device(struct usb_interface *iface)
+{
+	struct usb_device *udev = interface_to_usbdev(iface);
+	struct usb_interface *hub_intf;
+	struct usb_hub *hub;
+	int ret;
+
+	usb_lock_device(udev);
+
+	if (!udev->parent || udev->state == USB_STATE_NOTATTACHED) {
+		ret = -ENODEV;
+		goto out_unlock;
+	}
+
+	/*
+	 * usb_hub_to_struct_hub() requires either the hub or one of its
+	 * children to be locked.  @udev is locked above.
+	 */
+	hub = usb_hub_to_struct_hub(udev->parent);
+	if (!hub) {
+		ret = -ENODEV;
+		goto out_unlock;
+	}
+
+	hub_intf = to_usb_interface(hub->intfdev);
+	ret = usb_autopm_get_interface(hub_intf);
+	if (ret < 0)
+		goto out_unlock;
+
+	hub_port_logical_disconnect(hub, udev->portnum);
+	usb_autopm_put_interface(hub_intf);
+	ret = 0;
+
+out_unlock:
+	usb_unlock_device(udev);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(usb_queue_reenumerate_device);
+
+/**
  * usb_hub_find_child - Get the pointer of child device
  * attached to the port which is specified by @port1.
  * @hdev: USB device belonging to the usb hub

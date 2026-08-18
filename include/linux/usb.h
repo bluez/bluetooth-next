@@ -789,6 +789,7 @@ extern int usb_lock_device_for_reset(struct usb_device *udev,
 /* USB port reset for device reinitialization */
 extern int usb_reset_device(struct usb_device *dev);
 extern void usb_queue_reset_device(struct usb_interface *dev);
+int usb_queue_reenumerate_device(struct usb_interface *iface);
 
 extern struct device *usb_intf_get_dma_device(struct usb_interface *intf);
 
