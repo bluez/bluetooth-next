@@ -2945,6 +2945,7 @@ static int btusb_mtk_reset(struct hci_dev *hdev, void *rst_data)
 
 	usb_queue_reset_device(data->intf);
 	clear_bit(BTMTK_HW_RESET_ACTIVE, &btmtk_data->flags);
+	usb_autopm_put_interface(data->intf);
 
 	return err;
 }
