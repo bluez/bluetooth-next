@@ -1051,7 +1051,6 @@ static void btusb_reset(struct hci_dev *hdev)
 	int err;
 
 	data = hci_get_drvdata(hdev);
-	/* This is not an unbalanced PM reference since the device will reset */
 	err = usb_autopm_get_interface(data->intf);
 	if (err) {
 		bt_dev_err(hdev, "Failed usb_autopm_get_interface: %d", err);
@@ -1060,6 +1059,7 @@ static void btusb_reset(struct hci_dev *hdev)
 
 	bt_dev_err(hdev, "Resetting usb device.");
 	usb_queue_reset_device(data->intf);
+	usb_autopm_put_interface(data->intf);
 }
 
 static void btusb_intel_reset(struct hci_dev *hdev)
