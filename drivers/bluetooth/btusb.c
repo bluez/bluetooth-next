@@ -977,6 +977,7 @@ struct btqca_data {
 #define BTUSB_USE_ALT3_FOR_WBS	15
 #define BTUSB_ALT6_CONTINUOUS_TX	16
 #define BTUSB_HW_SSR_ACTIVE	17
+#define BTUSB_USB_RESET_ACTIVE	18
 
 struct btusb_data {
 	struct hci_dev       *hdev;
@@ -2943,6 +2944,7 @@ static int btusb_mtk_reset(struct hci_dev *hdev, void *rst_data)
 
 	err = btmtk_usb_subsys_reset(hdev, btmtk_data->dev_id);
 
+	set_bit(BTUSB_USB_RESET_ACTIVE, &data->flags);
 	usb_queue_reset_device(data->intf);
 	clear_bit(BTMTK_HW_RESET_ACTIVE, &btmtk_data->flags);
 
@@ -4533,6 +4535,9 @@ static void btusb_disconnect(struct usb_interface *intf)
 
 	if (data->reset_gpio)
 		gpiod_put(data->reset_gpio);
+
+	if (test_bit(BTUSB_USB_RESET_ACTIVE, &data->flags))
+		usb_autopm_put_interface_no_suspend(data->intf);
 
 	if (intf == data->intf) {
 		if (data->isoc)
