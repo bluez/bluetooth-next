@@ -1060,6 +1060,7 @@ static void btusb_reset(struct hci_dev *hdev)
 	}
 
 	bt_dev_err(hdev, "Resetting usb device.");
+	set_bit(BTUSB_USB_RESET_ACTIVE, &data->flags);
 	usb_queue_reset_device(data->intf);
 }
 
