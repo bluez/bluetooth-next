@@ -4094,6 +4094,11 @@ static int hci_send_cmd_sync(struct hci_dev *hdev, struct sk_buff *skb)
 	    !hci_dev_test_and_set_flag(hdev, HCI_CMD_PENDING)) {
 		kfree_skb(hdev->req_skb);
 		hdev->req_skb = skb_clone(hdev->sent_cmd, GFP_KERNEL);
+		if (!hdev->req_skb) {
+			hci_dev_clear_flag(hdev, HCI_CMD_PENDING);
+			hci_cmd_sync_cancel_sync(hdev, ENOMEM);
+			err = -ENOMEM;
+		}
 	}
 
 	return err;
