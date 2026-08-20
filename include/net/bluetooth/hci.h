@@ -320,6 +320,16 @@ enum {
 	 */
 	HCI_QUIRK_BROKEN_WRITE_AUTH_PAYLOAD_TIMEOUT,
 
+	/*
+	 * When this quirk is set, Dedicated Bonding authentication
+	 * requirements are sent to the controller as General Bonding while
+	 * preserving the MITM requirement. This is required for Actions
+	 * Semiconductor ATS2851 based controllers, which can fail to continue
+	 * the SSP IO capability exchange with some peers when Dedicated Bonding
+	 * is used.
+	 */
+	HCI_QUIRK_BROKEN_DEDICATED_BONDING,
+
 	/* When this quirk is set, MSFT extension monitor tracking by
 	 * address filter is supported. Since tracking quantity of each
 	 * pattern is limited, this feature supports tracking multiple

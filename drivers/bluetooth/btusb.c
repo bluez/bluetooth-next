@@ -4384,6 +4384,7 @@ static int btusb_probe(struct usb_interface *intf,
 		hci_set_quirk(hdev, HCI_QUIRK_BROKEN_READ_ENC_KEY_SIZE);
 		hci_set_quirk(hdev, HCI_QUIRK_BROKEN_EXT_CREATE_CONN);
 		hci_set_quirk(hdev, HCI_QUIRK_BROKEN_WRITE_AUTH_PAYLOAD_TIMEOUT);
+		hci_set_quirk(hdev, HCI_QUIRK_BROKEN_DEDICATED_BONDING);
 	}
 
 	if (!reset)

@@ -5386,6 +5386,10 @@ static void hci_io_capa_request_evt(struct hci_dev *hdev, void *data,
 			conn->auth_type &= HCI_AT_NO_BONDING_MITM;
 
 		cp.authentication = conn->auth_type;
+		if (hci_test_quirk(hdev, HCI_QUIRK_BROKEN_DEDICATED_BONDING) &&
+		    (cp.authentication & ~0x01) == HCI_AT_DEDICATED_BONDING)
+			cp.authentication = HCI_AT_GENERAL_BONDING |
+					    (cp.authentication & 0x01);
 		cp.oob_data = bredr_oob_data_present(conn);
 
 		hci_send_cmd(hdev, HCI_OP_IO_CAPABILITY_REPLY,
