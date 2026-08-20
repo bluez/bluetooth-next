@@ -2003,7 +2003,7 @@ resubmit:
 /* Handles the MSI-X interrupt for rx queue 1 which is for RX */
 static void btintel_pcie_msix_rx_handle(struct btintel_pcie_data *data)
 {
-	u16 cr_hia, cr_tia;
+	u16 cr_hia, cr_tia, frbd_tag;
 	struct rxq *rxq;
 	struct urbd1 *urbd1;
 	struct data_buf *buf;
@@ -2025,21 +2025,53 @@ static void btintel_pcie_msix_rx_handle(struct btintel_pcie_data *data)
 	 * process all received CDs in this interrupt.
 	 */
 	while (cr_tia != cr_hia) {
+		if (cr_tia >= rxq->count) {
+			bt_dev_err(hdev, "RXQ: invalid cr_tia %u >= %u, contact device vendor",
+				   cr_tia, rxq->count);
+			/* Reset consumer pointer so the ring can
+			 * recover on the next interrupt.
+			 */
+			data->ia.cr_tia[BTINTEL_PCIE_RXQ_NUM] = cr_hia;
+			break;
+		}
+
 		urbd1 = &rxq->urbd1s[cr_tia];
 		ipc_print_urbd1(data->hdev, urbd1, cr_tia);
 
-		buf = &rxq->bufs[urbd1->frbd_tag];
+		/* frbd_tag is a bitfield in DMA-coherent memory;
+		 * read the full word once with READ_ONCE to avoid
+		 * TOCTOU race with the device.
+		 */
+		frbd_tag = READ_ONCE(*(const u32 *)urbd1) & 0xffff;
+
+		if (frbd_tag >= rxq->count) {
+			bt_dev_err(hdev, "RXQ: invalid frbd_tag %u >= %u, contact device vendor",
+				   frbd_tag, rxq->count);
+			/* Device provided invalid data. Leave cr_tia
+			 * unchanged so the error remains detectable
+			 * via repeated log messages, aiding debug.
+			 */
+			break;
+		}
+
+		buf = &rxq->bufs[frbd_tag];
 		if (!buf) {
-			bt_dev_err(hdev, "RXQ: failed to get the DMA buffer for %d",
-				   urbd1->frbd_tag);
-			return;
+			bt_dev_err(hdev, "RXQ: failed to get the DMA buffer for %u",
+				   frbd_tag);
+			/* Unexpected NULL pointer; leave cr_tia
+			 * unchanged to keep the error visible.
+			 */
+			break;
 		}
 
 		ret = btintel_pcie_submit_rx_work(data, urbd1->status,
 						  buf->data);
 		if (ret) {
 			bt_dev_err(hdev, "RXQ: failed to submit rx request");
-			return;
+			/* Submission failed; leave cr_tia unchanged
+			 * to keep the error detectable on retry.
+			 */
+			break;
 		}
 
 		cr_tia = (cr_tia + 1) % rxq->count;
