@@ -1405,9 +1405,10 @@ static void btintel_pcie_msix_gp0_handler(struct btintel_pcie_data *data)
  */
 static void btintel_pcie_msix_tx_handle(struct btintel_pcie_data *data)
 {
-	u16 cr_tia, cr_hia;
+	u16 cr_tia, cr_hia, tfd_index;
 	struct txq *txq;
 	struct urbd0 *urbd0;
+	struct hci_dev *hdev = data->hdev;
 
 	cr_tia = data->ia.cr_tia[BTINTEL_PCIE_TXQ_NUM];
 	cr_hia = data->ia.cr_hia[BTINTEL_PCIE_TXQ_NUM];
@@ -1418,13 +1419,36 @@ static void btintel_pcie_msix_tx_handle(struct btintel_pcie_data *data)
 	txq = &data->txq;
 
 	while (cr_tia != cr_hia) {
+		if (cr_tia >= txq->count) {
+			bt_dev_err(hdev, "TXQ: invalid cr_tia %u >= %u, contact device vendor",
+				   cr_tia, txq->count);
+			/* Reset consumer pointer so the ring can
+			 * recover on the next interrupt.
+			 */
+			data->ia.cr_tia[BTINTEL_PCIE_TXQ_NUM] = cr_hia;
+			break;
+		}
+
 		data->tx_wait_done = true;
 		wake_up(&data->tx_wait_q);
 
 		urbd0 = &txq->urbd0s[cr_tia];
 
-		if (urbd0->tfd_index > txq->count)
-			return;
+		/* tfd_index is a bitfield in DMA-coherent memory;
+		 * read the full word once with READ_ONCE to avoid
+		 * TOCTOU race with the device.
+		 */
+		tfd_index = READ_ONCE(*(const u32 *)urbd0) & 0xffff;
+
+		if (tfd_index >= txq->count) {
+			bt_dev_err(hdev, "TXQ: invalid tfd_index %u >= %u, contact device vendor",
+				   tfd_index, txq->count);
+			/* Device provided invalid data. Leave cr_tia
+			 * unchanged so the error remains detectable
+			 * via repeated log messages, aiding debug.
+			 */
+			break;
+		}
 
 		cr_tia = (cr_tia + 1) % txq->count;
 		data->ia.cr_tia[BTINTEL_PCIE_TXQ_NUM] = cr_tia;
