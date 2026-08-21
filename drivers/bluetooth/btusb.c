@@ -977,6 +977,7 @@ struct btqca_data {
 #define BTUSB_USE_ALT3_FOR_WBS	15
 #define BTUSB_ALT6_CONTINUOUS_TX	16
 #define BTUSB_HW_SSR_ACTIVE	17
+#define BTUSB_RESET		18
 
 struct btusb_data {
 	struct hci_dev       *hdev;
@@ -2920,8 +2921,19 @@ static int btusb_mtk_reset(struct hci_dev *hdev, void *rst_data)
 	}
 
 	err = usb_autopm_get_interface(data->intf);
-	if (err < 0)
+	if (err < 0) {
+		bt_dev_err(hdev, "Failed usb_autopm_get_interface: %d", err);
+		clear_bit(BTMTK_HW_RESET_ACTIVE, &btmtk_data->flags);
 		return err;
+	}
+
+	if (!data->reset_gpio &&
+	    test_and_set_bit(BTUSB_RESET, &data->flags)) {
+		bt_dev_err(hdev, "last usb reset failed? Not resetting again");
+		clear_bit(BTMTK_HW_RESET_ACTIVE, &btmtk_data->flags);
+		usb_autopm_put_interface_no_suspend(data->intf);
+		return -EBUSY;
+	}
 
 	/* Release MediaTek ISO data interface */
 	btusb_mtk_release_iso_intf(hdev);
@@ -4533,6 +4545,9 @@ static void btusb_disconnect(struct usb_interface *intf)
 
 	if (data->reset_gpio)
 		gpiod_put(data->reset_gpio);
+
+	if (test_and_clear_bit(BTUSB_RESET, &data->flags))
+		usb_autopm_put_interface_no_suspend(data->intf);
 
 	if (intf == data->intf) {
 		if (data->isoc)
