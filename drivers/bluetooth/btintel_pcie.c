@@ -3012,7 +3012,7 @@ static void btintel_pcie_perform_pldr(struct btintel_pcie_data *data)
 	 * BT needs pci_save_state()/pci_restore_state() because the BT driver
 	 * is still partially attached when the _PRR runs (it hasn't been unbound yet).
 	 * The PCI device needs to remain minimally functional so that
-	 * device_reprobe(&pdev->dev) can work afterward
+	 * the deferred re-probe of the BT device can work afterward
 	 */
 	ret = btintel_pcie_acpi_reset_method(data);
 
@@ -3023,14 +3023,16 @@ static void btintel_pcie_perform_pldr(struct btintel_pcie_data *data)
 	}
 
 	if (!ret) {
-		if (device_reprobe(&pdev->dev))
-			BT_ERR("BT reprobe failed for BDF:%s", pci_name(pdev));
+		if (device_schedule_reprobe(&pdev->dev, 0))
+			BT_ERR("BT reprobe scheduling failed for BDF:%s",
+			       pci_name(pdev));
 	}
 }
 
 /*
- * Issue a Function Level Reset and hand teardown/re-init off to the PCI
- * core via device_reprobe(), mirroring the PLDR path's contract.
+ * Issue a Function Level Reset and hand teardown/re-init off to the
+ * driver core via device_schedule_reprobe(), mirroring the PLDR path's
+ * contract.
  *
  * Caller must hold pci_lock_rescan_remove() and must have already
  * disabled interrupts and drained both rx_work and coredump_work.
@@ -3052,14 +3054,12 @@ static int btintel_pcie_perform_flr(struct btintel_pcie_data *data)
 		return err;
 	}
 
-	/* device_reprobe() always detaches the driver first (running
-	 * .remove(), which frees 'data'); any re-probe failure leaves the
-	 * device unbound but 'data' is already gone, so just log it.
-	 */
-	if (device_reprobe(&pdev->dev))
-		BT_ERR("BT reprobe failed for BDF:%s", pci_name(pdev));
+	err = device_schedule_reprobe(&pdev->dev, 0);
+	if (err)
+		BT_ERR("BT reprobe scheduling failed for BDF:%s",
+		       pci_name(pdev));
 
-	return 0;
+	return err;
 }
 
 static void btintel_pcie_reset_work(struct work_struct *wk)
@@ -3090,11 +3090,15 @@ static void btintel_pcie_reset_work(struct work_struct *wk)
 
 	bt_dev_dbg(data->hdev, "Release bluetooth interface");
 
-	/* Both reset paths follow the same contract: on success they
-	 * destroy 'data' via device_reprobe() (a fresh probe re-INIT_WORKs
-	 * the dump workers with disable count 0), so enable_work() must
-	 * NOT be called on the success path. Only the FLR path can fail
-	 * with 'data' still alive, in which case we balance the
+	/* Both reset paths follow the same contract: on success the
+	 * deferred re-probe scheduled with device_schedule_reprobe()
+	 * destroys 'data' by re-running .probe() (which re-INIT_WORKs the
+	 * dump workers with disable count 0), so enable_work() must NOT be
+	 * called on the success path. 'data' stays alive until the deferred
+	 * detach runs; in this window new activity is fenced by
+	 * BTINTEL_PCIE_RECOVERY_IN_PROGRESS, the masked interrupts and the
+	 * disabled dump workers. Only the FLR path can fail with no
+	 * re-probe scheduled, in which case we balance the
 	 * disable_work_sync() calls above so a later successful reset is
 	 * not permanently blocked.
 	 *
@@ -3460,13 +3464,12 @@ static void btintel_pcie_remove(struct pci_dev *pdev)
 	disable_work_sync(&data->fwtrigger_work);
 	disable_work_sync(&data->mbox_work);
 
-	/* Cancel pending reset work. Skip only when remove() is called from
-	 * within the reset work itself (PLDR device_reprobe path) to avoid
-	 * deadlock. current_work() returns the work_struct of the caller if
-	 * we are in a workqueue context.
+	/* The deferred re-probe triggers .remove() from the driver core's
+	 * work item, never from reset_work itself, so this no longer runs
+	 * nested in reset_work; disable_work_sync() also guarantees the
+	 * reset work has fully returned before 'data' is freed.
 	 */
-	if (current_work() != &data->reset_work)
-		disable_work_sync(&data->reset_work);
+	disable_work_sync(&data->reset_work);
 
 	btintel_pcie_disable_interrupts(data);
 
