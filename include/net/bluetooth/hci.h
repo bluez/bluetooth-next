@@ -276,8 +276,8 @@ enum {
 	 * disabled. This is required for some Broadcom controllers which
 	 * erroneously claim to support extended scanning.
 	 *
-	 * This quirk can be set before hci_register_dev is called or
-	 * during the hdev->setup vendor callback.
+	 * This quirk can be set before hci_register_dev is called, during the
+	 * hdev->setup vendor callback, or at runtime on Command Disallowed.
 	 */
 	HCI_QUIRK_BROKEN_EXT_SCAN,
 

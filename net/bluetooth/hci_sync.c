@@ -2280,6 +2280,7 @@ static int hci_le_set_ext_scan_enable_sync(struct hci_dev *hdev, u8 val,
 					   u8 filter_dup)
 {
 	struct hci_cp_le_set_ext_scan_enable cp;
+	int err;
 
 	memset(&cp, 0, sizeof(cp));
 	cp.enable = val;
@@ -2289,8 +2290,18 @@ static int hci_le_set_ext_scan_enable_sync(struct hci_dev *hdev, u8 val,
 	else
 		cp.filter_dup = filter_dup;
 
-	return __hci_cmd_sync_status(hdev, HCI_OP_LE_SET_EXT_SCAN_ENABLE,
-				     sizeof(cp), &cp, HCI_CMD_TIMEOUT);
+	err = __hci_cmd_sync_status(hdev, HCI_OP_LE_SET_EXT_SCAN_ENABLE,
+				    sizeof(cp), &cp, HCI_CMD_TIMEOUT);
+
+	/* The controller claims extended scan support but rejects it. Latch
+	 * the quirk so that every later scan uses the legacy commands.
+	 */
+	if (err == -EBUSY) {
+		bt_dev_warn(hdev, "extended scan rejected, using legacy scan");
+		hci_set_quirk(hdev, HCI_QUIRK_BROKEN_EXT_SCAN);
+	}
+
+	return err;
 }
 
 static int hci_le_set_scan_enable_sync(struct hci_dev *hdev, u8 val,
