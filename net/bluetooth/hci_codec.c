@@ -165,6 +165,8 @@ void hci_read_supported_codecs(struct hci_dev *hdev)
 		 + sizeof(std_codecs->num));
 
 	vnd_codecs = (void *)skb->data;
+	if (skb->len < sizeof(*vnd_codecs))
+		goto error;
 
 	/* validate vendor codecs length before accessing */
 	if (skb->len <
@@ -233,6 +235,8 @@ void hci_read_supported_codecs_v2(struct hci_dev *hdev)
 		 + sizeof(std_codecs->num));
 
 	vnd_codecs = (void *)skb->data;
+	if (skb->len < sizeof(*vnd_codecs))
+		goto error;
 
 	/* check for payload data length before accessing */
 	if (skb->len <
