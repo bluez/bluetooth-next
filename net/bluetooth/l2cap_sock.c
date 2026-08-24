@@ -29,12 +29,15 @@
 #include <linux/filter.h>
 #include <linux/sched/signal.h>
 #include <linux/uio.h>
+#include <linux/delay.h>
 
 #include <net/bluetooth/bluetooth.h>
 #include <net/bluetooth/hci_core.h>
 #include <net/bluetooth/l2cap.h>
 
 #include "smp.h"
+
+extern unsigned long syz_l2cap_victim;
 
 static struct bt_sock_list l2cap_sk_list = {
 	.lock = __RW_LOCK_UNLOCKED(l2cap_sk_list.lock)
@@ -1467,6 +1470,11 @@ static int l2cap_sock_shutdown(struct socket *sock, int how)
 	/* prevent conn structure from being freed */
 	conn = l2cap_conn_hold_unless_zero(chan->conn);
 	l2cap_chan_unlock(chan);
+
+	if (strncmp(current->comm, "syzrepro1", 9) == 0) {
+		syz_l2cap_victim = conn ? 0 : (unsigned long)chan;
+		mdelay(250);
+	}
 
 	if (conn)
 		/* mutex lock must be taken before l2cap_chan_lock() */
