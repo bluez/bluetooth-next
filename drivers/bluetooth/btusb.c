@@ -1439,6 +1439,36 @@ static bool btusb_validate_sco_handle(struct hci_dev *hdev,
 	}
 }
 
+/* bluetooth-mic-fix: MediaTek MT79xx firmware tags incoming (e)SCO frames
+ * with a bogus sentinel handle (e.g. 0x0e00) instead of the real connection
+ * handle, so every microphone frame is dropped as "unknown connection".
+ * Analogous to btrtl's "Fixup SCO header": when there is exactly one
+ * connected SCO/eSCO link, rewrite the handle instead of dropping the frame.
+ */
+static bool btusb_mtk_fixup_sco_handle(struct hci_dev *hdev,
+				       struct hci_sco_hdr *hdr)
+{
+	struct hci_conn_hash *h = &hdev->conn_hash;
+	struct hci_conn *c, *sco = NULL;
+
+	rcu_read_lock();
+	list_for_each_entry_rcu(c, &h->list, list) {
+		if ((c->type == SCO_LINK || c->type == ESCO_LINK) &&
+		    c->state == BT_CONNECTED) {
+			if (sco) {
+				sco = NULL;	/* more than one: ambiguous */
+				break;
+			}
+			sco = c;
+		}
+	}
+	if (sco)
+		hdr->handle = __cpu_to_le16(sco->handle);
+	rcu_read_unlock();
+
+	return sco;
+}
+
 static int btusb_recv_isoc(struct btusb_data *data, void *buffer, int count)
 {
 	struct sk_buff *skb;
@@ -1476,7 +1506,9 @@ static int btusb_recv_isoc(struct btusb_data *data, void *buffer, int count)
 			hci_skb_expect(skb) = hdr->dlen;
 
 			if (skb_tailroom(skb) < hci_skb_expect(skb) ||
-			    !btusb_validate_sco_handle(data->hdev, hdr)) {
+			    (!btusb_validate_sco_handle(data->hdev, hdr) &&
+			     !(data->recv_acl == btmtk_usb_recv_acl &&
+			       btusb_mtk_fixup_sco_handle(data->hdev, hdr)))) {
 				kfree_skb(skb);
 				skb = NULL;
 
