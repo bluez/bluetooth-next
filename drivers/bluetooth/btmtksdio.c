@@ -1479,8 +1479,11 @@ static int btmtksdio_probe(struct sdio_func *func,
 	pm_runtime_put_noidle(bdev->dev);
 
 	err = devm_device_init_wakeup(bdev->dev);
-	if (err)
+	if (err) {
+		/* failure is not fatal, keep probing */
 		bt_dev_err(hdev, "failed to initialize device wakeup");
+		err = 0;
+	}
 
 	restore_node = false;
 	if (!of_device_is_compatible(bdev->dev->of_node, "mediatek,mt7921s-bluetooth")) {
