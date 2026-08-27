@@ -667,6 +667,13 @@ static int sco_sock_bind(struct socket *sock, struct sockaddr_unsized *addr,
 
 	BT_DBG("sk %p %pMR", sk, &sa->sco_bdaddr);
 
+	/* Binding a SCO socket reserves the ability to accept any incoming
+	 * eSCO/SCO connection on the adapter, so restrict it in the same way
+	 * L2CAP restricts well-known PSMs.
+	 */
+	if (!capable(CAP_NET_BIND_SERVICE))
+		return -EACCES;
+
 	lock_sock(sk);
 
 	if (sk->sk_state != BT_OPEN) {
