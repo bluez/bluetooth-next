@@ -1200,6 +1200,13 @@ static int iso_sock_bind(struct socket *sock, struct sockaddr_unsized *addr,
 	    addr->sa_family != AF_BLUETOOTH)
 		return -EINVAL;
 
+	/* Binding an ISO socket reserves the ability to accept any incoming
+	 * CIS/BIS on the adapter, so restrict it in the same way L2CAP
+	 * restricts well-known PSMs.
+	 */
+	if (!capable(CAP_NET_BIND_SERVICE))
+		return -EACCES;
+
 	lock_sock(sk);
 
 	if ((sk->sk_state == BT_CONNECT2 || sk->sk_state == BT_CONNECTED) &&
