@@ -7327,6 +7327,7 @@ static int load_irks(struct sock *sk, struct hci_dev *hdev, void *cp_data,
 
 	for (i = 0; i < irk_count; i++) {
 		struct mgmt_irk_info *irk = &cp->irks[i];
+		struct smp_irk *smp_irk;
 
 		if (hci_is_blocked_key(hdev,
 				       HCI_BLOCKED_KEY_TYPE_IRK,
@@ -7336,9 +7337,11 @@ static int load_irks(struct sock *sk, struct hci_dev *hdev, void *cp_data,
 			continue;
 		}
 
-		hci_add_irk(hdev, &irk->addr.bdaddr,
-			    le_addr_type(irk->addr.type), irk->val,
-			    BDADDR_ANY);
+		smp_irk = hci_add_irk(hdev, &irk->addr.bdaddr,
+				      le_addr_type(irk->addr.type), irk->val,
+				      BDADDR_ANY);
+		if (smp_irk)
+			hci_irk_put(smp_irk);
 	}
 
 	hci_dev_set_flag(hdev, HCI_RPA_RESOLVING);
@@ -9957,7 +9960,8 @@ void mgmt_new_ltk(struct hci_dev *hdev, struct smp_ltk *key, bool persistent)
 	mgmt_event(MGMT_EV_NEW_LONG_TERM_KEY, hdev, &ev, sizeof(ev), NULL);
 }
 
-void mgmt_new_irk(struct hci_dev *hdev, struct smp_irk *irk, bool persistent)
+void mgmt_new_irk(struct hci_dev *hdev, const struct smp_irk_data *irk,
+		  bool persistent)
 {
 	struct mgmt_ev_new_irk ev;
 
