@@ -75,9 +75,13 @@
 #define BTINTEL_PCIE_DBGC_CUR_DBGBUFF_STATUS_SCP	(BTINTEL_PCIE_DBGC_BASE_ADDR_SCP + 0x1C)
 #define BTINTEL_PCIE_DBGC_DBGBUFF_WRAP_ARND_SCP		(BTINTEL_PCIE_DBGC_BASE_ADDR_SCP + 0x2C)
 
+#define BTINTEL_PCIE_SMEM_MAX_SIZE		(16 * 1024)
+#define BTINTEL_PCIE_REGION_MAX_SIZE		(16 * 1024 * 1024)
 #define BTINTEL_PCIE_DBG_IDX_BIT_MASK		0x0F
 #define BTINTEL_PCIE_DBGC_DBG_BUF_IDX(data)	(((data) >> 24) & BTINTEL_PCIE_DBG_IDX_BIT_MASK)
 #define BTINTEL_PCIE_DBG_OFFSET_BIT_MASK	0xFFFFFF
+
+#define BTINTEL_PCIE_TARGET_ACCESS_FRAG_OFFSET	4
 
 /* The DRAM buffer count, each buffer size, and
  * fragment buffer size
@@ -106,7 +110,18 @@
  *   Bits[2:3] DBGI O/P : 01 = WiFi DBGC
  */
 #define BTINTEL_PCIE_DRAM	0x01
+#define BTINTEL_PCIE_FW_MON_MODE_DRAM	0x02
 #define BTINTEL_PCIE_WIFI_DBGC	0x06
+
+#define BTINTEL_PCIE_MDBGC_FRAG_VERSION		2
+
+#define BTINTEL_PCIE_MDBGC_ALLOCATIONID_1		0
+#define BTINTEL_PCIE_MDBGC_ALLOCATIONID_2		1
+#define BTINTEL_PCIE_MDBGC_ALLOCATIONID_3		2
+
+#define BTINTEL_PCIE_DEVICE_ID_NVL_S_SCP2	0x6E74
+#define BTINTEL_PCIE_DEVICE_ID_NVL_Hx_SCP2	0xD346
+#define BTINTEL_PCIE_DEVICE_ID_PTL_FMP2		0xE476
 
 /* Causes for the FH register interrupts */
 enum msix_fh_int_causes {
@@ -231,7 +246,7 @@ enum {
 #define BTINTEL_PCIE_TLV_TYPE_DCCM_MEM_ADDRESS        0x05
 #define BTINTEL_PCIE_TLV_TYPE_SDS_MEM_ADDRESS         0x06
 #define BTINTEL_PCIE_TLV_TYPE_ECL_MEM_ADDRESS         0x07
-#define BTINTEL_PCIE_TLV_TYPE_SMEM_ADDRESS           0x08
+#define BTINTEL_PCIE_TLV_TYPE_SMEM_ADDRESS	      0x08
 
 /*
  * Struct for Context Information (v2)
@@ -459,6 +474,24 @@ struct btintel_pcie_dbgc {
 	struct data_buf *bufs;
 };
 
+struct btintel_pcie_mdbgc {
+	u32		count;
+
+	void		*frag_v_addr;
+	dma_addr_t	frag_p_addr;
+	u32		frag_size;
+
+	dma_addr_t	buf1_p_addr;
+	void		*buf1_v_addr;
+	dma_addr_t	buf2_p_addr;
+	void		*buf2_v_addr;
+	dma_addr_t	buf3_p_addr;
+	void		*buf3_v_addr;
+	struct data_buf *buf1;
+	struct data_buf *buf2;
+	struct data_buf *buf3;
+};
+
 struct btintel_pcie_dump_mem_info {
 	u32	exception_dump_addr;
 	u32	exception_dump_len;
@@ -498,9 +531,146 @@ struct btintel_pcie_dump_header {
 	u32		wrap_ctr;
 	u16		trigger_reason;
 	int		state;
-	u8		event_type;
-	u16		event_id;
 };
+
+/* Per-fragment range descriptor for dump regions.
+ * Binary-compatible with iwl_fw_ini_error_dump_range.
+ */
+struct btintel_pcie_dump_range {
+	__le32	range_data_size;
+	union {
+		__le32	internal_base_addr;
+		__le64	dram_base_addr;
+		__le32	page_num;
+	};
+	__le32	data[];
+} __packed;
+
+/*
+ * INI region types for ini_dump_data.type field.
+ * The unified decoder dispatches parsing logic based on these values.
+ */
+#define BTINTEL_PCIE_INI_REGION_INTERNAL_BUFFER	2
+#define BTINTEL_PCIE_INI_REGION_DRAM_BUFFER	3
+#define BTINTEL_PCIE_INI_REGION_DEVICE_MEMORY	9
+
+/* INI region IDs - used in dump header region_id field and regions_mask */
+#define BTINTEL_PCIE_INI_ID_EXCEPTION_EVT	7
+#define BTINTEL_PCIE_INI_ID_SMEM		15
+#define BTINTEL_PCIE_INI_ID_DCCM		39
+#define BTINTEL_PCIE_INI_ID_SDS			40
+#define BTINTEL_PCIE_INI_ID_SDS_IOSF		41
+#define BTINTEL_PCIE_INI_ID_ECL			42
+#define BTINTEL_PCIE_INI_ID_DRAM_MONITOR3	61
+#define BTINTEL_PCIE_INI_ID_DRAM_MONITOR2	62
+#define BTINTEL_PCIE_INI_ID_DRAM_MONITOR1	63
+
+/*
+ * INI (Intel INI debug infrastructure) style dump data TLV - wraps each dump
+ * region. INI is the iwlwifi firmware debug format used by the unified decoder.
+ * Compatible with iwl_fw_ini_error_dump_data.
+ */
+struct btintel_pcie_ini_dump_data {
+	u8	type;
+	u8	sub_type;
+	u8	sub_type_ver;
+	u8	reserved;
+	__le32	len;
+	u8	data[];
+} __packed;
+
+/*
+ * INI-style region dump header.
+ * Compatible with iwl_fw_ini_error_dump_header.
+ */
+#define BTINTEL_PCIE_INI_MAX_NAME	32
+#define BTINTEL_PCIE_INI_DUMP_VER	1
+
+struct btintel_pcie_ini_dump_header {
+	__le32	version;
+	__le32	region_id;
+	__le32	num_of_ranges;
+	__le32	name_len;
+	u8	name[BTINTEL_PCIE_INI_MAX_NAME];
+};
+
+/*
+ * INI-style monitor dump - region header + monitor state.
+ * Compatible with iwl_fw_ini_monitor_dump.
+ */
+struct btintel_pcie_ini_monitor_dump {
+	struct btintel_pcie_ini_dump_header header;
+	__le32	write_ptr;
+	__le32	cycle_cnt;
+	__le32	cur_frag;
+	u8	data[];
+} __packed;
+
+/* Linked list entry for modular dump collection */
+struct btintel_pcie_dump_entry {
+	struct list_head	list;
+	u32			size;
+	u8			data[];
+};
+
+/* File-level header for coredump output.
+ * Compatible with iwl_fw_ini_dump_file_hdr.
+ * Uses IWL_FW_INI_ERROR_DUMP_BARKER (0x14789633) for decoder compatibility.
+ */
+#define BTINTEL_PCIE_INI_ERROR_DUMP_BARKER	0x14789633
+
+struct btintel_pcie_dump_file_hdr {
+	__le32	barker;
+	__le32	file_len;
+} __packed;
+
+/*
+ * Legacy-style dump data wrapper for dump info TLV.
+ * Compatible with iwl_fw_error_dump_data.
+ * Used only for the dump info entry (type=BTINTEL_PCIE_INI_DUMP_INFO_TYPE).
+ */
+struct btintel_pcie_error_dump_data {
+	__le32	type;
+	__le32	len;
+	u8	data[];
+} __packed;
+
+/* Use bit 31 as dump info type, matching IWL_INI_DUMP_INFO_TYPE */
+#define BTINTEL_PCIE_INI_DUMP_INFO_TYPE	BIT(31)
+
+/* Time point values matching iwl_fw_ini_time_point for fwdump parser */
+#define BTINTEL_PCIE_TIME_POINT_FW_ASSERT	4
+#define BTINTEL_PCIE_TIME_POINT_USER_TRIGGER	9
+
+/*
+ * Dump info struct - single TLV containing all metadata.
+ * Compatible with iwl_fw_ini_dump_info.
+ * Packs all device/firmware info that the decoder needs.
+ */
+struct btintel_pcie_ini_dump_info {
+	__le32	version;
+	__le32	time_point;
+	__le32	trigger_reason;
+	__le32	external_cfg_state;
+	__le32	ver_type;
+	__le32	ver_subtype;
+	__le32	hw_step;
+	__le32	hw_type;
+	__le32	rf_id_flavor;
+	__le32	rf_id_dash;
+	__le32	rf_id_step;
+	__le32	rf_id_type;
+	__le32	lmac_major;
+	__le32	lmac_minor;
+	__le32	umac_major;
+	__le32	umac_minor;
+	__le32	fw_mon_mode;
+	__le64	regions_mask;
+	__le32	build_tag_len;
+	u8	build_tag[64];
+	__le32	num_of_cfg_names;
+	/* no cfg_names for BT - keep zero-length */
+} __packed;
 
 /* struct btintel_pcie_data
  * @pdev: pci device
@@ -599,6 +769,7 @@ struct btintel_pcie_data {
 	u32	alive_intr_ctxt;
 	enum btintel_pcie_reset_type	reset_type;
 	struct btintel_pcie_dbgc	dbgc;
+	struct btintel_pcie_mdbgc	mdbgc;
 	struct btintel_pcie_dump_header dmp_hdr;
 	u8	pm_sx_event;
 	u32	debug_evt_addr;
