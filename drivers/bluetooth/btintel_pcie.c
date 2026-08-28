@@ -1331,6 +1331,10 @@ static void btintel_pcie_msix_gp1_handler(struct btintel_pcie_data *data)
 {
 	bool target_access = false;
 	u32 addr = 0, size = 0;
+	ktime_t calltime, delta, rettime;
+	unsigned long long duration;
+
+	calltime = ktime_get();
 
 	/* Read the Mail box status and registers */
 	data->mbox.mbox_status = btintel_pcie_rd_reg32(data, BTINTEL_PCIE_CSR_MBOX_STATUS_REG);
@@ -1338,8 +1342,7 @@ static void btintel_pcie_msix_gp1_handler(struct btintel_pcie_data *data)
 		data->mbox.mbox1 = btintel_pcie_rd_reg32(data, BTINTEL_PCIE_CSR_MBOX_1_REG);
 		if (data->mbox.mbox1 ==
 		    BTINTEL_PCIE_BUILD_SPECIFIC_RESOURCES_MAPPING) {
-			bt_dev_info(data->hdev,
-				    "mailbox for target access");
+			bt_dev_info(data->hdev, "mailbox for target access");
 			target_access = true;
 		}
 	}
@@ -1373,10 +1376,6 @@ static void btintel_pcie_msix_gp1_handler(struct btintel_pcie_data *data)
 		set_bit(BTINTEL_PCIE_MBOX_PARSE_PENDING, &data->flags);
 		data->mbox_intr_ts = ktime_get();
 
-		bt_dev_info(data->hdev,
-			    "mbox interrupt received at %lld ns; queuing mbox_work",
-			    ktime_to_ns(data->mbox_intr_ts));
-
 		WRITE_ONCE(data->debug_table_addr, addr);
 		WRITE_ONCE(data->debug_table_size, size);
 		if (!queue_work(data->dump_workqueue,
@@ -1387,9 +1386,13 @@ static void btintel_pcie_msix_gp1_handler(struct btintel_pcie_data *data)
 	}
 
 	/* Mailbox is read, ack to FW */
-	btintel_pcie_set_reg_bits(data,
-				  BTINTEL_PCIE_CSR_IPC_DOORBELL_VEC_REG,
+	btintel_pcie_set_reg_bits(data, BTINTEL_PCIE_CSR_IPC_DOORBELL_VEC_REG,
 				  BTINTEL_PCIE_CSR_DOORBELL_MBOX_READ_CONFIRM);
+
+	rettime = ktime_get();
+	delta = ktime_sub(rettime, calltime);
+	duration = (unsigned long long)ktime_to_ns(delta) >> 10;
+	bt_dev_dbg(data->hdev, "Mailbox acked in %llu usecs", duration);
 }
 
 /* This function handles the MSI-X interrupt for gp0 cause (bit 0 in
