@@ -2948,6 +2948,22 @@ static int btusb_mtk_reset(struct hci_dev *hdev, void *rst_data)
 
 	err = btmtk_usb_subsys_reset(hdev, btmtk_data->dev_id);
 
+	if (btmtk_data->dev_id == 0x7925 && err == -ETIMEDOUT) {
+		int reenum_err;
+
+		bt_dev_warn(hdev,
+			    "MT7925 subsystem reset timed out, requesting USB re-enumeration");
+
+		reenum_err = usb_queue_reenumerate_device(data->intf);
+		if (!reenum_err) {
+			clear_bit(BTMTK_HW_RESET_ACTIVE, &btmtk_data->flags);
+			return err;
+		}
+
+		bt_dev_err(hdev, "Failed to queue USB re-enumeration (%d)",
+			   reenum_err);
+	}
+
 	usb_queue_reset_device(data->intf);
 	clear_bit(BTMTK_HW_RESET_ACTIVE, &btmtk_data->flags);
 
