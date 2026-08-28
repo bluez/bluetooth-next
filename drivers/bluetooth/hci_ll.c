@@ -112,6 +112,7 @@ out:
 static int ll_open(struct hci_uart *hu)
 {
 	struct ll_struct *ll;
+	int err;
 
 	BT_DBG("hu %p", hu);
 
@@ -130,8 +131,14 @@ static int ll_open(struct hci_uart *hu)
 	if (hu->serdev) {
 		struct ll_device *lldev = serdev_device_get_drvdata(hu->serdev);
 
-		if (!IS_ERR(lldev->ext_clk))
-			clk_prepare_enable(lldev->ext_clk);
+		if (!IS_ERR(lldev->ext_clk)) {
+			err = clk_prepare_enable(lldev->ext_clk);
+			if (err) {
+				hu->priv = NULL;
+				kfree(ll);
+				return err;
+			}
+		}
 	}
 
 	return 0;
