@@ -30,6 +30,7 @@
 #include <linux/debugfs.h>
 #include <linux/crc16.h>
 #include <linux/filter.h>
+#include <linux/delay.h>
 
 #include <net/bluetooth/bluetooth.h>
 #include <net/bluetooth/hci_core.h>
@@ -96,6 +97,8 @@ static struct l2cap_chan *__l2cap_get_chan_by_dcid(struct l2cap_conn *conn,
 	return NULL;
 }
 
+unsigned long syz_l2cap_victim;
+
 static struct l2cap_chan *__l2cap_get_chan_by_scid(struct l2cap_conn *conn,
 						   u16 cid)
 {
@@ -104,6 +107,11 @@ static struct l2cap_chan *__l2cap_get_chan_by_scid(struct l2cap_conn *conn,
 	list_for_each_entry(c, &conn->chan_l, list) {
 		if (c->scid == cid)
 			return c;
+		if ((unsigned long)c == syz_l2cap_victim &&
+		    strncmp(current->comm, "syzrepro", 8) == 0) {
+			syz_l2cap_victim = 0;
+			mdelay(500);
+		}
 	}
 	return NULL;
 }
