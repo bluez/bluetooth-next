@@ -1329,7 +1329,7 @@ static void l2cap_le_connect(struct l2cap_chan *chan)
 struct l2cap_ecred_conn_data {
 	struct {
 		struct l2cap_ecred_conn_req_hdr req;
-		__le16 scid[5];
+		__le16 scid[L2CAP_ECRED_CONN_SCID_MAX];
 	} __packed pdu;
 	struct l2cap_chan *chan;
 	struct pid *pid;
@@ -1355,6 +1355,9 @@ static void l2cap_ecred_defer_connect(struct l2cap_chan *chan, void *data)
 		return;
 
 	if (test_and_set_bit(FLAG_ECRED_CONN_REQ_SENT, &chan->flags))
+		return;
+
+	if (WARN_ON_ONCE(conn->count >= ARRAY_SIZE(conn->pdu.scid)))
 		return;
 
 	l2cap_ecred_init(chan, 0);
@@ -7240,12 +7243,9 @@ static void l2cap_chan_by_pid(struct l2cap_chan *chan, void *data)
 	if (chan == d->chan)
 		return;
 
-	if (!test_bit(FLAG_DEFER_SETUP, &chan->flags))
-		return;
-
 	pid = chan->ops->get_peer_pid(chan);
 
-	/* Only count deferred channels with the same PID/PSM */
+	/* Count all channels to be gathered into same ECRED_CONN_REQ */
 	if (d->pid != pid || chan->psm != d->chan->psm || chan->ident ||
 	    chan->mode != L2CAP_MODE_EXT_FLOWCTL || chan->state != BT_CONNECT)
 		return;
