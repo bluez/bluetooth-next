@@ -44,8 +44,8 @@ bool enable_ecred = IS_ENABLED(CONFIG_BT_LE_L2CAP_ECRED);
 
 static u32 l2cap_feat_mask = L2CAP_FEAT_FIXED_CHAN | L2CAP_FEAT_UCD;
 
-static LIST_HEAD(chan_list);
 static DEFINE_RWLOCK(chan_list_lock);
+static __guarded_by(&chan_list_lock) LIST_HEAD(chan_list);
 
 static struct sk_buff *l2cap_build_cmd(struct l2cap_conn *conn,
 				       u8 code, u8 ident, u16 dlen, void *data);
@@ -87,6 +87,7 @@ static inline u8 bdaddr_dst_type(struct hci_conn *hcon)
 
 static struct l2cap_chan *__l2cap_get_chan_by_dcid(struct l2cap_conn *conn,
 						   u16 cid)
+	__must_hold(&conn->lock)
 {
 	struct l2cap_chan *c;
 
@@ -99,6 +100,7 @@ static struct l2cap_chan *__l2cap_get_chan_by_dcid(struct l2cap_conn *conn,
 
 static struct l2cap_chan *__l2cap_get_chan_by_scid(struct l2cap_conn *conn,
 						   u16 cid)
+	__must_hold(&conn->lock)
 {
 	struct l2cap_chan *c;
 
@@ -114,6 +116,7 @@ static struct l2cap_chan *__l2cap_get_chan_by_scid(struct l2cap_conn *conn,
  */
 static struct l2cap_chan *l2cap_get_chan_by_scid(struct l2cap_conn *conn,
 						 u16 cid)
+	__must_hold(&conn->lock)
 {
 	struct l2cap_chan *c;
 
@@ -129,6 +132,7 @@ static struct l2cap_chan *l2cap_get_chan_by_scid(struct l2cap_conn *conn,
  */
 static struct l2cap_chan *l2cap_get_chan_by_dcid(struct l2cap_conn *conn,
 						 u16 cid)
+	__must_hold(&conn->lock)
 {
 	struct l2cap_chan *c;
 
@@ -141,6 +145,7 @@ static struct l2cap_chan *l2cap_get_chan_by_dcid(struct l2cap_conn *conn,
 
 static struct l2cap_chan *__l2cap_get_chan_by_ident(struct l2cap_conn *conn,
 						    u8 ident)
+	__must_hold(&conn->lock)
 {
 	struct l2cap_chan *c;
 
@@ -153,6 +158,7 @@ static struct l2cap_chan *__l2cap_get_chan_by_ident(struct l2cap_conn *conn,
 
 static struct l2cap_chan *__l2cap_global_chan_by_addr(__le16 psm, bdaddr_t *src,
 						      u8 src_type)
+	__must_hold_shared(&chan_list_lock)
 {
 	struct l2cap_chan *c;
 
@@ -230,6 +236,7 @@ int l2cap_add_scid(struct l2cap_chan *chan,  __u16 scid)
 }
 
 static u16 l2cap_alloc_cid(struct l2cap_conn *conn)
+	__must_hold(&conn->lock)
 {
 	u16 cid, dyn_end;
 
@@ -728,6 +735,7 @@ EXPORT_SYMBOL_GPL(l2cap_chan_del);
 
 static void __l2cap_chan_list_id(struct l2cap_conn *conn, u16 id,
 				 l2cap_chan_func_t func, void *data)
+	__must_hold(&conn->lock)
 {
 	struct l2cap_chan *chan, *l;
 
@@ -739,6 +747,7 @@ static void __l2cap_chan_list_id(struct l2cap_conn *conn, u16 id,
 
 static void __l2cap_chan_list(struct l2cap_conn *conn, l2cap_chan_func_t func,
 			      void *data)
+	__must_hold(&conn->lock)
 {
 	struct l2cap_chan *chan;
 
@@ -805,6 +814,9 @@ static void l2cap_chan_le_connect_reject(struct l2cap_chan *chan)
 static void l2cap_chan_ecred_connect_reject(struct l2cap_chan *chan)
 {
 	l2cap_state_change(chan, BT_DISCONN);
+
+	lockdep_assert_held(&chan->lock);
+	lockdep_assert_held(&chan->conn->lock);
 
 	__l2cap_ecred_conn_rsp_defer(chan);
 }
@@ -1416,6 +1428,7 @@ static void l2cap_ecred_defer_connect(struct l2cap_chan *chan, void *data)
 }
 
 static void l2cap_ecred_connect(struct l2cap_chan *chan)
+	__must_hold(&chan->conn->lock)
 {
 	struct l2cap_conn *conn = chan->conn;
 	struct l2cap_ecred_conn_data data;
@@ -1449,6 +1462,7 @@ static void l2cap_ecred_connect(struct l2cap_chan *chan)
 }
 
 static void l2cap_le_start(struct l2cap_chan *chan)
+	__must_hold(&chan->conn->lock)
 {
 	struct l2cap_conn *conn = chan->conn;
 
@@ -1469,6 +1483,7 @@ static void l2cap_le_start(struct l2cap_chan *chan)
 }
 
 static void l2cap_start_connection(struct l2cap_chan *chan)
+	__must_hold(&chan->conn->lock)
 {
 	if (chan->conn->hcon->type == LE_LINK) {
 		l2cap_le_start(chan);
@@ -1518,6 +1533,7 @@ static bool l2cap_check_enc_key_size(struct hci_conn *hcon,
 }
 
 static void l2cap_do_start(struct l2cap_chan *chan)
+	__must_hold(&chan->conn->lock)
 {
 	struct l2cap_conn *conn = chan->conn;
 
@@ -1584,6 +1600,7 @@ static void l2cap_send_disconn_req(struct l2cap_chan *chan, int err)
 
 /* ---- L2CAP connections ---- */
 static void l2cap_conn_start(struct l2cap_conn *conn)
+	__must_hold(&conn->lock)
 {
 	struct l2cap_chan *chan, *tmp;
 
@@ -1591,6 +1608,8 @@ static void l2cap_conn_start(struct l2cap_conn *conn)
 
 	list_for_each_entry_safe(chan, tmp, &conn->chan_l, list) {
 		l2cap_chan_lock(chan);
+
+		lockdep_assert_held(&chan->conn->lock);
 
 		if (chan->chan_type != L2CAP_CHAN_CONN_ORIENTED) {
 			l2cap_chan_ready(chan);
@@ -1708,6 +1727,8 @@ static void l2cap_conn_ready(struct l2cap_conn *conn)
 
 		l2cap_chan_lock(chan);
 
+		lockdep_assert_held(&chan->conn->lock);
+
 		if (hcon->type == LE_LINK) {
 			l2cap_le_start(chan);
 		} else if (chan->chan_type != L2CAP_CHAN_CONN_ORIENTED) {
@@ -1730,6 +1751,7 @@ static void l2cap_conn_ready(struct l2cap_conn *conn)
 
 /* Notify sockets that we cannot guaranty reliability anymore */
 static void l2cap_conn_unreliable(struct l2cap_conn *conn, int err)
+	__must_hold(&conn->lock)
 {
 	struct l2cap_chan *chan;
 
@@ -3027,6 +3049,7 @@ static void l2cap_pass_to_tx_fbit(struct l2cap_chan *chan,
 
 /* Copy frame to all raw sockets on that connection */
 static void l2cap_raw_recv(struct l2cap_conn *conn, struct sk_buff *skb)
+	__must_hold(&conn->lock)
 {
 	struct sk_buff *nskb;
 	struct l2cap_chan *chan;
@@ -4073,6 +4096,7 @@ static void l2cap_conf_rfc_get(struct l2cap_chan *chan, void *rsp, int len)
 static inline int l2cap_command_rej(struct l2cap_conn *conn,
 				    struct l2cap_cmd_hdr *cmd, u16 cmd_len,
 				    u8 *data)
+	__must_hold(&conn->lock)
 {
 	struct l2cap_cmd_rej_unk *rej = (struct l2cap_cmd_rej_unk *) data;
 
@@ -4105,6 +4129,7 @@ static inline int l2cap_command_rej(struct l2cap_conn *conn,
  */
 static struct l2cap_chan *l2cap_new_connection(struct l2cap_conn *conn,
 					       struct l2cap_chan *pchan)
+	__must_hold(&conn->lock)
 {
 	struct l2cap_chan *chan;
 
@@ -4134,6 +4159,7 @@ static struct l2cap_chan *l2cap_new_connection(struct l2cap_conn *conn,
 
 static void l2cap_connect(struct l2cap_conn *conn, struct l2cap_cmd_hdr *cmd,
 			  u8 *data, u8 rsp_code)
+	__must_hold(&conn->lock)
 	__context_unsafe(/* conditional locking */)
 {
 	struct l2cap_conn_req *req = (struct l2cap_conn_req *) data;
@@ -4264,6 +4290,7 @@ response:
 
 static int l2cap_connect_req(struct l2cap_conn *conn,
 			     struct l2cap_cmd_hdr *cmd, u16 cmd_len, u8 *data)
+	__must_hold(&conn->lock)
 {
 	if (cmd_len < sizeof(struct l2cap_conn_req))
 		return -EPROTO;
@@ -4275,6 +4302,7 @@ static int l2cap_connect_req(struct l2cap_conn *conn,
 static int l2cap_connect_create_rsp(struct l2cap_conn *conn,
 				    struct l2cap_cmd_hdr *cmd, u16 cmd_len,
 				    u8 *data)
+	__must_hold(&conn->lock)
 {
 	struct l2cap_conn_rsp *rsp = (struct l2cap_conn_rsp *) data;
 	u16 scid, dcid, result, status;
@@ -4392,6 +4420,7 @@ static void cmd_reject_invalid_cid(struct l2cap_conn *conn, u8 ident,
 static inline int l2cap_config_req(struct l2cap_conn *conn,
 				   struct l2cap_cmd_hdr *cmd, u16 cmd_len,
 				   u8 *data)
+	__must_hold(&conn->lock)
 {
 	struct l2cap_conf_req *req = (struct l2cap_conf_req *) data;
 	u16 dcid, flags;
@@ -4505,6 +4534,7 @@ unlock:
 static inline int l2cap_config_rsp(struct l2cap_conn *conn,
 				   struct l2cap_cmd_hdr *cmd, u16 cmd_len,
 				   u8 *data)
+	__must_hold(&conn->lock)
 {
 	struct l2cap_conf_rsp *rsp = (struct l2cap_conf_rsp *)data;
 	u16 scid, flags, result;
@@ -4614,6 +4644,7 @@ done:
 static inline int l2cap_disconnect_req(struct l2cap_conn *conn,
 				       struct l2cap_cmd_hdr *cmd, u16 cmd_len,
 				       u8 *data)
+	__must_hold(&conn->lock)
 {
 	struct l2cap_disconn_req *req = (struct l2cap_disconn_req *) data;
 	struct l2cap_disconn_rsp rsp;
@@ -4655,6 +4686,7 @@ static inline int l2cap_disconnect_req(struct l2cap_conn *conn,
 static inline int l2cap_disconnect_rsp(struct l2cap_conn *conn,
 				       struct l2cap_cmd_hdr *cmd, u16 cmd_len,
 				       u8 *data)
+	__must_hold(&conn->lock)
 {
 	struct l2cap_disconn_rsp *rsp = (struct l2cap_disconn_rsp *) data;
 	u16 dcid, scid;
@@ -4742,6 +4774,7 @@ static inline int l2cap_information_req(struct l2cap_conn *conn,
 static inline int l2cap_information_rsp(struct l2cap_conn *conn,
 					struct l2cap_cmd_hdr *cmd, u16 cmd_len,
 					u8 *data)
+	__must_hold(&conn->lock)
 {
 	struct l2cap_info_rsp *rsp = (struct l2cap_info_rsp *) data;
 	u16 type, result;
@@ -4849,6 +4882,7 @@ static inline int l2cap_conn_param_update_req(struct l2cap_conn *conn,
 static int l2cap_le_connect_rsp(struct l2cap_conn *conn,
 				struct l2cap_cmd_hdr *cmd, u16 cmd_len,
 				u8 *data)
+	__must_hold(&conn->lock)
 {
 	struct l2cap_le_conn_rsp *rsp = (struct l2cap_le_conn_rsp *) data;
 	struct hci_conn *hcon = conn->hcon;
@@ -4955,6 +4989,7 @@ static void l2cap_put_ident(struct l2cap_conn *conn, u8 code, u8 id)
 static inline int l2cap_bredr_sig_cmd(struct l2cap_conn *conn,
 				      struct l2cap_cmd_hdr *cmd, u16 cmd_len,
 				      u8 *data)
+	__must_hold(&conn->lock)
 {
 	int err = 0;
 
@@ -5016,6 +5051,7 @@ static inline int l2cap_bredr_sig_cmd(struct l2cap_conn *conn,
 static int l2cap_le_connect_req(struct l2cap_conn *conn,
 				struct l2cap_cmd_hdr *cmd, u16 cmd_len,
 				u8 *data)
+	__must_hold(&conn->lock)
 {
 	struct l2cap_le_conn_req *req = (struct l2cap_le_conn_req *) data;
 	struct l2cap_le_conn_rsp rsp;
@@ -5163,6 +5199,7 @@ response:
 static inline int l2cap_le_credits(struct l2cap_conn *conn,
 				   struct l2cap_cmd_hdr *cmd, u16 cmd_len,
 				   u8 *data)
+	__must_hold(&conn->lock)
 {
 	struct l2cap_le_credits *pkt;
 	struct l2cap_chan *chan;
@@ -5212,6 +5249,7 @@ unlock:
 static inline int l2cap_ecred_conn_req(struct l2cap_conn *conn,
 				       struct l2cap_cmd_hdr *cmd, u16 cmd_len,
 				       u8 *data)
+	__must_hold(&conn->lock)
 {
 	struct l2cap_ecred_conn_req *req = (void *) data;
 	DEFINE_RAW_FLEX(struct l2cap_ecred_conn_rsp, pdu, dcid, L2CAP_ECRED_MAX_CID);
@@ -5384,6 +5422,7 @@ response:
 static inline int l2cap_ecred_conn_rsp(struct l2cap_conn *conn,
 				       struct l2cap_cmd_hdr *cmd, u16 cmd_len,
 				       u8 *data)
+	__must_hold(&conn->lock)
 {
 	struct l2cap_ecred_conn_rsp *rsp = (void *) data;
 	struct hci_conn *hcon = conn->hcon;
@@ -5511,6 +5550,7 @@ static inline int l2cap_ecred_conn_rsp(struct l2cap_conn *conn,
 static inline int l2cap_ecred_reconf_req(struct l2cap_conn *conn,
 					 struct l2cap_cmd_hdr *cmd, u16 cmd_len,
 					 u8 *data)
+	__must_hold(&conn->lock)
 {
 	struct l2cap_ecred_reconf_req *req = (void *) data;
 	struct l2cap_ecred_reconf_rsp rsp;
@@ -5609,6 +5649,7 @@ respond:
 static inline int l2cap_ecred_reconf_rsp(struct l2cap_conn *conn,
 					 struct l2cap_cmd_hdr *cmd, u16 cmd_len,
 					 u8 *data)
+	__must_hold(&conn->lock)
 {
 	struct l2cap_chan *chan, *tmp;
 	struct l2cap_ecred_reconf_rsp *rsp = (void *)data;
@@ -5649,6 +5690,7 @@ static inline int l2cap_ecred_reconf_rsp(struct l2cap_conn *conn,
 static inline int l2cap_le_command_rej(struct l2cap_conn *conn,
 				       struct l2cap_cmd_hdr *cmd, u16 cmd_len,
 				       u8 *data)
+	__must_hold(&conn->lock)
 {
 	struct l2cap_cmd_rej_unk *rej = (struct l2cap_cmd_rej_unk *) data;
 	struct l2cap_chan *chan;
@@ -5676,6 +5718,7 @@ done:
 static inline int l2cap_le_sig_cmd(struct l2cap_conn *conn,
 				   struct l2cap_cmd_hdr *cmd, u16 cmd_len,
 				   u8 *data)
+	__must_hold(&conn->lock)
 {
 	int err = 0;
 
@@ -5740,6 +5783,7 @@ static inline int l2cap_le_sig_cmd(struct l2cap_conn *conn,
 
 static inline void l2cap_le_sig_channel(struct l2cap_conn *conn,
 					struct sk_buff *skb)
+	__must_hold(&conn->lock)
 {
 	struct hci_conn *hcon = conn->hcon;
 	struct l2cap_cmd_hdr *cmd;
@@ -5798,6 +5842,7 @@ static inline void l2cap_sig_send_mtu_rej(struct l2cap_conn *conn, u8 ident)
 
 static inline void l2cap_sig_channel(struct l2cap_conn *conn,
 				     struct sk_buff *skb)
+	__must_hold(&conn->lock)
 {
 	struct hci_conn *hcon = conn->hcon;
 	struct l2cap_cmd_hdr *cmd;
@@ -7035,6 +7080,7 @@ failed:
 
 static void l2cap_data_channel(struct l2cap_conn *conn, u16 cid,
 			       struct sk_buff *skb)
+	__must_hold(&conn->lock)
 {
 	struct l2cap_chan *chan;
 
@@ -7143,6 +7189,7 @@ free_skb:
 }
 
 static void l2cap_recv_frame(struct l2cap_conn *conn, struct sk_buff *skb)
+	__must_hold(&conn->lock)
 {
 	struct l2cap_hdr *lh = (void *) skb->data;
 	struct hci_conn *hcon = conn->hcon;
@@ -7252,9 +7299,9 @@ static struct l2cap_conn *l2cap_conn_add(struct hci_conn *hcon)
 	     hci_dev_test_flag(hcon->hdev, HCI_FORCE_BREDR_SMP)))
 		conn->local_fixed_chan |= L2CAP_FC_SMP_BREDR;
 
-	mutex_init(&conn->lock);
-
-	INIT_LIST_HEAD(&conn->chan_l);
+	scoped_guard(mutex_init, &conn->lock) {
+		INIT_LIST_HEAD(&conn->chan_l);
+	}
 	INIT_LIST_HEAD(&conn->users);
 
 	INIT_DELAYED_WORK(&conn->info_timer, l2cap_info_timeout);
@@ -7465,6 +7512,8 @@ int l2cap_chan_connect(struct l2cap_chan *chan, __le16 psm, u16 cid,
 	chan->src_type = bdaddr_src_type(hcon);
 
 	__l2cap_chan_add(conn, chan);
+
+	lockdep_assert_held(&chan->conn->lock);
 
 	/* l2cap_chan_add takes its own ref so we can drop this one */
 	hci_conn_drop(hcon);
@@ -7688,6 +7737,8 @@ static void l2cap_disconn_cfm(struct hci_conn *hcon, u8 reason)
 }
 
 static inline void l2cap_check_encryption(struct l2cap_chan *chan, u8 encrypt)
+	__must_hold(&chan->lock)
+	__must_hold(&chan->conn->lock)
 {
 	if (chan->chan_type != L2CAP_CHAN_CONN_ORIENTED)
 		return;
@@ -7719,6 +7770,8 @@ static void l2cap_security_cfm(struct hci_conn *hcon, u8 status, u8 encrypt)
 
 	list_for_each_entry(chan, &conn->chan_l, list) {
 		l2cap_chan_lock(chan);
+
+		lockdep_assert_held(&chan->conn->lock);
 
 		BT_DBG("chan %p scid 0x%4.4x state %s", chan, chan->scid,
 		       state_to_string(chan->state));
