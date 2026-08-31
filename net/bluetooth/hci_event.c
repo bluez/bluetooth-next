@@ -5757,6 +5757,7 @@ static void le_conn_complete_evt(struct hci_dev *hdev, u8 status,
 	struct hci_conn_params *params;
 	struct hci_conn *conn;
 	struct smp_irk *irk;
+	struct smp_irk_data irk_data;
 	u8 addr_type;
 	int err;
 
@@ -5842,8 +5843,10 @@ static void le_conn_complete_evt(struct hci_dev *hdev, u8 status,
 	 */
 	irk = hci_get_irk(hdev, &conn->dst, conn->dst_type);
 	if (irk) {
-		bacpy(&conn->dst, &irk->bdaddr);
-		conn->dst_type = irk->addr_type;
+		hci_irk_read(hdev, irk, &irk_data);
+		bacpy(&conn->dst, &irk_data.bdaddr);
+		conn->dst_type = irk_data.addr_type;
+		hci_irk_put(irk);
 	}
 
 	conn->dst_type = ev_bdaddr_type(hdev, conn->dst_type, NULL);
@@ -6234,7 +6237,9 @@ static void process_adv_report(struct hci_dev *hdev, u8 type, bdaddr_t *bdaddr,
 {
 	struct discovery_state *d = &hdev->discovery;
 	struct smp_irk *irk;
+	struct smp_irk_data irk_data;
 	struct hci_conn *conn;
+	bdaddr_t identity_addr;
 	bool match, bdaddr_resolved;
 	u32 flags;
 	u8 *ptr;
@@ -6309,8 +6314,11 @@ static void process_adv_report(struct hci_dev *hdev, u8 type, bdaddr_t *bdaddr,
 	/* Check if we need to convert to identity address */
 	irk = hci_get_irk(hdev, bdaddr, bdaddr_type);
 	if (irk) {
-		bdaddr = &irk->bdaddr;
-		bdaddr_type = irk->addr_type;
+		hci_irk_read(hdev, irk, &irk_data);
+		bacpy(&identity_addr, &irk_data.bdaddr);
+		bdaddr_type = irk_data.addr_type;
+		hci_irk_put(irk);
+		bdaddr = &identity_addr;
 	}
 
 	bdaddr_type = ev_bdaddr_type(hdev, bdaddr_type, &bdaddr_resolved);
