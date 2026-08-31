@@ -256,6 +256,12 @@ struct bt_codecs {
 
 #define BT_SCM_PKT_SEQNUM	0x05
 
+/*
+ * Control receiving HCI_VENDOR_PKT over HCI_CHANNEL_USER, off
+ * by default to avoid regressions for existing applications.
+ */
+#define BT_RECV_VENDOR_PKT	23
+
 __printf(1, 2)
 void bt_info(const char *fmt, ...);
 __printf(1, 2)
