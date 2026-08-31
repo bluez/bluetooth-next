@@ -445,6 +445,16 @@ int hci_dev_open(__u16 dev)
 	if (!hdev)
 		return -ENODEV;
 
+	/* Reject opening the controller while it is being powered down:
+	 * the firmware is rebooting after the shutdown reset and any
+	 * concurrent command sent during this window can leave it in a
+	 * stuck state where it stops answering HCI commands.
+	 */
+	if (hci_dev_test_flag(hdev, HCI_POWERING_DOWN)) {
+		err = -EBUSY;
+		goto done;
+	}
+
 	/* Devices that are marked as unconfigured can only be powered
 	 * up as user channel. Trying to bring them up as normal devices
 	 * will result into a failure. Only user channel operation is
@@ -515,6 +525,14 @@ int hci_dev_close(__u16 dev)
 	if (!hdev)
 		return -ENODEV;
 
+	/* Reject closing the controller while the power off sequence
+	 * is already in progress (see hci_dev_open for details).
+	 */
+	if (hci_dev_test_flag(hdev, HCI_POWERING_DOWN)) {
+		err = -EBUSY;
+		goto done;
+	}
+
 	if (hci_dev_test_flag(hdev, HCI_USER_CHANNEL)) {
 		err = -EBUSY;
 		goto done;
@@ -555,6 +573,16 @@ int hci_dev_reset(__u16 dev)
 	hdev = hci_dev_get_srcu(dev, &srcu_index);
 	if (!hdev)
 		return -ENODEV;
+
+	/* Reject resetting the controller while the power off sequence
+	 * is in progress: the shutdown routine already issues its own
+	 * HCI reset and a concurrent one would hit the firmware while
+	 * it is rebooting (see hci_dev_open for details).
+	 */
+	if (hci_dev_test_flag(hdev, HCI_POWERING_DOWN)) {
+		err = -EBUSY;
+		goto done;
+	}
 
 	if (!test_bit(HCI_UP, &hdev->flags)) {
 		err = -ENETDOWN;
