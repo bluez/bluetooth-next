@@ -27,6 +27,7 @@
 #include "btbcm.h"
 #include "btrtl.h"
 #include "btmtk.h"
+#include "btusb_qcom.h"
 
 #define VERSION "0.8"
 
@@ -68,6 +69,7 @@ static struct usb_driver btusb_driver;
 #define BTUSB_ACTIONS_SEMI		BIT(27)
 #define BTUSB_BARROT			BIT(28)
 #define BTUSB_BROKEN_EXT_SCAN		BIT(29)
+#define BTUSB_QUALCOMM			BIT(30)
 
 static const struct usb_device_id btusb_table[] = {
 	/* Generic Bluetooth USB device */
@@ -413,6 +415,10 @@ static const struct usb_device_id quirks_table[] = {
 	{ USB_DEVICE(0x2c7c, 0x0131), .driver_info = BTUSB_QCA_WCN6855 |
 						     BTUSB_WIDEBAND_SPEECH },
 	{ USB_DEVICE(0x2c7c, 0x0132), .driver_info = BTUSB_QCA_WCN6855 |
+						     BTUSB_WIDEBAND_SPEECH },
+
+	/* Qualcomm multi-subsystem chipset QCC2072 */
+	{ USB_DEVICE(0x0cf3, 0xea00), .driver_info = BTUSB_QUALCOMM |
 						     BTUSB_WIDEBAND_SPEECH },
 
 	/* Broadcom BCM2035 */
@@ -1039,6 +1045,7 @@ struct btusb_data {
 
 	int (*recv_event)(struct hci_dev *hdev, struct sk_buff *skb);
 	int (*recv_acl)(struct hci_dev *hdev, struct sk_buff *skb);
+	int (*recv_intr)(struct btusb_data *data, void *buffer, int count);
 	int (*recv_bulk)(struct btusb_data *data, void *buffer, int count);
 
 	int (*setup_on_usb)(struct hci_dev *hdev);
@@ -1513,7 +1520,7 @@ static void btusb_intr_complete(struct urb *urb)
 	if (urb->status == 0) {
 		hdev->stat.byte_rx += urb->actual_length;
 
-		if (btusb_recv_intr(data, urb->transfer_buffer,
+		if (data->recv_intr(data, urb->transfer_buffer,
 				    urb->actual_length) < 0) {
 			bt_dev_err(hdev, "corrupted event packet");
 			hdev->stat.err_rx++;
@@ -2728,7 +2735,7 @@ static int btusb_recv_bulk_intel(struct btusb_data *data, void *buffer,
 	 * same way as the ones received from the interrupt endpoint.
 	 */
 	if (btintel_test_flag(hdev, INTEL_BOOTLOADER))
-		return btusb_recv_intr(data, buffer, count);
+		return data->recv_intr(data, buffer, count);
 
 	return btusb_recv_bulk(data, buffer, count);
 }
@@ -4101,6 +4108,44 @@ static struct hci_drv btusb_hci_drv = {
 	.specific_handlers	= btusb_hci_drv_specific_handlers,
 };
 
+/*
+ * ============================================================================
+ * Qualcomm support
+ * ============================================================================
+ */
+
+static int btusb_recv_intr_qcom(struct btusb_data *data, void *buffer, int count)
+{
+	unsigned long flags;
+	int err = 0;
+
+	spin_lock_irqsave(&data->rxlock, flags);
+	data->evt_skb = btusb_qcom_recv_intr(data->hdev, data->evt_skb, buffer, count,
+					     &err);
+	spin_unlock_irqrestore(&data->rxlock, flags);
+
+	return err;
+}
+
+static int btusb_recv_bulk_qcom(struct btusb_data *data, void *buffer, int count)
+{
+	unsigned long flags;
+	int err = 0;
+
+	spin_lock_irqsave(&data->rxlock, flags);
+	data->acl_skb = btusb_qcom_recv_bulk(data->hdev, data->acl_skb, buffer, count,
+					     &err);
+	spin_unlock_irqrestore(&data->rxlock, flags);
+
+	return err;
+}
+
+/*
+ * ============================================================================
+ * Qualcomm support end
+ * ============================================================================
+ */
+
 static int btusb_probe(struct usb_interface *intf,
 		       const struct usb_device_id *id)
 {
@@ -4180,6 +4225,7 @@ static int btusb_probe(struct usb_interface *intf,
 	spin_lock_init(&data->rxlock);
 
 	data->recv_event = hci_recv_frame;
+	data->recv_intr = btusb_recv_intr;
 	data->recv_bulk = btusb_recv_bulk;
 
 	if (id->driver_info & BTUSB_INTEL_COMBINED) {
@@ -4200,6 +4246,9 @@ static int btusb_probe(struct usb_interface *intf,
 	} else if (id->driver_info & BTUSB_QCA_WCN6855) {
 		/* Allocate extra space for QCA WCN6855 device */
 		priv_size += sizeof(struct btqca_data);
+	} else if (id->driver_info & BTUSB_QUALCOMM) {
+		/* Allocate extra space for Qualcomm device */
+		priv_size += btusb_qcom_hdev_priv_size();
 	}
 
 	data->recv_acl = hci_recv_frame;
@@ -4356,6 +4405,30 @@ static int btusb_probe(struct usb_interface *intf,
 		hdev->reset = btusb_qca_reset;
 		hci_set_quirk(hdev, HCI_QUIRK_SIMULTANEOUS_DISCOVERY);
 		hci_set_msft_opcode(hdev, 0xFD70);
+	}
+
+	if (id->driver_info & BTUSB_QUALCOMM) {
+		struct btusb_qcom *xport_data;
+
+		if (!IS_ENABLED(CONFIG_BT_HCIBTUSB_QCOM)) {
+			err = -ENODEV;
+			bt_dev_err(hdev, "CONFIG_BT_HCIBTUSB_QCOM not enabled");
+			goto err_kill_tx_urbs;
+		}
+
+		xport_data = btusb_qcom_xport_data(hdev);
+		xport_data->reset_gpio = data->reset_gpio;
+		xport_data->prepare_reset = btusb_prepare_reset;
+		xport_data->send_frame = btusb_send_frame;
+		xport_data->recv_acl   = btusb_recv_acl;
+		xport_data->recv_event = btusb_recv_event;
+
+		data->recv_intr = btusb_recv_intr_qcom;
+		data->recv_bulk = btusb_recv_bulk_qcom;
+		data->disconnect = btusb_qcom_disconnect;
+
+		hdev->send  = btusb_qcom_send_frame;
+		hdev->setup = btusb_qcom_setup;
 	}
 
 	if (id->driver_info & BTUSB_AMP) {

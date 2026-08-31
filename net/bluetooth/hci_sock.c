@@ -229,12 +229,16 @@ void hci_send_to_sock(struct hci_dev *hdev, struct sk_buff *skb)
 		} else if (hci_pi(sk)->channel == HCI_CHANNEL_USER) {
 			if (!bt_cb(skb)->incoming)
 				continue;
-			if (hci_skb_pkt_type(skb) != HCI_EVENT_PKT &&
-			    hci_skb_pkt_type(skb) != HCI_ACLDATA_PKT &&
-			    hci_skb_pkt_type(skb) != HCI_SCODATA_PKT &&
-			    hci_skb_pkt_type(skb) != HCI_ISODATA_PKT &&
-			    hci_skb_pkt_type(skb) != HCI_DRV_PKT)
+			if (hci_skb_pkt_type(skb) == HCI_VENDOR_PKT) {
+				if (!hci_sock_test_flag(sk, HCI_SOCK_RECV_VENDOR_PKT))
+					continue;
+			} else if (hci_skb_pkt_type(skb) != HCI_EVENT_PKT &&
+				   hci_skb_pkt_type(skb) != HCI_ACLDATA_PKT &&
+				   hci_skb_pkt_type(skb) != HCI_SCODATA_PKT &&
+				   hci_skb_pkt_type(skb) != HCI_ISODATA_PKT &&
+				   hci_skb_pkt_type(skb) != HCI_DRV_PKT) {
 				continue;
+			}
 		} else {
 			/* Don't send frame to other channel types */
 			continue;
@@ -389,6 +393,12 @@ void hci_send_to_monitor(struct hci_dev *hdev, struct sk_buff *skb)
 			opcode = cpu_to_le16(HCI_MON_ISO_RX_PKT);
 		else
 			opcode = cpu_to_le16(HCI_MON_ISO_TX_PKT);
+		break;
+	case HCI_VENDOR_PKT:
+		if (bt_cb(skb)->incoming)
+			opcode = cpu_to_le16(HCI_MON_VENDOR_RX_PKT);
+		else
+			opcode = cpu_to_le16(HCI_MON_VENDOR_TX_PKT);
 		break;
 	case HCI_DRV_PKT:
 		if (bt_cb(skb)->incoming)
@@ -1868,6 +1878,7 @@ static int hci_sock_sendmsg(struct socket *sock, struct msghdr *msg,
 		    hci_skb_pkt_type(skb) != HCI_ACLDATA_PKT &&
 		    hci_skb_pkt_type(skb) != HCI_SCODATA_PKT &&
 		    hci_skb_pkt_type(skb) != HCI_ISODATA_PKT &&
+		    hci_skb_pkt_type(skb) != HCI_VENDOR_PKT &&
 		    hci_skb_pkt_type(skb) != HCI_DRV_PKT) {
 			err = -EINVAL;
 			goto drop;
@@ -2017,6 +2028,7 @@ static int hci_sock_setsockopt(struct socket *sock, int level, int optname,
 {
 	struct sock *sk = sock->sk;
 	int err = 0;
+	u32 opt_u32;
 	u16 opt;
 
 	BT_DBG("sk %p, opt %d", sk, optname);
@@ -2048,6 +2060,23 @@ static int hci_sock_setsockopt(struct socket *sock, int level, int optname,
 			break;
 
 		hci_pi(sk)->mtu = opt;
+		break;
+
+	case BT_RECV_VENDOR_PKT:
+		if (hci_pi(sk)->channel != HCI_CHANNEL_USER) {
+			err = -ENOPROTOOPT;
+			break;
+		}
+
+		err = copy_safe_from_sockptr(&opt_u32, sizeof(opt_u32),
+					     optval, optlen);
+		if (err)
+			break;
+
+		if (opt_u32)
+			hci_sock_set_flag(sk, HCI_SOCK_RECV_VENDOR_PKT);
+		else
+			hci_sock_clear_flag(sk, HCI_SOCK_RECV_VENDOR_PKT);
 		break;
 
 	default:
@@ -2132,6 +2161,7 @@ static int hci_sock_getsockopt(struct socket *sock, int level, int optname,
 {
 	struct sock *sk = sock->sk;
 	int err = 0;
+	u32 opt_u32;
 	u16 mtu;
 
 	BT_DBG("sk %p, opt %d", sk, optname);
@@ -2150,6 +2180,19 @@ static int hci_sock_getsockopt(struct socket *sock, int level, int optname,
 		mtu = hci_pi(sk)->mtu;
 		if (copy_to_iter(&mtu, sizeof(mtu), &sopt->iter_out) !=
 		    sizeof(mtu))
+			err = -EFAULT;
+		break;
+
+	case BT_RECV_VENDOR_PKT:
+		if (hci_pi(sk)->channel != HCI_CHANNEL_USER) {
+			err = -ENOPROTOOPT;
+			break;
+		}
+
+		opt_u32 = hci_sock_test_flag(sk, HCI_SOCK_RECV_VENDOR_PKT) ?
+			  1 : 0;
+		if (copy_to_iter(&opt_u32, sizeof(opt_u32),
+				 &sopt->iter_out) != sizeof(opt_u32))
 			err = -EFAULT;
 		break;
 
