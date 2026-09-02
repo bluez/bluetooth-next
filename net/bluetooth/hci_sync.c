@@ -4797,6 +4797,13 @@ static int hci_le_set_def_rate_sync(struct hci_dev *hdev)
 	cp.cont_num = cpu_to_le16(0x0001);
 	cp.supv_timeout = cpu_to_le16(0x000c);	/* 120 ms */
 
+	/* The connection event length recommended in requests by a Peripheral
+	 * uses units of 125 us with a valid range of 0x0001 to 0x7CFF
+	 * (0.125 ms to 3.999875 s), so use the minimum as the default.
+	 */
+	cp.min_ce_len = cpu_to_le16(0x0001);
+	cp.max_ce_len = cpu_to_le16(0x0001);
+
 	return __hci_cmd_sync_status(hdev, HCI_OP_LE_SET_DEF_RATE,
 				     sizeof(cp), &cp, HCI_CMD_TIMEOUT);
 }
