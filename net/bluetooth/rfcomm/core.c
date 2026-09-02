@@ -49,6 +49,18 @@ static DEFINE_MUTEX(rfcomm_mutex);
 
 static LIST_HEAD(session_list);
 
+/* Security confirmations handed over from the HCI event handler to krfcommd */
+struct rfcomm_sec_cfm {
+	struct list_head	list;
+	struct hci_conn		*conn;
+	bdaddr_t		src;
+	u8			status;
+	u8			encrypt;
+};
+
+static LIST_HEAD(security_cfm_list);
+static DEFINE_SPINLOCK(security_cfm_lock);
+
 static int rfcomm_send_frame(struct rfcomm_session *s, u8 *data, int len);
 static int rfcomm_send_sabm(struct rfcomm_session *s, u8 dlci);
 static int rfcomm_send_disc(struct rfcomm_session *s, u8 dlci);
@@ -2122,6 +2134,73 @@ static void rfcomm_process_sessions(void)
 	rfcomm_unlock();
 }
 
+/* Must be called with rfcomm_mutex held */
+static void __rfcomm_security_cfm(struct rfcomm_sec_cfm *cfm)
+{
+	struct rfcomm_session *s;
+	struct rfcomm_dlc *d, *n;
+
+	s = rfcomm_session_get(&cfm->src, &cfm->conn->dst);
+	if (!s)
+		return;
+
+	list_for_each_entry_safe(d, n, &s->dlcs, list) {
+		if (test_and_clear_bit(RFCOMM_SEC_PENDING, &d->flags)) {
+			rfcomm_dlc_clear_timer(d);
+			if (cfm->status || cfm->encrypt == 0x00) {
+				set_bit(RFCOMM_ENC_DROP, &d->flags);
+				continue;
+			}
+		}
+
+		if (d->state == BT_CONNECTED && !cfm->status &&
+		    cfm->encrypt == 0x00) {
+			if (d->sec_level == BT_SECURITY_MEDIUM) {
+				set_bit(RFCOMM_SEC_PENDING, &d->flags);
+				rfcomm_dlc_set_timer(d, RFCOMM_AUTH_TIMEOUT);
+				continue;
+			} else if (d->sec_level == BT_SECURITY_HIGH ||
+				   d->sec_level == BT_SECURITY_FIPS) {
+				set_bit(RFCOMM_ENC_DROP, &d->flags);
+				continue;
+			}
+		}
+
+		if (!test_and_clear_bit(RFCOMM_AUTH_PENDING, &d->flags))
+			continue;
+
+		if (!cfm->status && hci_conn_check_secure(cfm->conn,
+							  d->sec_level))
+			set_bit(RFCOMM_AUTH_ACCEPT, &d->flags);
+		else
+			set_bit(RFCOMM_AUTH_REJECT, &d->flags);
+	}
+}
+
+static void rfcomm_process_security_cfm(void)
+{
+	struct rfcomm_sec_cfm *cfm, *n;
+	LIST_HEAD(cfm_list);
+
+	spin_lock(&security_cfm_lock);
+	list_splice_init(&security_cfm_list, &cfm_list);
+	spin_unlock(&security_cfm_lock);
+
+	if (list_empty(&cfm_list))
+		return;
+
+	rfcomm_lock();
+
+	list_for_each_entry_safe(cfm, n, &cfm_list, list) {
+		__rfcomm_security_cfm(cfm);
+		list_del(&cfm->list);
+		hci_conn_put(cfm->conn);
+		kfree(cfm);
+	}
+
+	rfcomm_unlock();
+}
+
 static int rfcomm_add_listener(bdaddr_t *ba)
 {
 	struct sockaddr_l2 addr;
@@ -2201,11 +2280,17 @@ static int rfcomm_run(void *unused)
 	while (!kthread_should_stop()) {
 
 		/* Process stuff */
+		rfcomm_process_security_cfm();
 		rfcomm_process_sessions();
 
 		wait_woken(&wait, TASK_INTERRUPTIBLE, MAX_SCHEDULE_TIMEOUT);
 	}
 	remove_wait_queue(&rfcomm_wq, &wait);
+
+	/* rfcomm_exit() unregisters the HCI callback before stopping this
+	 * thread, so no further confirmation can be queued here.
+	 */
+	rfcomm_process_security_cfm();
 
 	rfcomm_kill_listener();
 
@@ -2214,50 +2299,26 @@ static int rfcomm_run(void *unused)
 
 static void rfcomm_security_cfm(struct hci_conn *conn, u8 status, u8 encrypt)
 {
-	struct rfcomm_session *s;
-	struct rfcomm_dlc *d, *n;
+	struct rfcomm_sec_cfm *cfm;
 
 	BT_DBG("conn %p status 0x%02x encrypt 0x%02x", conn, status, encrypt);
 
-	rfcomm_lock();
-
-	s = rfcomm_session_get(&conn->hdev->bdaddr, &conn->dst);
-	if (!s) {
-		rfcomm_unlock();
+	cfm = kmalloc_obj(*cfm);
+	if (!cfm)
 		return;
-	}
 
-	list_for_each_entry_safe(d, n, &s->dlcs, list) {
-		if (test_and_clear_bit(RFCOMM_SEC_PENDING, &d->flags)) {
-			rfcomm_dlc_clear_timer(d);
-			if (status || encrypt == 0x00) {
-				set_bit(RFCOMM_ENC_DROP, &d->flags);
-				continue;
-			}
-		}
+	/* The connection is pinned for hci_conn_check_secure(), but it drops
+	 * its reference on hdev once it is deleted, so take a copy of the
+	 * local address needed for the session lookup.
+	 */
+	cfm->conn = hci_conn_get(conn);
+	bacpy(&cfm->src, &conn->hdev->bdaddr);
+	cfm->status = status;
+	cfm->encrypt = encrypt;
 
-		if (d->state == BT_CONNECTED && !status && encrypt == 0x00) {
-			if (d->sec_level == BT_SECURITY_MEDIUM) {
-				set_bit(RFCOMM_SEC_PENDING, &d->flags);
-				rfcomm_dlc_set_timer(d, RFCOMM_AUTH_TIMEOUT);
-				continue;
-			} else if (d->sec_level == BT_SECURITY_HIGH ||
-				   d->sec_level == BT_SECURITY_FIPS) {
-				set_bit(RFCOMM_ENC_DROP, &d->flags);
-				continue;
-			}
-		}
-
-		if (!test_and_clear_bit(RFCOMM_AUTH_PENDING, &d->flags))
-			continue;
-
-		if (!status && hci_conn_check_secure(conn, d->sec_level))
-			set_bit(RFCOMM_AUTH_ACCEPT, &d->flags);
-		else
-			set_bit(RFCOMM_AUTH_REJECT, &d->flags);
-	}
-
-	rfcomm_unlock();
+	spin_lock(&security_cfm_lock);
+	list_add_tail(&cfm->list, &security_cfm_list);
+	spin_unlock(&security_cfm_lock);
 
 	rfcomm_schedule();
 }
