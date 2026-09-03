@@ -2469,6 +2469,7 @@ static int hci_le_add_resolve_list_sync(struct hci_dev *hdev,
 {
 	struct hci_cp_le_add_to_resolv_list cp;
 	struct smp_irk *irk;
+	struct smp_irk_data irk_data;
 	struct bdaddr_list_with_irk *entry;
 	struct hci_conn_params *p;
 
@@ -2496,12 +2497,16 @@ static int hci_le_add_resolve_list_sync(struct hci_dev *hdev,
 	entry = hci_bdaddr_list_lookup_with_irk(&hdev->le_resolv_list,
 						&params->addr,
 						params->addr_type);
-	if (entry)
+	if (entry) {
+		hci_irk_put(irk);
 		return 0;
+	}
 
 	cp.bdaddr_type = params->addr_type;
 	bacpy(&cp.bdaddr, &params->addr);
-	memcpy(cp.peer_irk, irk->val, 16);
+	hci_irk_read(hdev, irk, &irk_data);
+	memcpy(cp.peer_irk, irk_data.val, sizeof(cp.peer_irk));
+	hci_irk_put(irk);
 
 	/* Default privacy mode is always Network */
 	params->privacy_mode = HCI_NETWORK_PRIVACY;
@@ -2532,6 +2537,7 @@ static int hci_le_set_privacy_mode_sync(struct hci_dev *hdev,
 {
 	struct hci_cp_le_set_privacy_mode cp;
 	struct smp_irk *irk;
+	struct smp_irk_data irk_data;
 
 	if (!ll_privacy_capable(hdev) ||
 	    !(params->flags & HCI_CONN_FLAG_ADDRESS_RESOLUTION))
@@ -2552,10 +2558,12 @@ static int hci_le_set_privacy_mode_sync(struct hci_dev *hdev,
 	if (!irk)
 		return 0;
 
+	hci_irk_read(hdev, irk, &irk_data);
 	memset(&cp, 0, sizeof(cp));
-	cp.bdaddr_type = irk->addr_type;
-	bacpy(&cp.bdaddr, &irk->bdaddr);
+	cp.bdaddr_type = irk_data.addr_type;
+	bacpy(&cp.bdaddr, &irk_data.bdaddr);
 	cp.mode = HCI_DEVICE_PRIVACY;
+	hci_irk_put(irk);
 
 	/* Note: params->privacy_mode is not updated since it is a copy */
 

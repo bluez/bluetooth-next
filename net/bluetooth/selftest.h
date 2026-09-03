@@ -40,3 +40,5 @@ static inline int bt_selftest(void)
 }
 
 #endif
+
+int bt_selftest_irk(void);
