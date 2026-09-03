@@ -218,6 +218,7 @@ void bt_accept_enqueue(struct sock *parent, struct sock *sk, bool bh)
 	BT_DBG("parent %p, sk %p", parent, sk);
 
 	sock_hold(sk);
+	sock_hold(parent);
 
 	if (bh)
 		bh_lock_sock_nested(sk);
@@ -266,6 +267,7 @@ void bt_accept_unlink(struct sock *sk)
 	spin_unlock_bh(&bt_sk(parent)->accept_q_lock);
 	bt_sk(sk)->parent = NULL;
 	sock_put(sk);
+	sock_put(parent);
 }
 EXPORT_SYMBOL(bt_accept_unlink);
 
