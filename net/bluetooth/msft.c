@@ -133,13 +133,19 @@ struct msft_data {
 	struct mutex filter_lock;
 };
 
+struct msft_supported_features {
+	__u64 features;
+	__u8  evt_prefix_len;
+	__u8  *evt_prefix;
+};
+
 bool msft_monitor_supported(struct hci_dev *hdev)
 {
 	return !!(msft_get_features(hdev) & MSFT_FEATURE_MASK_LE_ADV_MONITOR);
 }
 
 static bool read_supported_features(struct hci_dev *hdev,
-				    struct msft_data *msft)
+				    struct msft_supported_features *supported)
 {
 	struct msft_cp_read_supported_features cp;
 	struct msft_rp_read_supported_features *rp;
@@ -171,17 +177,14 @@ static bool read_supported_features(struct hci_dev *hdev,
 	}
 
 	if (rp->evt_prefix_len > 0) {
-		msft->evt_prefix = kmemdup(rp->evt_prefix, rp->evt_prefix_len,
-					   GFP_KERNEL);
-		if (!msft->evt_prefix)
+		supported->evt_prefix =
+			kmemdup(rp->evt_prefix, rp->evt_prefix_len, GFP_KERNEL);
+		if (!supported->evt_prefix)
 			goto failed;
 	}
 
-	msft->evt_prefix_len = rp->evt_prefix_len;
-	msft->features = __le64_to_cpu(rp->features);
-
-	if (msft->features & MSFT_FEATURE_MASK_CURVE_VALIDITY)
-		hdev->msft_curve_validity = true;
+	supported->evt_prefix_len = rp->evt_prefix_len;
+	supported->features = __le64_to_cpu(rp->features);
 
 	kfree_skb(skb);
 	return true;
@@ -636,6 +639,7 @@ int msft_resume_sync(struct hci_dev *hdev)
 void msft_do_open(struct hci_dev *hdev)
 {
 	struct msft_data *msft = hdev->msft_data;
+	struct msft_supported_features supported = {};
 
 	if (hdev->msft_opcode == HCI_OP_NOP)
 		return;
@@ -647,19 +651,29 @@ void msft_do_open(struct hci_dev *hdev)
 
 	bt_dev_dbg(hdev, "Initialize MSFT extension");
 
-	/* Reset existing MSFT data before re-reading */
-	kfree(msft->evt_prefix);
-	msft->evt_prefix = NULL;
-	msft->evt_prefix_len = 0;
-	msft->features = 0;
-
-	if (!read_supported_features(hdev, msft)) {
-		hdev->msft_data = NULL;
-		kfree(msft);
+	if (!read_supported_features(hdev, &supported)) {
+		hci_dev_lock(hdev);
+		kfree(msft->evt_prefix);
+		msft->evt_prefix = NULL;
+		msft->evt_prefix_len = 0;
+		msft->features = 0;
+		hci_dev_unlock(hdev);
 		return;
 	}
 
-	if (msft_monitor_supported(hdev)) {
+	hci_dev_lock(hdev);
+
+	kfree(msft->evt_prefix);
+	msft->evt_prefix = supported.evt_prefix;
+	msft->evt_prefix_len = supported.evt_prefix_len;
+	msft->features = supported.features;
+
+	if (supported.features & MSFT_FEATURE_MASK_CURVE_VALIDITY)
+		hdev->msft_curve_validity = true;
+
+	hci_dev_unlock(hdev);
+
+	if (supported.features & MSFT_FEATURE_MASK_LE_ADV_MONITOR) {
 		msft->resuming = true;
 		msft_set_filter_enable(hdev, true);
 		/* Monitors get removed on power off, so we need to explicitly
@@ -1072,12 +1086,15 @@ report_state:
 
 void msft_vendor_evt(struct hci_dev *hdev, void *data, struct sk_buff *skb)
 {
-	struct msft_data *msft = hdev->msft_data;
+	struct msft_data *msft;
 	u8 *evt_prefix;
 	u8 *evt;
 
+	hci_dev_lock(hdev);
+
+	msft = hdev->msft_data;
 	if (!msft)
-		return;
+		goto unlock;
 
 	/* When the extension has defined an event prefix, check that it
 	 * matches, and otherwise just return.
@@ -1085,23 +1102,21 @@ void msft_vendor_evt(struct hci_dev *hdev, void *data, struct sk_buff *skb)
 	if (msft->evt_prefix_len > 0) {
 		evt_prefix = msft_skb_pull(hdev, skb, 0, msft->evt_prefix_len);
 		if (!evt_prefix)
-			return;
+			goto unlock;
 
 		if (memcmp(evt_prefix, msft->evt_prefix, msft->evt_prefix_len))
-			return;
+			goto unlock;
 	}
 
 	/* Every event starts at least with an event code and the rest of
 	 * the data is variable and depends on the event code.
 	 */
 	if (skb->len < 1)
-		return;
+		goto unlock;
 
 	evt = msft_skb_pull(hdev, skb, 0, sizeof(*evt));
 	if (!evt)
-		return;
-
-	hci_dev_lock(hdev);
+		goto unlock;
 
 	switch (*evt) {
 	case MSFT_EV_LE_MONITOR_DEVICE:
@@ -1115,6 +1130,7 @@ void msft_vendor_evt(struct hci_dev *hdev, void *data, struct sk_buff *skb)
 		break;
 	}
 
+unlock:
 	hci_dev_unlock(hdev);
 }
 
