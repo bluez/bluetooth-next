@@ -4304,6 +4304,11 @@ static int btusb_probe(struct usb_interface *intf,
 			return -ENODEV;
 	}
 
+	/*  Skip interfaces that do not implement the HCI transport */
+	if (usb_find_common_endpoints(intf->cur_altsetting,
+				      &bulk_rx_ep, &bulk_tx_ep, &intr_ep, NULL))
+		return -ENODEV;
+
 	data = kzalloc_obj(*data);
 	if (!data)
 		return -ENOMEM;
