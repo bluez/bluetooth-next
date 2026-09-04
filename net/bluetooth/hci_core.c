@@ -2674,6 +2674,8 @@ void hci_unregister_dev(struct hci_dev *hdev)
 	disable_delayed_work_sync(&hdev->cmd_timer);
 	disable_delayed_work_sync(&hdev->ncmd_timer);
 
+	hci_devcd_destroy(hdev);
+
 	hci_cmd_sync_clear(hdev);
 
 	hci_unregister_suspend_notifier(hdev);

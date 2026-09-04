@@ -1866,6 +1866,15 @@ static inline void hci_devcd_setup(struct hci_dev *hdev)
 #endif
 }
 
+static inline void hci_devcd_destroy(struct hci_dev *hdev)
+{
+#ifdef CONFIG_DEV_COREDUMP
+	disable_delayed_work_sync(&hdev->dump.dump_timeout);
+	disable_work_sync(&hdev->dump.dump_rx);
+	skb_queue_purge(&hdev->dump.dump_q);
+#endif
+}
+
 int hci_dev_open(__u16 dev);
 int hci_dev_close(__u16 dev);
 int hci_dev_do_close(struct hci_dev *hdev);
