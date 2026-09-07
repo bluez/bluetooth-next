@@ -6794,8 +6794,60 @@ static void set_ext_conn_params(struct hci_conn *conn,
 	p->max_ce_len = cpu_to_le16(0x0000);
 }
 
+/* An RPA resolved more recently than this is taken to still be what the peer
+ * is on air with. The spec-recommended rotation period is the best estimate
+ * the host has; a stale RPA costs one failed connect, while falling back to an
+ * identity address the controller cannot translate costs a full
+ * create-connection timeout that cannot succeed.
+ */
+#define HCI_RPA_FRESH_TIMEOUT secs_to_jiffies(HCI_DEFAULT_RPA_TIMEOUT)
+
+/* Pick the address to put on air for an outgoing LE connection.
+ *
+ * hci_conn_add() stores the peer identity address whenever an IRK resolves,
+ * which is what host bookkeeping wants but not what reaches the peer: an
+ * identity address only gets there if the controller resolves on our behalf.
+ * Prefer an address the peer has actually been seen using.
+ *
+ * This function requires the caller holds hdev->lock.
+ */
+static void hci_conn_select_peer_addr(struct hci_dev *hdev,
+				      struct hci_conn *conn,
+				      bdaddr_t *peer_addr, u8 *peer_addr_type)
+{
+	struct smp_irk *irk;
+
+	/* conn->dst is right both when the controller translates it for us and
+	 * when it is already a private address.
+	 */
+	bacpy(peer_addr, &conn->dst);
+	*peer_addr_type = conn->dst_type;
+
+	/* Supporting LL Privacy is not enough: resolution has to be switched on
+	 * and this peer's IRK actually programmed, which only happens along the
+	 * accept list path.
+	 */
+	if (hci_dev_test_flag(hdev, HCI_LL_RPA_RESOLUTION) &&
+	    hci_bdaddr_list_lookup_with_irk(&hdev->le_resolv_list, &conn->dst,
+					    conn->dst_type))
+		return;
+
+	if (hci_bdaddr_is_rpa(&conn->dst, conn->dst_type))
+		return;
+
+	irk = hci_find_irk_by_addr(hdev, &conn->dst, conn->dst_type);
+	if (!irk || !bacmp(&irk->rpa, BDADDR_ANY) ||
+	    !time_before(jiffies, READ_ONCE(irk->rpa_jiffies) +
+				  HCI_RPA_FRESH_TIMEOUT))
+		return;
+
+	bacpy(peer_addr, &irk->rpa);
+	*peer_addr_type = ADDR_LE_DEV_RANDOM;
+}
+
 static int hci_le_ext_create_conn_sync(struct hci_dev *hdev,
-				       struct hci_conn *conn, u8 own_addr_type)
+				       struct hci_conn *conn, u8 own_addr_type,
+				       bdaddr_t *peer_addr, u8 peer_addr_type)
 {
 	struct hci_cp_le_ext_create_conn *cp;
 	struct hci_cp_le_ext_conn_param *p;
@@ -6807,8 +6859,8 @@ static int hci_le_ext_create_conn_sync(struct hci_dev *hdev,
 
 	memset(cp, 0, sizeof(*cp));
 
-	bacpy(&cp->peer_addr, &conn->dst);
-	cp->peer_addr_type = conn->dst_type;
+	bacpy(&cp->peer_addr, peer_addr);
+	cp->peer_addr_type = peer_addr_type;
 	cp->own_addr_type = own_addr_type;
 
 	plen = sizeof(*cp);
@@ -6849,7 +6901,8 @@ static int hci_le_create_conn_sync(struct hci_dev *hdev, void *data)
 {
 	struct hci_cp_le_create_conn cp;
 	struct hci_conn_params *params;
-	u8 own_addr_type;
+	u8 own_addr_type, peer_addr_type;
+	bdaddr_t peer_addr;
 	int err;
 	struct hci_conn *conn = data;
 
@@ -6927,9 +6980,24 @@ static int hci_le_create_conn_sync(struct hci_dev *hdev, void *data)
 	 */
 	set_bit(HCI_CONN_CREATE, &conn->flags);
 
+	hci_dev_lock(hdev);
+	hci_conn_select_peer_addr(hdev, conn, &peer_addr, &peer_addr_type);
+
+	/* The connection complete event names the address that was dialled and
+	 * hci_conn_hash_lookup_role() finds a connection by conn->dst, so
+	 * leaving the identity address there would make the event miss this
+	 * connection and build a second one. Follow the dialled address
+	 * instead; le_conn_complete_evt() resolves it back once the link is
+	 * up.
+	 */
+	bacpy(&conn->dst, &peer_addr);
+	conn->dst_type = peer_addr_type;
+	hci_dev_unlock(hdev);
+
 	/* Send command LE Extended Create Connection if supported */
 	if (use_ext_conn(hdev)) {
-		err = hci_le_ext_create_conn_sync(hdev, conn, own_addr_type);
+		err = hci_le_ext_create_conn_sync(hdev, conn, own_addr_type,
+						  &peer_addr, peer_addr_type);
 		goto done;
 	}
 
@@ -6938,8 +7006,8 @@ static int hci_le_create_conn_sync(struct hci_dev *hdev, void *data)
 	cp.scan_interval = cpu_to_le16(hdev->le_scan_int_connect);
 	cp.scan_window = cpu_to_le16(hdev->le_scan_window_connect);
 
-	bacpy(&cp.peer_addr, &conn->dst);
-	cp.peer_addr_type = conn->dst_type;
+	bacpy(&cp.peer_addr, &peer_addr);
+	cp.peer_addr_type = peer_addr_type;
 	cp.own_address_type = own_addr_type;
 	cp.conn_interval_min = cpu_to_le16(conn->le_conn_min_interval);
 	cp.conn_interval_max = cpu_to_le16(conn->le_conn_max_interval);
