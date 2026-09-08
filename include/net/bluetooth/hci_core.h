@@ -212,6 +212,10 @@ struct smp_irk {
 	struct list_head list;
 	struct rcu_head rcu;
 	bdaddr_t rpa;
+	/* when rpa was last seen on air; used to decide whether the peer is
+	 * currently advertising an RPA or its identity address
+	 */
+	unsigned long rpa_jiffies;
 	bdaddr_t bdaddr;
 	u8 addr_type;
 	u8 val[16];
