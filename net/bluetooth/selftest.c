@@ -270,6 +270,10 @@ static int __init run_selftest(void)
 	if (err)
 		goto done;
 
+	err = bt_selftest_irk();
+	if (err)
+		goto done;
+
 	err = bt_selftest_smp();
 
 done:

@@ -24,6 +24,7 @@
 #define __HCI_CORE_H
 
 #include <linux/idr.h>
+#include <linux/kref.h>
 #include <linux/leds.h>
 #include <linux/rculist.h>
 #include <linux/spinlock.h>
@@ -211,6 +212,15 @@ struct smp_ltk {
 struct smp_irk {
 	struct list_head list;
 	struct rcu_head rcu;
+	struct kref ref;
+	unsigned long flags;
+	bdaddr_t rpa;
+	bdaddr_t bdaddr;
+	u8 addr_type;
+	u8 val[16];
+};
+
+struct smp_irk_data {
 	bdaddr_t rpa;
 	bdaddr_t bdaddr;
 	u8 addr_type;
@@ -561,6 +571,7 @@ struct hci_dev {
 	struct list_head	uuids;
 	struct list_head	link_keys;
 	struct list_head	long_term_keys;
+	spinlock_t		irk_lock; /* protects IRK list and data */
 	struct list_head	identity_resolving_keys;
 	struct list_head	remote_oob_data;
 	struct list_head	le_accept_list;
@@ -1929,11 +1940,16 @@ int hci_remove_ltk(struct hci_dev *hdev, bdaddr_t *bdaddr, u8 bdaddr_type);
 void hci_smp_ltks_clear(struct hci_dev *hdev);
 int hci_remove_link_key(struct hci_dev *hdev, bdaddr_t *bdaddr);
 
+/* Returned IRKs hold a reference that must be released with hci_irk_put(). */
 struct smp_irk *hci_find_irk_by_rpa(struct hci_dev *hdev, bdaddr_t *rpa);
 struct smp_irk *hci_find_irk_by_addr(struct hci_dev *hdev, bdaddr_t *bdaddr,
 				     u8 addr_type);
 struct smp_irk *hci_add_irk(struct hci_dev *hdev, bdaddr_t *bdaddr,
 			    u8 addr_type, u8 val[16], bdaddr_t *rpa);
+void hci_irk_read(struct hci_dev *hdev, struct smp_irk *irk,
+		  struct smp_irk_data *data);
+void hci_irk_put(struct smp_irk *irk);
+void hci_irk_unlink(struct hci_dev *hdev, struct smp_irk *irk);
 void hci_remove_irk(struct hci_dev *hdev, bdaddr_t *bdaddr, u8 addr_type);
 bool hci_is_blocked_key(struct hci_dev *hdev, u8 type, u8 val[16]);
 void hci_blocked_keys_clear(struct hci_dev *hdev);
@@ -2549,7 +2565,8 @@ void mgmt_resuming(struct hci_dev *hdev, u8 reason, bdaddr_t *bdaddr,
 		   u8 addr_type);
 bool mgmt_powering_down(struct hci_dev *hdev);
 void mgmt_new_ltk(struct hci_dev *hdev, struct smp_ltk *key, bool persistent);
-void mgmt_new_irk(struct hci_dev *hdev, struct smp_irk *irk, bool persistent);
+void mgmt_new_irk(struct hci_dev *hdev, const struct smp_irk_data *irk,
+		  bool persistent);
 void mgmt_new_csrk(struct hci_dev *hdev, struct smp_csrk *csrk,
 		   bool persistent);
 void mgmt_new_conn_param(struct hci_dev *hdev, bdaddr_t *bdaddr,

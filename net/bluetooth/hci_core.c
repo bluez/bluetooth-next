@@ -38,6 +38,7 @@
 #include <net/bluetooth/mgmt.h>
 
 #include "hci_debugfs.h"
+#include "selftest.h"
 #include "smp.h"
 #include "leds.h"
 #include "msft.h"
@@ -1031,13 +1032,36 @@ void hci_smp_ltks_clear(struct hci_dev *hdev)
 	}
 }
 
+enum {
+	SMP_IRK_LINKED,
+};
+
+static bool __hci_irk_unlink(struct smp_irk *irk)
+{
+	if (!test_and_clear_bit(SMP_IRK_LINKED, &irk->flags))
+		return false;
+
+	list_del_rcu(&irk->list);
+	return true;
+}
+
 void hci_smp_irks_clear(struct hci_dev *hdev)
 {
-	struct smp_irk *k, *tmp;
+	struct smp_irk *k;
 
-	list_for_each_entry_safe(k, tmp, &hdev->identity_resolving_keys, list) {
-		list_del_rcu(&k->list);
-		kfree_rcu(k, rcu);
+	for (;;) {
+		spin_lock_bh(&hdev->irk_lock);
+		if (list_empty(&hdev->identity_resolving_keys)) {
+			spin_unlock_bh(&hdev->irk_lock);
+			break;
+		}
+
+		k = list_first_entry(&hdev->identity_resolving_keys,
+				     struct smp_irk, list);
+		__hci_irk_unlink(k);
+		spin_unlock_bh(&hdev->irk_lock);
+
+		hci_irk_put(k);
 	}
 }
 
@@ -1171,36 +1195,98 @@ struct smp_ltk *hci_find_ltk(struct hci_dev *hdev, bdaddr_t *bdaddr,
 	return NULL;
 }
 
+static void __hci_irk_read(struct smp_irk *irk, struct smp_irk_data *data)
+{
+	bacpy(&data->rpa, &irk->rpa);
+	bacpy(&data->bdaddr, &irk->bdaddr);
+	data->addr_type = irk->addr_type;
+	memcpy(data->val, irk->val, sizeof(data->val));
+}
+
+void hci_irk_read(struct hci_dev *hdev, struct smp_irk *irk,
+		  struct smp_irk_data *data)
+{
+	spin_lock_bh(&hdev->irk_lock);
+	__hci_irk_read(irk, data);
+	spin_unlock_bh(&hdev->irk_lock);
+}
+
+static bool hci_irk_get(struct smp_irk *irk)
+{
+	if (!test_bit(SMP_IRK_LINKED, &irk->flags))
+		return false;
+
+	if (!kref_get_unless_zero(&irk->ref))
+		return false;
+
+	if (test_bit(SMP_IRK_LINKED, &irk->flags))
+		return true;
+
+	hci_irk_put(irk);
+	return false;
+}
+
+static bool hci_irk_get_by_rpa(struct hci_dev *hdev, struct smp_irk *irk,
+			       const bdaddr_t *rpa, const u8 val[16],
+			       struct smp_irk_data *data)
+{
+	bool match = false;
+
+	spin_lock_bh(&hdev->irk_lock);
+	if (!test_bit(SMP_IRK_LINKED, &irk->flags))
+		goto done;
+
+	if (val) {
+		if (memcmp(irk->val, val, sizeof(irk->val)))
+			goto done;
+
+		bacpy(&irk->rpa, rpa);
+	} else if (bacmp(&irk->rpa, rpa)) {
+		goto done;
+	}
+
+	kref_get(&irk->ref);
+	__hci_irk_read(irk, data);
+	match = true;
+
+done:
+	spin_unlock_bh(&hdev->irk_lock);
+	return match;
+}
+
 struct smp_irk *hci_find_irk_by_rpa(struct hci_dev *hdev, bdaddr_t *rpa)
 {
 	struct smp_irk *irk_to_return = NULL;
+	struct smp_irk_data data;
 	struct smp_irk *irk;
 
 	rcu_read_lock();
 	list_for_each_entry_rcu(irk, &hdev->identity_resolving_keys, list) {
-		if (!bacmp(&irk->rpa, rpa)) {
+		if (hci_irk_get_by_rpa(hdev, irk, rpa, NULL, &data)) {
 			irk_to_return = irk;
 			goto done;
 		}
 	}
 
 	list_for_each_entry_rcu(irk, &hdev->identity_resolving_keys, list) {
-		if (smp_irk_matches(hdev, irk->val, rpa)) {
-			bacpy(&irk->rpa, rpa);
+		hci_irk_read(hdev, irk, &data);
+		if (smp_irk_matches(hdev, data.val, rpa) &&
+		    hci_irk_get_by_rpa(hdev, irk, rpa, data.val, &data)) {
 			irk_to_return = irk;
 			goto done;
 		}
 	}
 
 done:
+	rcu_read_unlock();
+
 	if (irk_to_return && hci_is_blocked_key(hdev, HCI_BLOCKED_KEY_TYPE_IRK,
-						irk_to_return->val)) {
+						data.val)) {
 		bt_dev_warn_ratelimited(hdev, "Identity key blocked for %pMR",
-					&irk_to_return->bdaddr);
+					&data.bdaddr);
+		hci_irk_put(irk_to_return);
 		irk_to_return = NULL;
 	}
-
-	rcu_read_unlock();
 
 	return irk_to_return;
 }
@@ -1209,6 +1295,7 @@ struct smp_irk *hci_find_irk_by_addr(struct hci_dev *hdev, bdaddr_t *bdaddr,
 				     u8 addr_type)
 {
 	struct smp_irk *irk_to_return = NULL;
+	struct smp_irk_data data;
 	struct smp_irk *irk;
 
 	/* Identity Address must be public or static random */
@@ -1217,23 +1304,133 @@ struct smp_irk *hci_find_irk_by_addr(struct hci_dev *hdev, bdaddr_t *bdaddr,
 
 	rcu_read_lock();
 	list_for_each_entry_rcu(irk, &hdev->identity_resolving_keys, list) {
-		if (addr_type == irk->addr_type &&
-		    bacmp(bdaddr, &irk->bdaddr) == 0) {
+		hci_irk_read(hdev, irk, &data);
+		if (addr_type == data.addr_type &&
+		    bacmp(bdaddr, &data.bdaddr) == 0 && hci_irk_get(irk)) {
 			irk_to_return = irk;
 			break;
 		}
 	}
+	rcu_read_unlock();
+
+	if (irk_to_return)
+		hci_irk_read(hdev, irk_to_return, &data);
 
 	if (irk_to_return && hci_is_blocked_key(hdev, HCI_BLOCKED_KEY_TYPE_IRK,
-						irk_to_return->val)) {
+						data.val)) {
 		bt_dev_warn_ratelimited(hdev, "Identity key blocked for %pMR",
-					&irk_to_return->bdaddr);
+					&data.bdaddr);
+		hci_irk_put(irk_to_return);
 		irk_to_return = NULL;
 	}
 
-	rcu_read_unlock();
-
 	return irk_to_return;
+}
+
+static void hci_irk_release(struct kref *ref)
+{
+	struct smp_irk *irk = container_of(ref, struct smp_irk, ref);
+
+	kfree_rcu(irk, rcu);
+}
+
+void hci_irk_put(struct smp_irk *irk)
+{
+	kref_put(&irk->ref, hci_irk_release);
+}
+
+#if IS_ENABLED(CONFIG_BT_SELFTEST)
+int __init bt_selftest_irk(void)
+{
+	static const u8 old_val[16] = { 0x11 };
+	static const u8 new_val[16] = { 0x22 };
+	static const bdaddr_t old_rpa = { { 1, 2, 3, 4, 5, 0x40 } };
+	static const bdaddr_t new_rpa = { { 6, 7, 8, 9, 10, 0x40 } };
+	struct smp_irk_data data;
+	struct hci_dev *hdev;
+	struct smp_irk *irk;
+	bool match;
+	int err = -EINVAL;
+
+	hdev = kzalloc_obj(*hdev);
+	if (!hdev)
+		return -ENOMEM;
+
+	irk = kzalloc_obj(*irk);
+	if (!irk) {
+		kfree(hdev);
+		return -ENOMEM;
+	}
+
+	spin_lock_init(&hdev->irk_lock);
+	kref_init(&irk->ref);
+	set_bit(SMP_IRK_LINKED, &irk->flags);
+	memcpy(irk->val, new_val, sizeof(irk->val));
+	bacpy(&irk->rpa, &new_rpa);
+
+	/* A lookup that matched old_val before a rekey must not replace the
+	 * new key's cached RPA or acquire a caller reference.
+	 */
+	match = hci_irk_get_by_rpa(hdev, irk, &old_rpa, old_val,
+				   &data);
+	if (match) {
+		hci_irk_put(irk);
+		goto done;
+	}
+
+	if (refcount_read(&irk->ref.refcount) != 1 ||
+	    bacmp(&irk->rpa, &new_rpa))
+		goto done;
+
+	match = hci_irk_get_by_rpa(hdev, irk, &old_rpa, NULL,
+				   &data);
+	if (match) {
+		hci_irk_put(irk);
+		goto done;
+	}
+	if (refcount_read(&irk->ref.refcount) != 1)
+		goto done;
+
+	/* The same cache update remains valid when the matched key is current. */
+	match = hci_irk_get_by_rpa(hdev, irk, &old_rpa, new_val,
+				   &data);
+	if (!match)
+		goto done;
+
+	if (bacmp(&data.rpa, &old_rpa) ||
+	    memcmp(data.val, new_val, sizeof(data.val))) {
+		hci_irk_put(irk);
+		goto done;
+	}
+	hci_irk_put(irk);
+
+	match = hci_irk_get_by_rpa(hdev, irk, &old_rpa, NULL,
+				   &data);
+	if (!match)
+		goto done;
+	hci_irk_put(irk);
+
+	err = 0;
+	BT_INFO("IRK lookup test passed");
+
+done:
+	clear_bit(SMP_IRK_LINKED, &irk->flags);
+	hci_irk_put(irk);
+	kfree(hdev);
+	return err;
+}
+#endif
+
+void hci_irk_unlink(struct hci_dev *hdev, struct smp_irk *irk)
+{
+	bool unlinked;
+
+	spin_lock_bh(&hdev->irk_lock);
+	unlinked = __hci_irk_unlink(irk);
+	spin_unlock_bh(&hdev->irk_lock);
+
+	if (unlinked)
+		hci_irk_put(irk);
 }
 
 struct link_key *hci_add_link_key(struct hci_dev *hdev, struct hci_conn *conn,
@@ -1315,24 +1512,47 @@ struct smp_ltk *hci_add_ltk(struct hci_dev *hdev, bdaddr_t *bdaddr,
 struct smp_irk *hci_add_irk(struct hci_dev *hdev, bdaddr_t *bdaddr,
 			    u8 addr_type, u8 val[16], bdaddr_t *rpa)
 {
-	struct smp_irk *irk;
+	struct smp_irk *irk, *new_irk;
 
 	irk = hci_find_irk_by_addr(hdev, bdaddr, addr_type);
-	if (!irk) {
-		irk = kzalloc_obj(*irk);
-		if (!irk)
-			return NULL;
-
-		bacpy(&irk->bdaddr, bdaddr);
-		irk->addr_type = addr_type;
-
-		list_add_rcu(&irk->list, &hdev->identity_resolving_keys);
+	if (irk) {
+		spin_lock_bh(&hdev->irk_lock);
+		memcpy(irk->val, val, sizeof(irk->val));
+		bacpy(&irk->rpa, rpa);
+		spin_unlock_bh(&hdev->irk_lock);
+		return irk;
 	}
 
-	memcpy(irk->val, val, 16);
-	bacpy(&irk->rpa, rpa);
+	new_irk = kzalloc_obj(*new_irk);
+	if (!new_irk)
+		return NULL;
 
-	return irk;
+	bacpy(&new_irk->bdaddr, bdaddr);
+	new_irk->addr_type = addr_type;
+	memcpy(new_irk->val, val, sizeof(new_irk->val));
+	bacpy(&new_irk->rpa, rpa);
+
+	spin_lock_bh(&hdev->irk_lock);
+	list_for_each_entry(irk, &hdev->identity_resolving_keys, list) {
+		if (addr_type != irk->addr_type ||
+		    bacmp(bdaddr, &irk->bdaddr))
+			continue;
+
+		kref_get(&irk->ref);
+		memcpy(irk->val, val, sizeof(irk->val));
+		bacpy(&irk->rpa, rpa);
+		spin_unlock_bh(&hdev->irk_lock);
+		kfree(new_irk);
+		return irk;
+	}
+
+	kref_init(&new_irk->ref);
+	kref_get(&new_irk->ref);
+	set_bit(SMP_IRK_LINKED, &new_irk->flags);
+	list_add_rcu(&new_irk->list, &hdev->identity_resolving_keys);
+	spin_unlock_bh(&hdev->irk_lock);
+
+	return new_irk;
 }
 
 int hci_remove_link_key(struct hci_dev *hdev, bdaddr_t *bdaddr)
@@ -1372,16 +1592,27 @@ int hci_remove_ltk(struct hci_dev *hdev, bdaddr_t *bdaddr, u8 bdaddr_type)
 
 void hci_remove_irk(struct hci_dev *hdev, bdaddr_t *bdaddr, u8 addr_type)
 {
-	struct smp_irk *k, *tmp;
+	struct smp_irk *k, *removed;
 
-	list_for_each_entry_safe(k, tmp, &hdev->identity_resolving_keys, list) {
-		if (bacmp(bdaddr, &k->bdaddr) || k->addr_type != addr_type)
-			continue;
+	for (;;) {
+		removed = NULL;
+		spin_lock_bh(&hdev->irk_lock);
+		list_for_each_entry(k, &hdev->identity_resolving_keys, list) {
+			if (bacmp(bdaddr, &k->bdaddr) ||
+			    k->addr_type != addr_type)
+				continue;
+
+			__hci_irk_unlink(k);
+			removed = k;
+			break;
+		}
+		spin_unlock_bh(&hdev->irk_lock);
+
+		if (!removed)
+			break;
 
 		BT_DBG("%s removing %pMR", hdev->name, bdaddr);
-
-		list_del_rcu(&k->list);
-		kfree_rcu(k, rcu);
+		hci_irk_put(removed);
 	}
 }
 
@@ -1389,6 +1620,8 @@ bool hci_bdaddr_is_paired(struct hci_dev *hdev, bdaddr_t *bdaddr, u8 type)
 {
 	struct smp_ltk *k;
 	struct smp_irk *irk;
+	struct smp_irk_data irk_data;
+	bdaddr_t identity_addr;
 	u8 addr_type;
 
 	if (type == BDADDR_BREDR) {
@@ -1405,8 +1638,11 @@ bool hci_bdaddr_is_paired(struct hci_dev *hdev, bdaddr_t *bdaddr, u8 type)
 
 	irk = hci_get_irk(hdev, bdaddr, addr_type);
 	if (irk) {
-		bdaddr = &irk->bdaddr;
-		addr_type = irk->addr_type;
+		hci_irk_read(hdev, irk, &irk_data);
+		bacpy(&identity_addr, &irk_data.bdaddr);
+		addr_type = irk_data.addr_type;
+		hci_irk_put(irk);
+		bdaddr = &identity_addr;
 	}
 
 	rcu_read_lock();
@@ -2495,6 +2731,7 @@ struct hci_dev *hci_alloc_dev_priv(int sizeof_priv)
 	INIT_LIST_HEAD(&hdev->uuids);
 	INIT_LIST_HEAD(&hdev->link_keys);
 	INIT_LIST_HEAD(&hdev->long_term_keys);
+	spin_lock_init(&hdev->irk_lock);
 	INIT_LIST_HEAD(&hdev->identity_resolving_keys);
 	INIT_LIST_HEAD(&hdev->remote_oob_data);
 	INIT_LIST_HEAD(&hdev->le_accept_list);

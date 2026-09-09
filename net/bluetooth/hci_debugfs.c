@@ -817,13 +817,15 @@ DEFINE_SHOW_ATTRIBUTE(resolv_list);
 static int identity_resolving_keys_show(struct seq_file *f, void *ptr)
 {
 	struct hci_dev *hdev = f->private;
+	struct smp_irk_data irk_data;
 	struct smp_irk *irk;
 
 	rcu_read_lock();
 	list_for_each_entry_rcu(irk, &hdev->identity_resolving_keys, list) {
+		hci_irk_read(hdev, irk, &irk_data);
 		seq_printf(f, "%pMR (type %u) %*phN %pMR\n",
-			   &irk->bdaddr, irk->addr_type,
-			   16, irk->val, &irk->rpa);
+			   &irk_data.bdaddr, irk_data.addr_type,
+			   16, irk_data.val, &irk_data.rpa);
 	}
 	rcu_read_unlock();
 

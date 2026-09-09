@@ -723,22 +723,34 @@ static struct sock *iso_get_sock(struct hci_dev *hdev, bdaddr_t *src,
 		/* Match Broadcast destination */
 		if (bacmp(dst, BDADDR_ANY) && bacmp(&iso_pi(sk)->dst, dst)) {
 			struct smp_irk *irk1, *irk2;
+			struct smp_irk_data irk_data;
+			bool resolved = false;
 
 			/* Check if destination is an RPA that we can resolve */
 			irk1 = hci_find_irk_by_rpa(hdev, dst);
 			if (!irk1)
 				continue;
 
+			hci_irk_read(hdev, irk1, &irk_data);
+
 			/* Match with identity address */
-			if (bacmp(&iso_pi(sk)->dst, &irk1->bdaddr)) {
+			if (!bacmp(&iso_pi(sk)->dst, &irk_data.bdaddr)) {
+				resolved = true;
+			} else {
 				/* Check if socket destination address is also
 				 * an RPA and if the IRK matches.
 				 */
 				irk2 = hci_find_irk_by_rpa(hdev,
 							   &iso_pi(sk)->dst);
-				if (!irk2 || irk1 != irk2)
-					continue;
+				if (irk2) {
+					resolved = irk1 == irk2;
+					hci_irk_put(irk2);
+				}
 			}
+
+			hci_irk_put(irk1);
+			if (!resolved)
+				continue;
 		}
 
 		/* Use Match function if provided */

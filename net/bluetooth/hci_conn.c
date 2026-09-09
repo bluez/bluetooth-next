@@ -70,6 +70,8 @@ void hci_connect_le_scan_cleanup(struct hci_conn *conn, u8 status)
 	struct hci_conn_params *params;
 	struct hci_dev *hdev = conn->hdev;
 	struct smp_irk *irk;
+	struct smp_irk_data irk_data;
+	bdaddr_t identity_addr;
 	bdaddr_t *bdaddr;
 	u8 bdaddr_type;
 
@@ -79,8 +81,11 @@ void hci_connect_le_scan_cleanup(struct hci_conn *conn, u8 status)
 	/* Check if we need to convert to identity address */
 	irk = hci_get_irk(hdev, bdaddr, bdaddr_type);
 	if (irk) {
-		bdaddr = &irk->bdaddr;
-		bdaddr_type = irk->addr_type;
+		hci_irk_read(hdev, irk, &irk_data);
+		bacpy(&identity_addr, &irk_data.bdaddr);
+		bdaddr_type = irk_data.addr_type;
+		hci_irk_put(irk);
+		bdaddr = &identity_addr;
 	}
 
 	params = hci_pend_le_action_lookup(&hdev->pend_le_conns, bdaddr,
@@ -1004,6 +1009,7 @@ static struct hci_conn *__hci_conn_add(struct hci_dev *hdev, int type,
 {
 	struct hci_conn *conn;
 	struct smp_irk *irk = NULL;
+	struct smp_irk_data irk_data;
 
 	switch (type) {
 	case ACL_LINK:
@@ -1037,16 +1043,21 @@ static struct hci_conn *__hci_conn_add(struct hci_dev *hdev, int type,
 	bt_dev_dbg(hdev, "dst %pMR handle 0x%4.4x", dst, handle);
 
 	conn = kzalloc_obj(*conn);
-	if (!conn)
+	if (!conn) {
+		if (irk)
+			hci_irk_put(irk);
 		return ERR_PTR(-ENOMEM);
+	}
 
 	/* If and IRK exists use its identity address */
 	if (!irk) {
 		bacpy(&conn->dst, dst);
 		conn->dst_type = dst_type;
 	} else {
-		bacpy(&conn->dst, &irk->bdaddr);
-		conn->dst_type = irk->addr_type;
+		hci_irk_read(hdev, irk, &irk_data);
+		bacpy(&conn->dst, &irk_data.bdaddr);
+		conn->dst_type = irk_data.addr_type;
+		hci_irk_put(irk);
 	}
 
 	bacpy(&conn->src, &hdev->bdaddr);
@@ -1458,6 +1469,8 @@ struct hci_conn *hci_connect_le(struct hci_dev *hdev, bdaddr_t *dst,
 {
 	struct hci_conn *conn;
 	struct smp_irk *irk;
+	struct smp_irk_data irk_data;
+	bdaddr_t rpa;
 	int err;
 
 	/* Let's make sure that le is enabled.*/
@@ -1498,9 +1511,14 @@ struct hci_conn *hci_connect_le(struct hci_dev *hdev, bdaddr_t *dst,
 		 * from the connect request.
 		 */
 		irk = hci_find_irk_by_addr(hdev, dst, dst_type);
-		if (irk && bacmp(&irk->rpa, BDADDR_ANY)) {
-			dst = &irk->rpa;
-			dst_type = ADDR_LE_DEV_RANDOM;
+		if (irk) {
+			hci_irk_read(hdev, irk, &irk_data);
+			if (bacmp(&irk_data.rpa, BDADDR_ANY)) {
+				bacpy(&rpa, &irk_data.rpa);
+				dst = &rpa;
+				dst_type = ADDR_LE_DEV_RANDOM;
+			}
+			hci_irk_put(irk);
 		}
 	}
 
