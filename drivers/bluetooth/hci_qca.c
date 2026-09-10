@@ -2643,7 +2643,7 @@ static void qca_serdev_shutdown(struct serdev_device *serdev)
 	}
 }
 
-static int __maybe_unused qca_suspend(struct device *dev)
+static int qca_suspend(struct device *dev)
 {
 	struct serdev_device *serdev = to_serdev_device(dev);
 	struct qca_serdev *qcadev = serdev_device_get_drvdata(serdev);
@@ -2757,7 +2757,7 @@ error:
 	return ret;
 }
 
-static int __maybe_unused qca_resume(struct device *dev)
+static int qca_resume(struct device *dev)
 {
 	struct serdev_device *serdev = to_serdev_device(dev);
 	struct qca_serdev *qcadev = serdev_device_get_drvdata(serdev);
@@ -2769,7 +2769,7 @@ static int __maybe_unused qca_resume(struct device *dev)
 	return 0;
 }
 
-static SIMPLE_DEV_PM_OPS(qca_pm_ops, qca_suspend, qca_resume);
+static DEFINE_SIMPLE_DEV_PM_OPS(qca_pm_ops, qca_suspend, qca_resume);
 
 #ifdef CONFIG_OF
 static const struct of_device_id qca_bluetooth_of_match[] = {
@@ -2823,7 +2823,7 @@ static struct serdev_device_driver qca_serdev_driver = {
 		.name = "hci_uart_qca",
 		.of_match_table = of_match_ptr(qca_bluetooth_of_match),
 		.acpi_match_table = ACPI_PTR(qca_bluetooth_acpi_match),
-		.pm = &qca_pm_ops,
+		.pm = pm_sleep_ptr(&qca_pm_ops),
 #ifdef CONFIG_DEV_COREDUMP
 		.coredump = hciqca_coredump,
 #endif
