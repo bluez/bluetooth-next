@@ -1359,14 +1359,14 @@ static int nxp_process_fw_dump(struct hci_dev *hdev, struct sk_buff *skb)
 {
 	struct hci_acl_hdr *acl_hdr = (struct hci_acl_hdr *)skb_pull_data(skb,
 									  sizeof(*acl_hdr));
-	struct nxp_fw_dump_hdr *fw_dump_hdr;
+	struct nxp_fw_dump_hdr *fw_dump_hdr = (struct nxp_fw_dump_hdr *)skb->data;
 	struct btnxpuart_dev *nxpdev = hci_get_drvdata(hdev);
 	__u16 seq_num;
 	__u16 buf_len;
 	int err;
 
-	fw_dump_hdr = skb_pull_data(skb, sizeof(*fw_dump_hdr));
-	if (!fw_dump_hdr) {
+	/* The ACL payload must be long enough to hold the FW dump header */
+	if (skb->len < sizeof(*fw_dump_hdr)) {
 		bt_dev_warn(hdev, "FW dump: invalid or corrupt fw dump chunk");
 		goto free_skb;
 	}
