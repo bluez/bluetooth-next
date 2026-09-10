@@ -46,8 +46,6 @@ struct sco_conn {
 	spinlock_t	lock;
 	struct sock	*sk;
 
-	struct delayed_work	timeout_work;
-
 	unsigned int    mtu;
 	struct kref	ref;
 };
@@ -69,6 +67,7 @@ struct sco_pinfo {
 	__u16		setting;
 	struct bt_codec codec;
 	struct sco_conn	*conn;
+	struct delayed_work	timeout_work;
 };
 
 /* ---- SCO timers ---- */
@@ -88,9 +87,6 @@ static void sco_conn_free(struct kref *ref)
 		conn->hcon->sco_data = NULL;
 		hci_conn_drop(conn->hcon);
 	}
-
-	/* Ensure no more work items will run since hci_conn has been dropped */
-	disable_delayed_work_sync(&conn->timeout_work);
 
 	kfree(conn);
 }
@@ -138,53 +134,45 @@ static struct sock *sco_sock_hold(struct sco_conn *conn)
 
 static void sco_sock_timeout(struct work_struct *work)
 {
-	struct sco_conn *conn = container_of(work, struct sco_conn,
-					     timeout_work.work);
-	struct sock *sk;
-
-	conn = sco_conn_hold_unless_zero(conn);
-	if (!conn)
-		return;
-
-	sco_conn_lock(conn);
-	if (!conn->hcon) {
-		sco_conn_unlock(conn);
-		sco_conn_put(conn);
-		return;
-	}
-	sk = sco_sock_hold(conn);
-	sco_conn_unlock(conn);
-	sco_conn_put(conn);
-
-	if (!sk)
-		return;
+	struct sco_pinfo *pi = container_of(work, struct sco_pinfo,
+					    timeout_work.work);
+	struct sock *sk = &pi->bt.sk;
 
 	BT_DBG("sock %p state %d", sk, sk->sk_state);
 
 	lock_sock(sk);
-	sk->sk_err = ETIMEDOUT;
-	sk->sk_state_change(sk);
+	if (!sock_flag(sk, SOCK_ZAPPED)) {
+		sk->sk_err = ETIMEDOUT;
+		sk->sk_state_change(sk);
+	}
 	release_sock(sk);
-	sock_put(sk);
 }
 
 static void sco_sock_set_timer(struct sock *sk, long timeout)
 {
+	lockdep_assert(lockdep_sock_is_held(sk));
+
+	cancel_delayed_work(&sco_pi(sk)->timeout_work);
+
 	if (!sco_pi(sk)->conn)
 		return;
 
 	BT_DBG("sock %p state %d timeout %ld", sk, sk->sk_state, timeout);
-	cancel_delayed_work(&sco_pi(sk)->conn->timeout_work);
-	schedule_delayed_work(&sco_pi(sk)->conn->timeout_work, timeout);
+	schedule_delayed_work(&sco_pi(sk)->timeout_work, timeout);
 }
 
 static void sco_sock_clear_timer(struct sock *sk)
 {
-	if (!sco_pi(sk)->conn)
-		return;
+	BT_DBG("sock %p state %d", sk, sk->sk_state);
+	cancel_delayed_work(&sco_pi(sk)->timeout_work);
+}
+
+static void sco_sock_disable_timer(struct sock *sk)
+{
+	lockdep_assert(!lockdep_sock_is_held(sk));
 
 	BT_DBG("sock %p state %d", sk, sk->sk_state);
-	cancel_delayed_work(&sco_pi(sk)->conn->timeout_work);
+	disable_delayed_work_sync(&sco_pi(sk)->timeout_work);
 }
 
 /* ---- SCO connections ---- */
@@ -214,7 +202,6 @@ static struct sco_conn *sco_conn_add(struct hci_conn *hcon)
 
 	kref_init(&conn->ref);
 	spin_lock_init(&conn->lock);
-	INIT_DELAYED_WORK(&conn->timeout_work, sco_sock_timeout);
 
 	hcon->sco_data = conn;
 	conn->hcon = hcon;
@@ -274,9 +261,10 @@ static void sco_conn_del(struct hci_conn *hcon, int err)
 	if (!sk)
 		return;
 
+	sco_sock_disable_timer(sk);
+
 	/* Kill socket */
 	lock_sock(sk);
-	sco_sock_clear_timer(sk);
 	sco_chan_del(sk, err);
 	release_sock(sk);
 	sock_put(sk);
@@ -532,6 +520,8 @@ static void sco_sock_kill(struct sock *sk)
 
 	BT_DBG("sk %p state %d", sk, sk->sk_state);
 
+	sco_sock_disable_timer(sk);
+
 	/* Sock is dead, so set conn->sk to NULL to avoid possible UAF */
 	lock_sock(sk);
 	if (sco_pi(sk)->conn) {
@@ -574,23 +564,11 @@ static void __sco_sock_close(struct sock *sk)
 /* Must be called on unlocked socket. */
 static void sco_sock_close(struct sock *sk)
 {
-	struct sco_conn *conn;
-
-	lock_sock(sk);
-	conn = sco_pi(sk)->conn;
-	if (conn)
-		sco_conn_hold(conn);
-	release_sock(sk);
-
-	if (conn)
-		disable_delayed_work_sync(&conn->timeout_work);
+	sco_sock_disable_timer(sk);
 
 	lock_sock(sk);
 	__sco_sock_close(sk);
 	release_sock(sk);
-
-	if (conn)
-		sco_conn_put(conn);
 }
 
 static void sco_sock_init(struct sock *sk, struct sock *parent)
@@ -621,6 +599,8 @@ static struct sock *sco_sock_alloc(struct net *net, struct socket *sock,
 
 	sk->sk_destruct = sco_sock_destruct;
 	sk->sk_sndtimeo = SCO_CONN_TIMEOUT;
+
+	INIT_DELAYED_WORK(&sco_pi(sk)->timeout_work, sco_sock_timeout);
 
 	sco_pi(sk)->setting = BT_VOICE_CVSD_16BIT;
 	sco_pi(sk)->codec.id = BT_CODEC_CVSD;
