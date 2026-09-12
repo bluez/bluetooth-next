@@ -217,6 +217,8 @@ static bool find_next_esco_param(struct hci_conn *conn,
 {
 	if (!conn->parent)
 		return false;
+	if (!conn->attempt)
+		return false;
 
 	for (; conn->attempt <= size; conn->attempt++) {
 		if (lmp_esco_2m_capable(conn->parent) ||
@@ -294,6 +296,8 @@ static int hci_enhanced_setup_sync(struct hci_dev *hdev, void *data)
 	conn->out = true;
 
 	conn->attempt++;
+	if (!conn->attempt)
+		return -EINVAL;
 
 	memset(&cp, 0x00, sizeof(cp));
 
