@@ -255,6 +255,9 @@ static void hci_devcd_handle_pkt_pattern(struct hci_dev *hdev,
 		bt_dev_dbg(hdev, "Failed to set pattern");
 }
 
+/* Align with BlueZ's BTSNOOP_MAX_PACKET_SIZE. */
+#define HCI_DEVCD_DIAG_MAX_SIZE (1486 + 4)
+
 static void hci_devcd_dump(struct hci_dev *hdev)
 {
 	struct sk_buff *skb;
@@ -264,16 +267,20 @@ static void hci_devcd_dump(struct hci_dev *hdev)
 
 	size = hdev->dump.tail - hdev->dump.head;
 
-	/* Send a copy to monitor as a diagnostic packet */
-	skb = bt_skb_alloc(size, GFP_ATOMIC);
-	if (skb) {
-		skb_put_data(skb, hdev->dump.head, size);
-		hci_recv_diag(hdev, skb);
+	if (size <= HCI_DEVCD_DIAG_MAX_SIZE) {
+		/* Send a copy to monitor as a diagnostic packet */
+		skb = bt_skb_alloc(size, GFP_ATOMIC);
+		if (skb) {
+			skb_put_data(skb, hdev->dump.head, size);
+			hci_recv_diag(hdev, skb);
+		}
 	}
 
 	/* Emit a devcoredump with the available data */
 	dev_coredumpv(&hdev->dev, hdev->dump.head, size, GFP_KERNEL);
 }
+
+#undef HCI_DEVCD_DIAG_MAX_SIZE
 
 static void hci_devcd_handle_pkt_complete(struct hci_dev *hdev,
 					  struct sk_buff *skb)
