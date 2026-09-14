@@ -108,6 +108,7 @@ static inline int hci_devcd_init(struct hci_dev *hdev, u32 dump_size)
 
 static inline int hci_devcd_append(struct hci_dev *hdev, struct sk_buff *skb)
 {
+	kfree_skb(skb);
 	return -EOPNOTSUPP;
 }
 
