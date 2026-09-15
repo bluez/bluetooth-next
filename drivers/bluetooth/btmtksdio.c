@@ -1320,8 +1320,10 @@ static void btmtksdio_reset(struct hci_dev *hdev)
 
 	pm_runtime_get_sync(bdev->dev);
 
-	if (test_and_set_bit(BTMTKSDIO_HW_RESET_ACTIVE, &bdev->tx_state))
+	if (test_and_set_bit(BTMTKSDIO_HW_RESET_ACTIVE, &bdev->tx_state)) {
+		pm_runtime_put_noidle(bdev->dev);
 		return;
+	}
 
 	sdio_claim_host(bdev->func);
 
