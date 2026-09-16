@@ -6264,6 +6264,11 @@ static int hci_active_scan_sync(struct hci_dev *hdev, uint16_t interval)
 	if (err)
 		goto failed;
 
+	/* LE Set Random Address is disallowed while advertising is enabled. */
+	err = hci_pause_advertising_sync(hdev);
+	if (err)
+		goto failed;
+
 	/* All active scans will be done with either a resolvable private
 	 * address (when privacy feature has been enabled) or non-resolvable
 	 * private address.
@@ -6292,13 +6297,14 @@ static int hci_active_scan_sync(struct hci_dev *hdev, uint16_t interval)
 	err = hci_start_scan_sync(hdev, LE_SCAN_ACTIVE, interval,
 				  hdev->le_scan_window_discovery,
 				  own_addr_type, filter_policy, filter_dup);
-	if (!err)
+	if (!err) {
+		hci_resume_advertising_sync(hdev);
 		return err;
+	}
 
 failed:
-	/* Resume advertising if it was paused */
-	if (ll_privacy_capable(hdev))
-		hci_resume_advertising_sync(hdev);
+	/* No-op when advertising was not paused. */
+	hci_resume_advertising_sync(hdev);
 
 	/* Resume passive scanning */
 	hci_update_passive_scan_sync(hdev);
