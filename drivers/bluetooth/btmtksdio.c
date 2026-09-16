@@ -952,6 +952,7 @@ static int mt79xx_setup(struct hci_dev *hdev, const char *fwname, u32 dev_id)
 	err = mtk_hci_wmt_sync(hdev, &wmt_params);
 	if (err < 0) {
 		bt_dev_err(hdev, "Failed to send wmt func ctrl (%d)", err);
+		pm_runtime_put_noidle(bdev->dev);
 		return err;
 	}
 
@@ -1320,8 +1321,10 @@ static void btmtksdio_reset(struct hci_dev *hdev)
 
 	pm_runtime_get_sync(bdev->dev);
 
-	if (test_and_set_bit(BTMTKSDIO_HW_RESET_ACTIVE, &bdev->tx_state))
+	if (test_and_set_bit(BTMTKSDIO_HW_RESET_ACTIVE, &bdev->tx_state)) {
+		pm_runtime_put_noidle(bdev->dev);
 		return;
+	}
 
 	sdio_claim_host(bdev->func);
 
