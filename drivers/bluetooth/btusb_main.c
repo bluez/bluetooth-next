@@ -2190,6 +2190,16 @@ static void btusb_prepare_reset(struct hci_dev *hdev)
 	usb_kill_anchored_urbs(&data->tx_anchor);
 }
 
+static bool btusb_intel_acpi_power_manageable(struct btusb_data *data)
+{
+	return IS_ENABLED(CONFIG_ACPI) &&
+	       data->match_id->driver_info & BTUSB_INTEL_COMBINED &&
+	       data->udev->dev.removable == DEVICE_FIXED &&
+	       data->udev->parent && data->udev->portnum &&
+	       usb_acpi_power_manageable(data->udev->parent,
+					 data->udev->portnum - 1);
+}
+
 static int btusb_close(struct hci_dev *hdev)
 {
 	struct btusb_data *data = hci_get_drvdata(hdev);
@@ -4595,6 +4605,9 @@ static int btusb_probe(struct usb_interface *intf,
 		hdev->send = btusb_send_frame_intel;
 		hdev->reset = btusb_intel_reset;
 
+		if (btusb_intel_acpi_power_manageable(data))
+			hci_set_quirk(hdev, HCI_QUIRK_NON_PERSISTENT_SETUP);
+
 		if (id->driver_info & BTUSB_INTEL_NO_WBS_SUPPORT)
 			btintel_set_flag(hdev, INTEL_ROM_LEGACY_NO_WBS_SUPPORT);
 
@@ -4912,6 +4925,12 @@ static int btusb_suspend(struct usb_interface *intf, pm_message_t message)
 
 	BT_DBG("intf %p", intf);
 
+	/* reset_resume is only safe for the Intel ACPI path below. */
+	if (PMSG_IS_AUTO(message) &&
+	    (data->udev->quirks & USB_QUIRK_RESET_RESUME) &&
+	    !btusb_intel_acpi_power_manageable(data))
+		return -EBUSY;
+
 	/*
 	 * It is reported that remote wakeup events could sometimes cause some
 	 * adapters completely unresponsive. Resetting the xHCI root hub doesn't
@@ -5076,6 +5095,19 @@ done:
 	return err;
 }
 
+static int btusb_reset_resume(struct usb_interface *intf)
+{
+	struct btusb_data *data = usb_get_intfdata(intf);
+
+	if (!btusb_intel_acpi_power_manageable(data) ||
+	    test_bit(HCI_RUNNING, &data->hdev->flags)) {
+		intf->needs_binding = 1;
+		return 0;
+	}
+
+	return btusb_resume(intf);
+}
+
 #ifdef CONFIG_DEV_COREDUMP
 static void btusb_coredump(struct device *dev)
 {
@@ -5093,6 +5125,7 @@ static struct usb_driver btusb_driver = {
 	.disconnect	= btusb_disconnect,
 	.suspend	= pm_ptr(btusb_suspend),
 	.resume		= pm_ptr(btusb_resume),
+	.reset_resume	= pm_ptr(btusb_reset_resume),
 	.id_table	= btusb_table,
 	.supports_autosuspend = 1,
 	.disable_hub_initiated_lpm = 1,
