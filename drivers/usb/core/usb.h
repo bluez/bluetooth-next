@@ -8,6 +8,7 @@
 
 struct usb_hub_descriptor;
 struct usb_dev_state;
+struct usb_port;
 
 /* Functions local to drivers/usb/core/ */
 
@@ -211,7 +212,12 @@ extern int usb_acpi_register(void);
 extern void usb_acpi_unregister(void);
 extern acpi_handle usb_get_hub_port_acpi_handle(struct usb_device *hdev,
 	int port1);
+bool usb_acpi_port_power_manageable(struct usb_port *port_dev);
 #else
 static inline int usb_acpi_register(void) { return 0; };
 static inline void usb_acpi_unregister(void) { };
+static inline bool usb_acpi_port_power_manageable(struct usb_port *port_dev)
+{
+	return false;
+}
 #endif
