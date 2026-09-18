@@ -1433,6 +1433,18 @@ static void hci_cmd_timeout(struct work_struct *work)
 		bt_dev_err(hdev, "command 0x%4.4x tx timeout", opcode);
 
 		hci_cmd_sync_cancel_sync(hdev, ETIMEDOUT);
+
+		/* The request has been canceled so hci_cmd_sync_complete()
+		 * will no longer release the request command. Free it along
+		 * with the last sent command, which shares the same data
+		 * buffer, otherwise they leak when the device stays up.
+		 */
+		kfree_skb(hdev->sent_cmd);
+		hdev->sent_cmd = NULL;
+
+		kfree_skb(hdev->req_skb);
+		hdev->req_skb = NULL;
+		hci_dev_clear_flag(hdev, HCI_CMD_PENDING);
 	} else {
 		bt_dev_err(hdev, "command tx timeout");
 	}
