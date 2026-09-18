@@ -55,6 +55,8 @@ static const struct pci_device_id btintel_pcie_table[] = {
 	{ BTINTEL_PCI_DEVICE(0xD346, PCI_ANY_ID) },
 	 /* Scorpious2, Nova Lake-PCD-S */
 	{ BTINTEL_PCI_DEVICE(0x6E74, PCI_ANY_ID) },
+	 /* Scorpious Peak2 C0, Titan Lake */
+	{ BTINTEL_PCI_DEVICE(0x9329, PCI_ANY_ID) },
 	{ 0 }
 };
 MODULE_DEVICE_TABLE(pci, btintel_pcie_table);
@@ -2283,6 +2285,7 @@ static void btintel_pcie_read_hwexp(struct btintel_pcie_data *data)
 		break;
 	case BTINTEL_CNVI_SCP:
 	case BTINTEL_CNVI_SCP2:
+	case BTINTEL_CNVI_SCP2_C0:
 	case BTINTEL_CNVI_SCP2F:
 		break;
 	default:
