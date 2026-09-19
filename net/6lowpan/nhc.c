@@ -79,6 +79,11 @@ int lowpan_nhc_do_compression(struct sk_buff *skb, const struct ipv6hdr *hdr,
 		goto out;
 	}
 
+	if (!pskb_may_pull(skb, sizeof(struct ipv6hdr) + nhc->nexthdrlen)) {
+		ret = -EINVAL;
+		goto out;
+	}
+
 	/* In the case of RAW sockets the transport header is not set by
 	 * the ip6 stack so we must set it ourselves
 	 */
