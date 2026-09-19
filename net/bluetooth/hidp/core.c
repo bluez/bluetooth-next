@@ -321,6 +321,8 @@ static int hidp_get_raw_report(struct hid_device *hid,
 
 err:
 	clear_bit(HIDP_WAITING_FOR_RETURN, &session->flags);
+	kfree_skb(session->report_return);
+	session->report_return = NULL;
 	mutex_unlock(&session->report_mutex);
 	return ret;
 }
@@ -520,6 +522,9 @@ static int hidp_process_data(struct hidp_session *session, struct sk_buff *skb,
 	int done_with_skb = 1;
 	BT_DBG("session %p skb %p len %u param 0x%02x", session, skb, skb->len, param);
 
+	if (skb->len < 1)
+		return 1;
+
 	switch (param) {
 	case HIDP_DATA_RTYPE_INPUT:
 		hidp_set_timer(session);
@@ -548,6 +553,7 @@ static int hidp_process_data(struct hidp_session *session, struct sk_buff *skb,
 		    (skb->len &&
 		     session->waiting_report_number == skb->data[0])) {
 			/* hidp_get_raw_report() is waiting on this report. */
+			kfree_skb(session->report_return);
 			session->report_return = skb;
 			done_with_skb = 0;
 			clear_bit(HIDP_WAITING_FOR_RETURN, &session->flags);
@@ -615,7 +621,7 @@ static void hidp_recv_intr_frame(struct hidp_session *session,
 		if (session->input)
 			hidp_input_report(session, skb);
 
-		if (session->hid) {
+		if (session->hid && skb->len >= 1) {
 			hidp_process_report(session, HID_INPUT_REPORT,
 					    skb->data, skb->len, 1);
 			BT_DBG("report len %d", skb->len);
@@ -1000,6 +1006,7 @@ static void session_free(struct kref *ref)
 	hidp_session_dev_destroy(session);
 	skb_queue_purge(&session->ctrl_transmit);
 	skb_queue_purge(&session->intr_transmit);
+	kfree_skb(session->report_return);
 	fput(session->intr_sock->file);
 	fput(session->ctrl_sock->file);
 	if (session->conn)
