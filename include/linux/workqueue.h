@@ -128,6 +128,14 @@ struct rcu_work {
 	struct workqueue_struct *wq;
 };
 
+struct module;
+
+struct module_work {
+	struct work_struct work;
+	struct module *owner;
+	work_func_t func;
+};
+
 enum wq_affn_scope {
 	WQ_AFFN_DFL,			/* use system default */
 	WQ_AFFN_CPU,			/* one pod per CPU */
@@ -218,6 +226,11 @@ static inline struct delayed_work *to_delayed_work(struct work_struct *work)
 static inline struct rcu_work *to_rcu_work(struct work_struct *work)
 {
 	return container_of(work, struct rcu_work, work);
+}
+
+static inline struct module_work *to_module_work(struct work_struct *work)
+{
+	return container_of(work, struct module_work, work);
 }
 
 struct execute_work {
@@ -634,6 +647,8 @@ extern void __flush_workqueue(struct workqueue_struct *wq);
 extern void drain_workqueue(struct workqueue_struct *wq);
 
 extern int schedule_on_each_cpu(work_func_t func);
+bool schedule_module_work(struct module_work *mwork, work_func_t func,
+			  struct module *owner);
 
 int execute_in_process_context(work_func_t fn, struct execute_work *);
 

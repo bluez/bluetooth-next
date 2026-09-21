@@ -48,6 +48,7 @@
 #include <linux/hashtable.h>
 #include <linux/rculist.h>
 #include <linux/nodemask.h>
+#include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/uaccess.h>
 #include <linux/sched/isolation.h>
@@ -4807,6 +4808,48 @@ int execute_in_process_context(work_func_t fn, struct execute_work *ew)
 	return 1;
 }
 EXPORT_SYMBOL_GPL(execute_in_process_context);
+
+static void module_work_func(struct work_struct *work)
+{
+	struct module_work *mwork = to_module_work(work);
+	struct module *owner = mwork->owner;
+	work_func_t func = mwork->func;
+
+	func(work);
+	module_put(owner);
+}
+
+/**
+ * schedule_module_work - schedule work owned by a module
+ * @mwork: module work to schedule
+ * @func: work function to schedule
+ * @owner: module owning @func
+ *
+ * Take a reference to @owner before scheduling @func. The reference is
+ * released by workqueue core after the callback returns. The callback may
+ * free @mwork. @mwork must not be pending.
+ *
+ * Return: %false if the module is being removed or the work could not be
+ * queued, %true otherwise.
+ */
+bool schedule_module_work(struct module_work *mwork, work_func_t func,
+			  struct module *owner)
+{
+	if (!try_module_get(owner))
+		return false;
+
+	INIT_WORK(&mwork->work, module_work_func);
+	mwork->owner = owner;
+	mwork->func = func;
+
+	if (!schedule_work(&mwork->work)) {
+		module_put(owner);
+		return false;
+	}
+
+	return true;
+}
+EXPORT_SYMBOL_GPL(schedule_module_work);
 
 /**
  * free_workqueue_attrs - free a workqueue_attrs

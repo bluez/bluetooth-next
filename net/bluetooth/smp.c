@@ -3155,7 +3155,7 @@ static void smp_resume_cb(struct l2cap_chan *chan)
 	smp_distribute_keys(smp);
 }
 
-static void smp_ready_cb(struct l2cap_chan *chan)
+static int smp_ready_cb(struct l2cap_chan *chan)
 {
 	struct l2cap_conn *conn = chan->conn;
 	struct hci_conn *hcon = conn->hcon;
@@ -3172,6 +3172,8 @@ static void smp_ready_cb(struct l2cap_chan *chan)
 
 	if (hcon->type == ACL_LINK && test_bit(HCI_CONN_ENCRYPT, &hcon->flags))
 		bredr_pairing(chan);
+
+	return 0;
 }
 
 static int smp_recv_cb(struct l2cap_chan *chan, struct sk_buff *skb)
