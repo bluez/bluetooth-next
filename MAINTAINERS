@@ -738,6 +738,7 @@ M:	Yanli Yang <yanli.yang@bedmex.com>
 L:	linux-bluetooth@vger.kernel.org
 S:	Maintained
 F:	Documentation/devicetree/bindings/net/bluetooth/aic,aic8800d80-bt.yaml
+F:	drivers/bluetooth/btaic*
 
 AIC7XXX / AIC79XX SCSI DRIVER
 M:	Hannes Reinecke <hare@suse.com>
