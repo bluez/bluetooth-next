@@ -61,7 +61,6 @@ enum {
 
 struct lowpan_peer {
 	struct list_head list;
-	struct rcu_head rcu;
 	struct l2cap_chan *chan;
 
 	/* peer addresses in various formats */
@@ -100,7 +99,6 @@ static inline bool peer_del(struct lowpan_btle_dev *dev,
 			    struct lowpan_peer *peer)
 {
 	list_del_rcu(&peer->list);
-	kfree_rcu(peer, rcu);
 
 	if (atomic_dec_and_test(&dev->peer_count)) {
 		BT_DBG("last peer");
@@ -776,16 +774,15 @@ static void delete_netdev(struct work_struct *work)
 	/* The entry pointer is deleted by the netdev destructor. */
 }
 
-static void chan_close_cb(struct l2cap_chan *chan)
+static void chan_teardown_cb(struct l2cap_chan *chan, int err)
 {
 	struct lowpan_btle_dev *entry;
 	struct lowpan_btle_dev *dev = NULL;
-	struct lowpan_peer *peer;
-	int err = -ENOENT;
+	struct lowpan_peer *peer = NULL;
 	bool last = false;
-	bool queued;
 
 	BT_DBG("chan %p conn %p", chan, chan->conn);
+	chan->state = BT_CLOSED;
 
 	spin_lock(&devices_lock);
 
@@ -794,7 +791,6 @@ static void chan_close_cb(struct l2cap_chan *chan)
 		peer = __peer_lookup_chan(dev, chan);
 		if (peer) {
 			last = peer_del(dev, peer);
-			err = 0;
 
 			BT_DBG("dev %p removing %speer %p", dev,
 			       last ? "last " : "1 ", peer);
@@ -802,19 +798,28 @@ static void chan_close_cb(struct l2cap_chan *chan)
 		}
 	}
 
-	if (!err && last && dev && !atomic_read(&dev->peer_count)) {
-		spin_unlock(&devices_lock);
+	spin_unlock(&devices_lock);
 
-		cancel_delayed_work_sync(&dev->notify_peers);
+	if (peer) {
+		/* ndo_start_xmit() holds network RCU while using peer->chan. */
+		synchronize_net();
+		kfree(peer);
 
-		ifdown(dev->netdev);
+		if (last && dev) {
+			bool queued;
 
-		queued = schedule_module_work(&entry->delete_netdev,
-					      delete_netdev, THIS_MODULE);
-		WARN_ON_ONCE(!queued);
-	} else {
-		spin_unlock(&devices_lock);
+			cancel_delayed_work_sync(&dev->notify_peers);
+
+			ifdown(dev->netdev);
+
+			queued = schedule_module_work(&entry->delete_netdev,
+						      delete_netdev, THIS_MODULE);
+			WARN_ON_ONCE(!queued);
+		}
 	}
+
+	if (test_and_clear_bit(FLAG_RELEASE_CREATOR, &chan->flags))
+		l2cap_chan_put(chan);
 }
 
 static void chan_state_change_cb(struct l2cap_chan *chan, int state, int err)
@@ -873,6 +878,9 @@ static long chan_get_sndtimeo_cb(struct l2cap_chan *chan)
 static int chan_new_connection_cb(struct l2cap_chan *chan,
 				  struct l2cap_chan *new_chan)
 {
+	if (chan->state != BT_LISTEN)
+		return -EINVAL;
+
 	if (!l2cap_chan_set_ops(new_chan, &bt_6lowpan_chan_ops, THIS_MODULE))
 		return -ENODEV;
 
@@ -880,19 +888,11 @@ static int chan_new_connection_cb(struct l2cap_chan *chan,
 	return 0;
 }
 
-static void chan_teardown_cb(struct l2cap_chan *chan, int err)
-{
-	chan->state = BT_CLOSED;
-
-	if (test_and_clear_bit(FLAG_RELEASE_CREATOR, &chan->flags))
-		l2cap_chan_put(chan);
-}
-
 static const struct l2cap_ops bt_6lowpan_chan_ops = {
 	.name			= "L2CAP 6LoWPAN channel",
 	.new_connection		= chan_new_connection_cb,
 	.recv			= chan_recv_cb,
-	.close			= chan_close_cb,
+	.close			= l2cap_chan_no_close,
 	.state_change		= chan_state_change_cb,
 	.ready			= chan_ready_cb,
 	.resume			= chan_resume_cb,
@@ -1103,19 +1103,21 @@ done:
 
 static void do_enable_set(bool flag)
 {
-	if (!flag || enable_6lowpan != flag)
-		/* Disconnect existing connections if 6lowpan is
-		 * disabled
-		 */
-		disconnect_all_peers();
-
-	enable_6lowpan = flag;
+	bool disconnect;
 
 	mutex_lock(&set_lock);
+
+	disconnect = !flag || enable_6lowpan != flag;
+	enable_6lowpan = flag;
+
 	if (listen_chan) {
 		l2cap_chan_close_unlocked(listen_chan, 0);
 		l2cap_chan_put(listen_chan);
+		listen_chan = NULL;
 	}
+
+	if (disconnect)
+		disconnect_all_peers();
 
 	listen_chan = bt_6lowpan_listen();
 	mutex_unlock(&set_lock);
