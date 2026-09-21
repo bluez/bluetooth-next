@@ -611,6 +611,7 @@ struct l2cap_chan {
 
 	void			*data;
 	const struct l2cap_ops	*ops;
+	bool			timers_stopped; /* protected by conn->timer_lock */
 	struct mutex		lock;
 };
 
@@ -636,6 +637,10 @@ struct l2cap_conn {
 
 	struct sk_buff_head	pending_rx;
 	struct work_struct	pending_rx_work;
+	struct workqueue_struct	*timer_workqueue;
+	spinlock_t		timer_lock; /* protects timer scheduling */
+
+	bool			timers_stopped __guarded_by(&timer_lock);
 
 	struct delayed_work	id_addr_timer;
 
@@ -856,13 +861,29 @@ static inline void l2cap_chan_unlock(struct l2cap_chan *chan)
 static inline void l2cap_set_timer(struct l2cap_chan *chan,
 				   struct delayed_work *work, long timeout)
 {
+	struct l2cap_conn *conn = chan->conn;
+	unsigned long flags;
+	bool pending;
+
 	BT_DBG("chan %p state %s timeout %ld", chan,
 	       state_to_string(chan->state), timeout);
+
+	if (WARN_ON_ONCE(!conn))
+		return;
+
+	spin_lock_irqsave(&conn->timer_lock, flags);
+	if (conn->timers_stopped || chan->timers_stopped) {
+		spin_unlock_irqrestore(&conn->timer_lock, flags);
+		return;
+	}
 
 	l2cap_chan_hold(chan);
 
 	/* put(chan) if timer was already queued so it already has a ref */
-	if (mod_delayed_work(system_percpu_wq, work, timeout))
+	pending = mod_delayed_work(conn->timer_workqueue, work, timeout);
+	spin_unlock_irqrestore(&conn->timer_lock, flags);
+
+	if (pending)
 		l2cap_chan_put(chan);
 }
 

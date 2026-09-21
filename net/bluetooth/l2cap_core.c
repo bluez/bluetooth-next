@@ -686,9 +686,21 @@ void l2cap_chan_add(struct l2cap_conn *conn, struct l2cap_chan *chan)
 
 void l2cap_chan_del(struct l2cap_chan *chan, int err)
 {
+	struct l2cap_conn *conn = chan->conn;
+	unsigned long flags;
+
 	lockdep_assert(!chan->conn || lockdep_is_held(&chan->conn->lock));
 
+	if (conn) {
+		spin_lock_irqsave(&conn->timer_lock, flags);
+		chan->timers_stopped = true;
+		spin_unlock_irqrestore(&conn->timer_lock, flags);
+	}
+
 	__clear_chan_timer(chan);
+	__clear_retrans_timer(chan);
+	__clear_monitor_timer(chan);
+	__clear_ack_timer(chan);
 
 	BT_DBG("chan %p, err %d, state %s", chan, err,
 	       state_to_string(chan->state));
@@ -723,10 +735,6 @@ void l2cap_chan_del(struct l2cap_chan *chan, int err)
 		break;
 
 	case L2CAP_MODE_ERTM:
-		__clear_retrans_timer(chan);
-		__clear_monitor_timer(chan);
-		__clear_ack_timer(chan);
-
 		skb_queue_purge(&chan->srej_q);
 
 		l2cap_seq_list_free(&chan->srej_list);
@@ -1879,6 +1887,7 @@ static void l2cap_conn_del(struct hci_conn *hcon, int err)
 {
 	struct l2cap_conn *conn = hcon->l2cap_data;
 	struct l2cap_chan *chan, *l;
+	unsigned long flags;
 
 	if (!conn)
 		return;
@@ -1891,6 +1900,9 @@ static void l2cap_conn_del(struct hci_conn *hcon, int err)
 	cancel_work_sync(&conn->pending_rx_work);
 
 	mutex_lock(&conn->lock);
+	spin_lock_irqsave(&conn->timer_lock, flags);
+	conn->timers_stopped = true;
+	spin_unlock_irqrestore(&conn->timer_lock, flags);
 
 	kfree_skb(conn->rx_skb);
 
@@ -1925,6 +1937,11 @@ static void l2cap_conn_del(struct hci_conn *hcon, int err)
 	spin_unlock(&hcon->proto_lock);
 
 	mutex_unlock(&conn->lock);
+
+	/* Channel deletion canceled pending timers. Drop conn->lock before
+	 * waiting for running callbacks so they can acquire it and return.
+	 */
+	drain_workqueue(conn->timer_workqueue);
 	l2cap_conn_put(conn);
 }
 
@@ -1932,6 +1949,7 @@ static void l2cap_conn_free(struct kref *ref)
 {
 	struct l2cap_conn *conn = container_of(ref, struct l2cap_conn, ref);
 
+	destroy_workqueue(conn->timer_workqueue);
 	hci_conn_put(conn->hcon);
 	kfree(conn);
 }
@@ -7415,6 +7433,14 @@ static struct l2cap_conn *l2cap_conn_add(struct hci_conn *hcon)
 		hci_chan_del(hchan);
 		return NULL;
 	}
+
+	conn->timer_workqueue = alloc_ordered_workqueue("l2cap", WQ_MEM_RECLAIM);
+	if (!conn->timer_workqueue) {
+		kfree(conn);
+		hci_chan_del(hchan);
+		return NULL;
+	}
+	spin_lock_init(&conn->timer_lock);
 
 	kref_init(&conn->ref);
 	conn->hchan = hchan;
