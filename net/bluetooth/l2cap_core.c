@@ -939,8 +939,10 @@ void l2cap_chan_close_unlocked(struct l2cap_chan *chan, int reason)
 
 	have_conn = l2cap_chan_lock_conn(chan);
 
-	/* Context analysis: consider chan->conn->lock held also if conn NULL */
-	context_unsafe(__l2cap_chan_close(chan, reason));
+	if (!test_bit(FLAG_DEL, &chan->flags)) {
+		/* Consider chan->conn->lock held also if conn NULL */
+		context_unsafe(__l2cap_chan_close(chan, reason));
+	}
 
 	l2cap_chan_unlock_conn(chan, have_conn);
 }
