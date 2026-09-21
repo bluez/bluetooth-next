@@ -611,6 +611,8 @@ struct l2cap_chan {
 
 	void			*data;
 	const struct l2cap_ops	*ops;
+	struct module		*ops_owner;
+	bool			ops_owner_pinned;
 	bool			timers_stopped; /* protected by conn->timer_lock */
 	struct mutex		lock;
 };
@@ -669,7 +671,7 @@ struct l2cap_ops {
 					__must_hold(&chan->lock);
 	void			(*state_change) (struct l2cap_chan *chan,
 						 int state, int err);
-	void			(*ready) (struct l2cap_chan *chan)
+	int			(*ready)(struct l2cap_chan *chan)
 					__must_hold(&chan->lock)
 					__must_hold(&chan->conn->lock);
 	void			(*defer) (struct l2cap_chan *chan);
@@ -764,6 +766,7 @@ enum {
 	FLAG_ECRED_CONN_REQ_SENT,
 	FLAG_PENDING_SECURITY,
 	FLAG_HOLD_HCI_CONN,
+	FLAG_RELEASE_CREATOR,
 	FLAG_DEL,
 };
 
@@ -948,8 +951,9 @@ static inline void l2cap_chan_no_close(struct l2cap_chan *chan)
 {
 }
 
-static inline void l2cap_chan_no_ready(struct l2cap_chan *chan)
+static inline int l2cap_chan_no_ready(struct l2cap_chan *chan)
 {
+	return 0;
 }
 
 static inline void l2cap_chan_no_state_change(struct l2cap_chan *chan,
@@ -994,6 +998,8 @@ int l2cap_add_psm(struct l2cap_chan *chan, bdaddr_t *src, __le16 psm);
 int l2cap_add_scid(struct l2cap_chan *chan,  __u16 scid);
 
 struct l2cap_chan *l2cap_chan_create(void);
+bool l2cap_chan_set_ops(struct l2cap_chan *chan,
+			const struct l2cap_ops *ops, struct module *owner);
 void l2cap_chan_close_unlocked(struct l2cap_chan *chan, int reason)
 	__must_not_hold(&chan->lock);
 int l2cap_chan_connect(struct l2cap_chan *chan, __le16 psm, u16 cid,

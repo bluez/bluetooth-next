@@ -52,6 +52,7 @@ static bool enable_6lowpan;
  */
 static struct l2cap_chan *listen_chan;
 static DEFINE_MUTEX(set_lock);
+static const struct l2cap_ops bt_6lowpan_chan_ops;
 
 enum {
 	LOWPAN_PEER_CLOSING,
@@ -78,7 +79,7 @@ struct lowpan_btle_dev {
 	struct list_head peers;
 	atomic_t peer_count; /* number of items in peers list */
 
-	struct work_struct delete_netdev;
+	struct module_work delete_netdev;
 	struct delayed_work notify_peers;
 };
 
@@ -100,8 +101,6 @@ static inline bool peer_del(struct lowpan_btle_dev *dev,
 {
 	list_del_rcu(&peer->list);
 	kfree_rcu(peer, rcu);
-
-	module_put(THIS_MODULE);
 
 	if (atomic_dec_and_test(&dev->peer_count)) {
 		BT_DBG("last peer");
@@ -641,16 +640,10 @@ static struct l2cap_chan *chan_create(void)
 	return chan;
 }
 
-static struct l2cap_chan *add_peer_chan(struct l2cap_chan *chan,
-					struct lowpan_btle_dev *dev,
-					bool new_netdev)
+static void add_peer_chan(struct l2cap_chan *chan,
+			  struct lowpan_btle_dev *dev,
+			  struct lowpan_peer *peer, bool new_netdev)
 {
-	struct lowpan_peer *peer;
-
-	peer = kzalloc_obj(*peer, GFP_ATOMIC);
-	if (!peer)
-		return NULL;
-
 	peer->chan = chan;
 
 	baswap((void *)peer->lladdr, &chan->dst);
@@ -666,8 +659,6 @@ static struct l2cap_chan *add_peer_chan(struct l2cap_chan *chan,
 	if (new_netdev)
 		INIT_DELAYED_WORK(&dev->notify_peers, do_notify_peers);
 	schedule_delayed_work(&dev->notify_peers, msecs_to_jiffies(100));
-
-	return peer->chan;
 }
 
 static int setup_netdev(struct l2cap_chan *chan, struct lowpan_btle_dev **dev)
@@ -721,30 +712,37 @@ out:
 	return err;
 }
 
-static inline void chan_ready_cb(struct l2cap_chan *chan)
+static inline int chan_ready_cb(struct l2cap_chan *chan)
 	__must_hold(&chan->lock)
 	__must_hold(&chan->conn->lock)
 {
 	struct lowpan_btle_dev *dev;
+	struct lowpan_peer *peer;
 	bool new_netdev = false;
+	int err;
+
+	peer = kzalloc_obj(*peer, GFP_ATOMIC);
+	if (!peer)
+		return -ENOMEM;
 
 	dev = lookup_dev(chan->conn);
 
 	BT_DBG("chan %p conn %p dev %p", chan, chan->conn, dev);
 
 	if (!dev) {
-		if (setup_netdev(chan, &dev) < 0) {
-			l2cap_chan_del(chan, -ENOENT);
-			return;
-		}
+		err = setup_netdev(chan, &dev);
+		if (err < 0)
+			goto free_peer;
 		new_netdev = true;
 	}
 
-	if (!try_module_get(THIS_MODULE))
-		return;
-
-	add_peer_chan(chan, dev, new_netdev);
+	add_peer_chan(chan, dev, peer, new_netdev);
 	ifup(dev->netdev);
+	return 0;
+
+free_peer:
+	kfree(peer);
+	return err;
 }
 
 static void unregister_dev(struct lowpan_btle_dev *dev)
@@ -771,7 +769,7 @@ static void delete_netdev(struct work_struct *work)
 {
 	struct lowpan_btle_dev *entry = container_of(work,
 						     struct lowpan_btle_dev,
-						     delete_netdev);
+						     delete_netdev.work);
 
 	unregister_dev(entry);
 
@@ -785,6 +783,7 @@ static void chan_close_cb(struct l2cap_chan *chan)
 	struct lowpan_peer *peer;
 	int err = -ENOENT;
 	bool last = false;
+	bool queued;
 
 	BT_DBG("chan %p conn %p", chan, chan->conn);
 
@@ -799,10 +798,6 @@ static void chan_close_cb(struct l2cap_chan *chan)
 
 			BT_DBG("dev %p removing %speer %p", dev,
 			       last ? "last " : "1 ", peer);
-			BT_DBG("chan %p orig refcnt %u", chan,
-			       kref_read(&chan->kref));
-
-			l2cap_chan_put(chan);
 			break;
 		}
 	}
@@ -814,8 +809,9 @@ static void chan_close_cb(struct l2cap_chan *chan)
 
 		ifdown(dev->netdev);
 
-		INIT_WORK(&entry->delete_netdev, delete_netdev);
-		schedule_work(&entry->delete_netdev);
+		queued = schedule_module_work(&entry->delete_netdev,
+					      delete_netdev, THIS_MODULE);
+		WARN_ON_ONCE(!queued);
 	} else {
 		spin_unlock(&devices_lock);
 	}
@@ -874,8 +870,27 @@ static long chan_get_sndtimeo_cb(struct l2cap_chan *chan)
 	return L2CAP_CONN_TIMEOUT;
 }
 
+static int chan_new_connection_cb(struct l2cap_chan *chan,
+				  struct l2cap_chan *new_chan)
+{
+	if (!l2cap_chan_set_ops(new_chan, &bt_6lowpan_chan_ops, THIS_MODULE))
+		return -ENODEV;
+
+	set_bit(FLAG_RELEASE_CREATOR, &new_chan->flags);
+	return 0;
+}
+
+static void chan_teardown_cb(struct l2cap_chan *chan, int err)
+{
+	chan->state = BT_CLOSED;
+
+	if (test_and_clear_bit(FLAG_RELEASE_CREATOR, &chan->flags))
+		l2cap_chan_put(chan);
+}
+
 static const struct l2cap_ops bt_6lowpan_chan_ops = {
 	.name			= "L2CAP 6LoWPAN channel",
+	.new_connection		= chan_new_connection_cb,
 	.recv			= chan_recv_cb,
 	.close			= chan_close_cb,
 	.state_change		= chan_state_change_cb,
@@ -885,7 +900,7 @@ static const struct l2cap_ops bt_6lowpan_chan_ops = {
 	.get_sndtimeo		= chan_get_sndtimeo_cb,
 	.alloc_skb		= chan_alloc_skb_cb,
 
-	.teardown		= l2cap_chan_no_teardown,
+	.teardown		= chan_teardown_cb,
 	.defer			= l2cap_chan_no_defer,
 	.set_shutdown		= l2cap_chan_no_set_shutdown,
 };
@@ -899,7 +914,12 @@ static int bt_6lowpan_connect(bdaddr_t *addr, u8 dst_type)
 	if (!chan)
 		return -EINVAL;
 
-	chan->ops = &bt_6lowpan_chan_ops;
+	if (!l2cap_chan_set_ops(chan, &bt_6lowpan_chan_ops, THIS_MODULE)) {
+		l2cap_chan_put(chan);
+		return -ENODEV;
+	}
+
+	set_bit(FLAG_RELEASE_CREATOR, &chan->flags);
 
 	err = l2cap_chan_connect(chan, cpu_to_le16(L2CAP_PSM_IPSP), 0,
 				 addr, dst_type, L2CAP_CONN_TIMEOUT);
@@ -952,7 +972,9 @@ static struct l2cap_chan *bt_6lowpan_listen(void)
 	if (!chan)
 		return NULL;
 
+	/* The listener is closed by module_exit(), so it must not self-pin. */
 	chan->ops = &bt_6lowpan_chan_ops;
+	chan->ops_owner = THIS_MODULE;
 	chan->state = BT_LISTEN;
 	chan->src_type = BDADDR_LE_PUBLIC;
 
