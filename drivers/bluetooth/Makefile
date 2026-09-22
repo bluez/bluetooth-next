@@ -20,6 +20,7 @@ obj-$(CONFIG_BT_MRVL)		+= btmrvl.o
 obj-$(CONFIG_BT_MRVL_SDIO)	+= btmrvl_sdio.o
 obj-$(CONFIG_BT_MTKSDIO)	+= btmtksdio.o
 obj-$(CONFIG_BT_MTKUART)	+= btmtkuart.o
+obj-$(CONFIG_BT_AIC)		+= btaic.o
 obj-$(CONFIG_BT_QCOMSMD)	+= btqcomsmd.o
 obj-$(CONFIG_BT_BCM)		+= btbcm.o
 obj-$(CONFIG_BT_RTL)		+= btrtl.o
@@ -55,3 +56,5 @@ btusb-y				:= btusb_main.o
 btusb-$(CONFIG_BT_HCIBTUSB_QCOM)	+= btusb_qcom.o
 
 CONTEXT_ANALYSIS := y
+
+btaic-y				:= btaic_core.o btaic_sdio.o btaic_uart.o
