@@ -2971,20 +2971,23 @@ static int btusb_setup_realtek(struct hci_dev *hdev)
 
 static int btusb_recv_event_realtek(struct hci_dev *hdev, struct sk_buff *skb)
 {
-	if (skb->len >= HCI_EVENT_HDR_SIZE + 1 &&
-	    skb->data[0] == HCI_EV_VENDOR &&
-	    skb->data[2] == RTK_SUB_EVENT_CODE_COREDUMP) {
-		struct rtk_dev_coredump_hdr hdr = {
-			.code = RTK_DEVCOREDUMP_CODE_MEMDUMP,
-		};
+	if (skb->len >= 1 && skb->data[0] == HCI_EV_VENDOR) {
+		if (skb->len >= HCI_EVENT_HDR_SIZE + 1 &&
+		    skb->data[2] == RTK_SUB_EVENT_CODE_COREDUMP) {
+			struct rtk_dev_coredump_hdr hdr = {
+				.code = RTK_DEVCOREDUMP_CODE_MEMDUMP,
+			};
 
-		bt_dev_dbg(hdev, "RTL: received coredump vendor evt, len %u",
-			skb->len);
+			bt_dev_dbg(hdev, "RTL: received coredump vendor evt, len %u",
+				   skb->len);
 
-		btusb_rtl_alloc_devcoredump(hdev, &hdr, skb->data, skb->len);
-		kfree_skb(skb);
+			btusb_rtl_alloc_devcoredump(hdev, &hdr, skb->data, skb->len);
+			kfree_skb(skb);
 
-		return 0;
+			return 0;
+		}
+
+		return btrtl_recv_event(hdev, skb);
 	}
 
 	return hci_recv_frame(hdev, skb);
