@@ -606,6 +606,7 @@ static int intel_setup(struct hci_uart *hu)
 	case 0x0b:	/* LnP */
 	case 0x0c:	/* WsP */
 	case 0x12:	/* ThP */
+	case 0x14:	/* CcP */
 		break;
 	default:
 		bt_dev_err(hdev, "Unsupported Intel hardware variant (%u)",
@@ -695,6 +696,7 @@ static int intel_setup(struct hci_uart *hu)
 			 ver.hw_variant, le16_to_cpu(params.dev_revid));
 		break;
 	case 0x12:      /* ThP */
+	case 0x14:      /* CcP */
 		snprintf(fwname, sizeof(fwname), "intel/ibt-%u-%u-%u.sfi",
 			 ver.hw_variant, ver.hw_revision, ver.fw_revision);
 		break;
@@ -721,6 +723,7 @@ static int intel_setup(struct hci_uart *hu)
 			 ver.hw_variant, le16_to_cpu(params.dev_revid));
 		break;
 	case 0x12:      /* ThP */
+	case 0x14:      /* CcP */
 		snprintf(fwname, sizeof(fwname), "intel/ibt-%u-%u-%u.ddc",
 			 ver.hw_variant, ver.hw_revision, ver.fw_revision);
 		break;
