@@ -2265,6 +2265,8 @@ static void qca_power_off(struct hci_uart *hu)
 	}
 
 	if (power && power->pwrseq) {
+		if (qcadev->susclk)
+			clk_disable_unprepare(qcadev->susclk);
 		pwrseq_disable(power->pwrseq);
 		set_bit(QCA_BT_OFF, &qca->flags);
 		return;
@@ -2324,8 +2326,17 @@ static int qca_regulator_enable(struct qca_serdev *qcadev)
 	struct qca_power *power = qcadev->bt_power;
 	int ret;
 
-	if (power->pwrseq)
-		return pwrseq_enable(power->pwrseq);
+	if (power->pwrseq) {
+		ret = pwrseq_enable(power->pwrseq);
+		if (ret)
+			return ret;
+		if (qcadev->susclk) {
+			ret = clk_prepare_enable(qcadev->susclk);
+			if (ret)
+				pwrseq_disable(power->pwrseq);
+		}
+		return ret;
+	}
 
 	/* Already enabled */
 	if (power->vregs_on)
@@ -2472,8 +2483,14 @@ static int qca_serdev_probe(struct serdev_device *serdev)
 			 */
 			if (IS_ERR(qcadev->bt_power->pwrseq))
 				qcadev->bt_power->pwrseq = NULL;
-			else
+			else {
+				qcadev->susclk = devm_clk_get_optional(&serdev->dev, NULL);
+				if (IS_ERR(qcadev->susclk)) {
+					dev_err(&serdev->dev, "failed to acquire clk\n");
+					return PTR_ERR(qcadev->susclk);
+				}
 				break;
+			}
 		}
 
 		qcadev->bt_power->dev = &serdev->dev;
