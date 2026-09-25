@@ -36,6 +36,11 @@
 #define STATE_SUSPENDED		7
 #define STATE_LPM_TRANSACTION	8
 
+/* The CcP bootloader cannot transfer the firmware image at the rates the
+ * driver uses for the operating mode: see the comment in intel_setup().
+ */
+#define INTEL_CCP_DOWNLOAD_SPEED	921600
+
 #define HCI_LPM_WAKE_PKT 0xf0
 #define HCI_LPM_PKT 0xf1
 #define HCI_LPM_MAX_SIZE 10
@@ -539,6 +544,7 @@ static int intel_setup(struct hci_uart *hu)
 	ktime_t calltime, delta, rettime;
 	unsigned long long duration;
 	unsigned int init_speed, oper_speed;
+	bool download_speed_change = false;
 	int speed_change = 0;
 	int err;
 
@@ -650,6 +656,29 @@ static int intel_setup(struct hci_uart *hu)
 		bt_dev_err(hdev, "Unsupported Intel firmware variant (%u)",
 			   ver.fw_variant);
 		return -ENODEV;
+	}
+
+	/* The controller starts in bootloader mode and does not keep its
+	 * firmware across a power cycle, so the image has to be downloaded on
+	 * every boot.  This bootloader stops acknowledging firmware fragments
+	 * when the transfer runs at the operating speed of the driver: on the
+	 * ThinkPad X1 Fold Gen1 the 801 KB image aborts with a "command 0xfc09
+	 * tx timeout" after ~4 s at 2 and at 3 Mbaud (3 Mbaud completed only 3
+	 * out of 11 boots), while 921.6 kbaud completed on every boot in 12.5 s
+	 * and 115.2 kbaud needs 83 s.  Short commands at the same speeds are
+	 * answered correctly, so this is not a baudrate mismatch - the link
+	 * loses a frame on long transfers.
+	 *
+	 * Use 921.6 kbaud for the download and restore init_speed before the
+	 * firmware is started: this controller does not follow a vendor speed
+	 * change once its firmware is running.
+	 */
+	if (hu->serdev && ver.hw_variant == 0x14) {
+		err = intel_set_baudrate(hu, INTEL_CCP_DOWNLOAD_SPEED);
+		if (err)
+			return err;
+
+		download_speed_change = true;
 	}
 
 	/* Read the secure boot parameters to identify the operating
@@ -807,7 +836,7 @@ done:
 		return err;
 
 	/* We need to restore the default speed before Intel reset */
-	if (speed_change) {
+	if (speed_change || download_speed_change) {
 		err = intel_set_baudrate(hu, init_speed);
 		if (err)
 			return err;
