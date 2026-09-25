@@ -14,6 +14,7 @@
 #include <linux/wait.h>
 #include <linux/tty.h>
 #include <linux/platform_device.h>
+#include <linux/serdev.h>
 #include <linux/gpio/consumer.h>
 #include <linux/acpi.h>
 #include <linux/interrupt.h>
@@ -288,7 +289,11 @@ static int intel_set_power(struct hci_uart *hu, bool powered)
 	struct intel_device *idev;
 	int err = -ENODEV;
 
-	if (!hu->tty->dev)
+	/* Controllers attached through serdev have no tty device; the platform
+	 * device providing the reset GPIO and LPM support is matched through
+	 * the tty device, so there is nothing to do for them.
+	 */
+	if (!hu->tty || !hu->tty->dev)
 		return err;
 
 	mutex_lock(&intel_device_list_lock);
@@ -361,7 +366,7 @@ static void intel_busy_work(struct work_struct *work)
 						busy_work);
 	struct intel_device *idev;
 
-	if (!intel->hu->tty->dev)
+	if (!intel->hu->tty || !intel->hu->tty->dev)
 		return;
 
 	/* Link is busy, delay the suspend */
@@ -511,7 +516,10 @@ static int intel_set_baudrate(struct hci_uart *hu, unsigned int speed)
 	/* wait 100ms to change baudrate on controller side */
 	msleep(100);
 
-	hci_uart_set_baudrate(hu, speed);
+	if (hu->serdev)
+		serdev_device_set_baudrate(hu->serdev, speed);
+	else
+		hci_uart_set_baudrate(hu, speed);
 	hci_uart_set_flow_control(hu, false);
 
 	return 0;
@@ -828,7 +836,7 @@ done:
 	 */
 	mutex_lock(&intel_device_list_lock);
 	list_for_each_entry(idev, &intel_device_list, list) {
-		if (!hu->tty->dev)
+		if (!hu->tty || !hu->tty->dev)
 			break;
 		if (hu->tty->dev->parent == idev->pdev->dev.parent) {
 			if (device_may_wakeup(&idev->pdev->dev)) {
@@ -990,7 +998,7 @@ static int intel_enqueue(struct hci_uart *hu, struct sk_buff *skb)
 
 	BT_DBG("hu %p skb %p", hu, skb);
 
-	if (!hu->tty->dev)
+	if (!hu->tty || !hu->tty->dev)
 		goto out_enqueue;
 
 	/* Be sure our controller is resumed and potential LPM transaction
