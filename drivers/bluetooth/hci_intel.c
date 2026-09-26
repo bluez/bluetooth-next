@@ -14,6 +14,7 @@
 #include <linux/wait.h>
 #include <linux/tty.h>
 #include <linux/platform_device.h>
+#include <linux/serdev.h>
 #include <linux/gpio/consumer.h>
 #include <linux/acpi.h>
 #include <linux/interrupt.h>
@@ -34,6 +35,11 @@
 #define STATE_TX_ACTIVE		6
 #define STATE_SUSPENDED		7
 #define STATE_LPM_TRANSACTION	8
+
+/* The CcP bootloader cannot transfer the firmware image at the rates the
+ * driver uses for the operating mode: see the comment in intel_setup().
+ */
+#define INTEL_CCP_DOWNLOAD_SPEED	921600
 
 #define HCI_LPM_WAKE_PKT 0xf0
 #define HCI_LPM_PKT 0xf1
@@ -288,7 +294,11 @@ static int intel_set_power(struct hci_uart *hu, bool powered)
 	struct intel_device *idev;
 	int err = -ENODEV;
 
-	if (!hu->tty->dev)
+	/* Controllers attached through serdev have no tty device; the platform
+	 * device providing the reset GPIO and LPM support is matched through
+	 * the tty device, so there is nothing to do for them.
+	 */
+	if (!hu->tty || !hu->tty->dev)
 		return err;
 
 	mutex_lock(&intel_device_list_lock);
@@ -361,7 +371,7 @@ static void intel_busy_work(struct work_struct *work)
 						busy_work);
 	struct intel_device *idev;
 
-	if (!intel->hu->tty->dev)
+	if (!intel->hu->tty || !intel->hu->tty->dev)
 		return;
 
 	/* Link is busy, delay the suspend */
@@ -511,7 +521,10 @@ static int intel_set_baudrate(struct hci_uart *hu, unsigned int speed)
 	/* wait 100ms to change baudrate on controller side */
 	msleep(100);
 
-	hci_uart_set_baudrate(hu, speed);
+	if (hu->serdev)
+		serdev_device_set_baudrate(hu->serdev, speed);
+	else
+		hci_uart_set_baudrate(hu, speed);
 	hci_uart_set_flow_control(hu, false);
 
 	return 0;
@@ -531,10 +544,19 @@ static int intel_setup(struct hci_uart *hu)
 	ktime_t calltime, delta, rettime;
 	unsigned long long duration;
 	unsigned int init_speed, oper_speed;
+	bool download_speed_change = false;
 	int speed_change = 0;
 	int err;
 
 	bt_dev_dbg(hdev, "");
+
+	/* ACPI describes the UART of this controller with FlowControlHardware,
+	 * so the serial core enables CTS/RTS.  The Intel handshake has to
+	 * transmit freely at init_speed before the controller starts answering,
+	 * otherwise the first commands time out; keep flow control off.
+	 */
+	if (hu->serdev)
+		serdev_device_set_flow_control(hu->serdev, false);
 
 	hu->hdev->set_diag = btintel_set_diag;
 	hu->hdev->set_bdaddr = btintel_set_bdaddr;
@@ -598,6 +620,7 @@ static int intel_setup(struct hci_uart *hu)
 	case 0x0b:	/* LnP */
 	case 0x0c:	/* WsP */
 	case 0x12:	/* ThP */
+	case 0x14:	/* CcP */
 		break;
 	default:
 		bt_dev_err(hdev, "Unsupported Intel hardware variant (%u)",
@@ -633,6 +656,29 @@ static int intel_setup(struct hci_uart *hu)
 		bt_dev_err(hdev, "Unsupported Intel firmware variant (%u)",
 			   ver.fw_variant);
 		return -ENODEV;
+	}
+
+	/* The controller starts in bootloader mode and does not keep its
+	 * firmware across a power cycle, so the image has to be downloaded on
+	 * every boot.  This bootloader stops acknowledging firmware fragments
+	 * when the transfer runs at the operating speed of the driver: on the
+	 * ThinkPad X1 Fold Gen1 the 801 KB image aborts with a "command 0xfc09
+	 * tx timeout" after ~4 s at 2 and at 3 Mbaud (3 Mbaud completed only 3
+	 * out of 11 boots), while 921.6 kbaud completed on every boot in 12.5 s
+	 * and 115.2 kbaud needs 83 s.  Short commands at the same speeds are
+	 * answered correctly, so this is not a baudrate mismatch - the link
+	 * loses a frame on long transfers.
+	 *
+	 * Use 921.6 kbaud for the download and restore init_speed before the
+	 * firmware is started: this controller does not follow a vendor speed
+	 * change once its firmware is running.
+	 */
+	if (hu->serdev && ver.hw_variant == 0x14) {
+		err = intel_set_baudrate(hu, INTEL_CCP_DOWNLOAD_SPEED);
+		if (err)
+			return err;
+
+		download_speed_change = true;
 	}
 
 	/* Read the secure boot parameters to identify the operating
@@ -687,6 +733,7 @@ static int intel_setup(struct hci_uart *hu)
 			 ver.hw_variant, le16_to_cpu(params.dev_revid));
 		break;
 	case 0x12:      /* ThP */
+	case 0x14:      /* CcP */
 		snprintf(fwname, sizeof(fwname), "intel/ibt-%u-%u-%u.sfi",
 			 ver.hw_variant, ver.hw_revision, ver.fw_revision);
 		break;
@@ -713,6 +760,7 @@ static int intel_setup(struct hci_uart *hu)
 			 ver.hw_variant, le16_to_cpu(params.dev_revid));
 		break;
 	case 0x12:      /* ThP */
+	case 0x14:      /* CcP */
 		snprintf(fwname, sizeof(fwname), "intel/ibt-%u-%u-%u.ddc",
 			 ver.hw_variant, ver.hw_revision, ver.fw_revision);
 		break;
@@ -788,7 +836,7 @@ done:
 		return err;
 
 	/* We need to restore the default speed before Intel reset */
-	if (speed_change) {
+	if (speed_change || download_speed_change) {
 		err = intel_set_baudrate(hu, init_speed);
 		if (err)
 			return err;
@@ -828,7 +876,7 @@ done:
 	 */
 	mutex_lock(&intel_device_list_lock);
 	list_for_each_entry(idev, &intel_device_list, list) {
-		if (!hu->tty->dev)
+		if (!hu->tty || !hu->tty->dev)
 			break;
 		if (hu->tty->dev->parent == idev->pdev->dev.parent) {
 			if (device_may_wakeup(&idev->pdev->dev)) {
@@ -990,7 +1038,7 @@ static int intel_enqueue(struct hci_uart *hu, struct sk_buff *skb)
 
 	BT_DBG("hu %p skb %p", hu, skb);
 
-	if (!hu->tty->dev)
+	if (!hu->tty || !hu->tty->dev)
 		goto out_enqueue;
 
 	/* Be sure our controller is resumed and potential LPM transaction
@@ -1056,6 +1104,33 @@ static const struct hci_uart_proto intel_proto = {
 	.dequeue	= intel_dequeue,
 };
 
+/* Do not let the generic baudrate change in hci_serdev.c run for this path.
+ *
+ * It is executed before intel_setup() (and right after the controller has been
+ * power cycled by the probe), but the controller is still in bootloader mode at
+ * that point: it only answers at init_speed until the firmware has been
+ * downloaded, and it needs a few seconds after the reset pulse before it
+ * answers at all.  Switching the host to oper_speed while the controller is
+ * silent leaves the two sides at different baudrates and the setup never
+ * recovers.  intel_setup() changes the baudrate itself, once the bootloader is
+ * talking.
+ */
+static const struct hci_uart_proto intel_serdev_proto = {
+	.id		= HCI_UART_INTEL,
+	.name		= "Intel",
+	.manufacturer	= 2,
+	.init_speed	= 115200,
+	.oper_speed	= 0,
+	.open		= intel_open,
+	.close		= intel_close,
+	.flush		= intel_flush,
+	.setup		= intel_setup,
+	.set_baudrate	= intel_set_baudrate,
+	.recv		= intel_recv,
+	.enqueue	= intel_enqueue,
+	.dequeue	= intel_dequeue,
+};
+
 #ifdef CONFIG_ACPI
 static const struct acpi_device_id intel_acpi_match[] = {
 	{ .id = "INT33E1" },
@@ -1063,6 +1138,16 @@ static const struct acpi_device_id intel_acpi_match[] = {
 	{ }
 };
 MODULE_DEVICE_TABLE(acpi, intel_acpi_match);
+
+/* Controllers which the firmware describes as a serdev child of their UART
+ * instead of as an LPSS platform device.  The CcP controller (Lakefield,
+ * Jasper Lake) is one of them.
+ */
+static const struct acpi_device_id intel_serdev_acpi_match[] = {
+	{ .id = "INT33E4" },
+	{ }
+};
+MODULE_DEVICE_TABLE(acpi, intel_serdev_acpi_match);
 #endif
 
 static int intel_suspend_device(struct device *dev)
@@ -1206,6 +1291,67 @@ static struct platform_driver intel_driver = {
 	},
 };
 
+#ifdef CONFIG_ACPI
+/* The controller does not keep the firmware across a power cycle, so it starts
+ * in bootloader mode every time; power cycling it here also makes sure a
+ * controller left in an unknown state by a previous boot cannot break the
+ * setup.  Measured on the ThinkPad X1 Fold Gen1: 500 ms of reset pulse, then
+ * 2 s until the bootloader answers the first command.
+ */
+#define INTEL_RESET_PULSE_MS	500
+#define INTEL_BOOT_DELAY_MS	2000
+
+static int intel_serdev_probe(struct serdev_device *serdev)
+{
+	struct hci_uart *hu;
+	struct gpio_desc *reset;
+
+	hu = devm_kzalloc(&serdev->dev, sizeof(*hu), GFP_KERNEL);
+	if (!hu)
+		return -ENOMEM;
+
+	hu->serdev = serdev;
+
+	/* The port is not open yet (hci_uart_register_device() opens it), so
+	 * only the ACPI properties and the reset GPIO can be used here.
+	 */
+	if (devm_acpi_dev_add_driver_gpios(&serdev->dev, acpi_hci_intel_gpios))
+		dev_dbg(&serdev->dev, "No ACPI GPIO mapping table\n");
+
+	reset = devm_gpiod_get_optional(&serdev->dev, "reset", GPIOD_OUT_HIGH);
+	if (IS_ERR(reset))
+		return dev_err_probe(&serdev->dev, PTR_ERR(reset),
+				     "Unable to retrieve reset gpio\n");
+
+	if (reset) {
+		gpiod_set_value_cansleep(reset, 0);
+		msleep(INTEL_RESET_PULSE_MS);
+		gpiod_set_value_cansleep(reset, 1);
+		msleep(INTEL_BOOT_DELAY_MS);
+	} else {
+		dev_warn(&serdev->dev, "No reset gpio, relying on the firmware state\n");
+	}
+
+	return hci_uart_register_device(hu, &intel_serdev_proto);
+}
+
+static void intel_serdev_remove(struct serdev_device *serdev)
+{
+	struct hci_uart *hu = serdev_device_get_drvdata(serdev);
+
+	hci_uart_unregister_device(hu);
+}
+
+static struct serdev_device_driver intel_serdev_driver = {
+	.probe = intel_serdev_probe,
+	.remove = intel_serdev_remove,
+	.driver = {
+		.name = "hci_uart_intel",
+		.acpi_match_table = ACPI_PTR(intel_serdev_acpi_match),
+	},
+};
+#endif
+
 int __init intel_init(void)
 {
 	int err;
@@ -1214,12 +1360,36 @@ int __init intel_init(void)
 	if (err)
 		return err;
 
+#ifdef CONFIG_ACPI
+	err = serdev_device_driver_register(&intel_serdev_driver);
+	if (err)
+		goto err_platform;
+
+	err = hci_uart_register_proto(&intel_proto);
+	if (err)
+		goto err_serdev;
+
+	return 0;
+
+err_serdev:
+	serdev_device_driver_unregister(&intel_serdev_driver);
+err_platform:
+	platform_driver_unregister(&intel_driver);
+	return err;
+#else
 	return hci_uart_register_proto(&intel_proto);
+#endif
 }
 
 int __exit intel_deinit(void)
 {
+	hci_uart_unregister_proto(&intel_proto);
+
+#ifdef CONFIG_ACPI
+	serdev_device_driver_unregister(&intel_serdev_driver);
+#endif
+
 	platform_driver_unregister(&intel_driver);
 
-	return hci_uart_unregister_proto(&intel_proto);
+	return 0;
 }
