@@ -2743,6 +2743,7 @@ void hci_unregister_dev(struct hci_dev *hdev)
 	if (hdev->rfkill) {
 		rfkill_unregister(hdev->rfkill);
 		rfkill_destroy(hdev->rfkill);
+		hdev->rfkill = NULL;
 	}
 	mutex_unlock(&hdev->unregister_lock);
 
