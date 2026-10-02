@@ -1815,13 +1815,13 @@ static struct sk_buff *l2cap_sock_alloc_skb_cb(struct l2cap_chan *chan,
 	return skb;
 }
 
-static void l2cap_sock_ready_cb(struct l2cap_chan *chan)
+static int l2cap_sock_ready_cb(struct l2cap_chan *chan)
 {
 	struct sock *sk = chan->data;
 	struct sock *parent;
 
 	if (!sk)
-		return;
+		return 0;
 
 	lock_sock(sk);
 
@@ -1836,6 +1836,8 @@ static void l2cap_sock_ready_cb(struct l2cap_chan *chan)
 		parent->sk_data_ready(parent);
 
 	release_sock(sk);
+
+	return 0;
 }
 
 static void l2cap_sock_defer_cb(struct l2cap_chan *chan)
