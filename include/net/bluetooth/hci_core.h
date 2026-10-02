@@ -774,6 +774,7 @@ struct hci_conn {
 	struct delayed_work auto_accept_work;
 	struct delayed_work idle_work;
 	struct delayed_work le_conn_timeout;
+	struct work_struct le_conn_timeout_put;
 
 	struct device	dev;
 	struct dentry	*debugfs;
@@ -1642,6 +1643,8 @@ struct hci_conn *hci_conn_add(struct hci_dev *hdev, int type, bdaddr_t *dst,
 struct hci_conn *hci_conn_add_unset(struct hci_dev *hdev, int type,
 				    bdaddr_t *dst, u8 dst_type, u8 role);
 void hci_conn_del(struct hci_conn *conn);
+void hci_conn_queue_le_timeout(struct hci_conn *conn);
+void hci_conn_cancel_le_timeout(struct hci_conn *conn);
 void hci_conn_hash_flush(struct hci_dev *hdev);
 
 struct hci_chan *hci_chan_create(struct hci_conn *conn);

@@ -7323,7 +7323,13 @@ static void create_le_conn_complete(struct hci_dev *hdev, void *data, int err)
 		goto unlock;
 
 	/* Flush to make sure we send create conn cancel command if needed */
+	hci_dev_unlock(hdev);
 	flush_delayed_work(&conn->le_conn_timeout);
+	hci_dev_lock(hdev);
+
+	if (!hci_conn_valid(hdev, conn) || conn->state != BT_CONNECT)
+		goto unlock;
+
 	hci_conn_failed(conn, bt_status(err));
 
 unlock:
