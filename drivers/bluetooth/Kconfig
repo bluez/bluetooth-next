@@ -487,4 +487,20 @@ config BT_INTEL_PCIE
 
 	  Say Y here to compiler support for Intel Bluetooth PCIe device into
 	  the kernel or say M to compile it as module (btintel_pcie)
+
+config BT_AIC
+	tristate "AIC8800D80 Bluetooth support"
+	depends on MMC
+	depends on SERIAL_DEV_BUS
+	depends on BT_HCIUART
+	select BT_HCIUART_H4
+	select FW_LOADER
+	help
+	  Bluetooth support for the AIC8800D80 combination chip, using an
+	  SDIO function for firmware loading and a UART interface for the
+	  HCI transport.
+
+	  Say Y here to compile support into the kernel or M to build it as
+	  a module named btaic.
+
 endmenu
