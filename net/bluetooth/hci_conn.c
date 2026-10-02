@@ -722,6 +722,14 @@ static void le_disable_advertising(struct hci_dev *hdev)
 	}
 }
 
+static void le_conn_timeout_put(struct work_struct *work)
+{
+	struct hci_conn *conn = container_of(work, struct hci_conn,
+					     le_conn_timeout_put);
+
+	hci_conn_put(conn);
+}
+
 static void le_conn_timeout(struct work_struct *work)
 {
 	struct hci_conn *conn = container_of(work, struct hci_conn,
@@ -730,21 +738,45 @@ static void le_conn_timeout(struct work_struct *work)
 
 	BT_DBG("");
 
+	/* A queued instance owns one reference. Wait for an earlier instance
+	 * to release its reference before reusing the put work.
+	 */
+	flush_work(&conn->le_conn_timeout_put);
+
 	/* We could end up here due to having done directed advertising,
 	 * so clean up the state if necessary. This should however only
 	 * happen with broken hardware or if low duty cycle was used
 	 * (which doesn't have a timeout of its own).
 	 */
-	if (conn->role == HCI_ROLE_SLAVE) {
-		/* Disable LE Advertising */
-		le_disable_advertising(hdev);
-		hci_dev_lock(hdev);
-		hci_conn_failed(conn, HCI_ERROR_ADVERTISING_TIMEOUT);
-		hci_dev_unlock(hdev);
-		return;
+	hci_dev_lock(hdev);
+	if (hci_conn_valid(hdev, conn) && conn->state == BT_CONNECT) {
+		if (conn->role == HCI_ROLE_SLAVE) {
+			/* Disable LE Advertising */
+			le_disable_advertising(hdev);
+			hci_conn_failed(conn, HCI_ERROR_ADVERTISING_TIMEOUT);
+		} else {
+			hci_abort_conn(conn, HCI_ERROR_REMOTE_USER_TERM);
+		}
 	}
+	hci_dev_unlock(hdev);
 
-	hci_abort_conn(conn, HCI_ERROR_REMOTE_USER_TERM);
+	/* The final put can release hdev and destroy its workqueue. */
+	schedule_work(&conn->le_conn_timeout_put);
+}
+
+void hci_conn_queue_le_timeout(struct hci_conn *conn)
+{
+	/* Keep the connection alive until the work runs or is canceled. */
+	hci_conn_get(conn);
+	if (!queue_delayed_work(conn->hdev->workqueue,
+				&conn->le_conn_timeout, conn->conn_timeout))
+		hci_conn_put(conn);
+}
+
+void hci_conn_cancel_le_timeout(struct hci_conn *conn)
+{
+	if (cancel_delayed_work(&conn->le_conn_timeout))
+		hci_conn_put(conn);
 }
 
 struct iso_list_data {
@@ -1153,6 +1185,7 @@ static struct hci_conn *__hci_conn_add(struct hci_dev *hdev, int type,
 	INIT_DELAYED_WORK(&conn->auto_accept_work, hci_conn_auto_accept);
 	INIT_DELAYED_WORK(&conn->idle_work, hci_conn_idle);
 	INIT_DELAYED_WORK(&conn->le_conn_timeout, le_conn_timeout);
+	INIT_WORK(&conn->le_conn_timeout_put, le_conn_timeout_put);
 
 	spin_lock_init(&conn->proto_lock);
 
@@ -1323,7 +1356,7 @@ void hci_conn_del(struct hci_conn *conn)
 			hdev->acl_cnt += conn->sent;
 		break;
 	case LE_LINK:
-		cancel_delayed_work(&conn->le_conn_timeout);
+		hci_conn_cancel_le_timeout(conn);
 
 		if (hdev->le_pkts) {
 			if (!hci_conn_num(hdev, LE_LINK) ||
