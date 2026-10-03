@@ -1130,11 +1130,16 @@ static void mesh_send_done(struct work_struct *work)
 {
 	struct hci_dev *hdev = container_of(work, struct hci_dev,
 					    mesh_send_done.work);
+	int err;
 
 	if (!hci_dev_test_flag(hdev, HCI_MESH_SENDING))
 		return;
 
-	hci_cmd_sync_queue(hdev, mesh_send_done_sync, NULL, mesh_next);
+	err = hci_cmd_sync_queue(hdev, mesh_send_done_sync, NULL, mesh_next);
+	if (err < 0) {
+		mesh_send_done_sync(hdev, NULL);
+		mesh_next(hdev, NULL, err);
+	}
 }
 
 static void mgmt_init_hdev(struct sock *sk, struct hci_dev *hdev)
