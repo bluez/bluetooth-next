@@ -468,7 +468,7 @@ static void reenable_adv(struct work_struct *work)
 static void cancel_adv_timeout(struct hci_dev *hdev)
 {
 	if (hdev->adv_instance_timeout) {
-		hdev->adv_instance_timeout = 0;
+		hdev->adv_instance_timeout = false;
 		cancel_delayed_work(&hdev->adv_instance_expire);
 	}
 }
@@ -568,7 +568,7 @@ static void adv_timeout_expire(struct work_struct *work)
 
 	hci_dev_lock(hdev);
 
-	hdev->adv_instance_timeout = 0;
+	hdev->adv_instance_timeout = false;
 
 	if (hdev->cur_adv_instance == 0x00)
 		goto unlock;
@@ -2099,7 +2099,7 @@ int hci_schedule_adv_instance_sync(struct hci_dev *hdev, u8 instance,
 
 	/* Only use work for scheduling instances with legacy advertising */
 	if (!ext_adv_capable(hdev)) {
-		hdev->adv_instance_timeout = timeout;
+		hdev->adv_instance_timeout = true;
 		queue_delayed_work(hdev->req_workqueue,
 				   &hdev->adv_instance_expire,
 				   adv->mesh ? msecs_to_jiffies(timeout) :
@@ -5572,7 +5572,7 @@ int hci_dev_close_sync(struct hci_dev *hdev)
 
 	if (hdev->adv_instance_timeout) {
 		cancel_delayed_work_sync(&hdev->adv_instance_expire);
-		hdev->adv_instance_timeout = 0;
+		hdev->adv_instance_timeout = false;
 	}
 
 	err = hci_dev_shutdown(hdev);
