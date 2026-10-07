@@ -3217,6 +3217,27 @@ static int hci_read_enc_key_size(struct hci_dev *hdev, struct hci_conn *conn)
 	return hci_send_cmd(hdev, HCI_OP_READ_ENC_KEY_SIZE, sizeof(cp), &cp);
 }
 
+/* A SCO/eSCO link that completes with no connection to take it, e.g.
+ * because its setup was abandoned while pending, must be disconnected:
+ * otherwise it stays up in the controller, which then rejects every further
+ * setup for the device.
+ */
+static void hci_sco_disconnect_orphan(struct hci_dev *hdev, __le16 handle)
+{
+	struct hci_cp_disconnect cp;
+	u16 h = __le16_to_cpu(handle);
+
+	/* Never for an invalid handle or one that a connection uses */
+	if (h > HCI_CONN_HANDLE_MAX || hci_conn_hash_lookup_handle(hdev, h))
+		return;
+
+	bt_dev_dbg(hdev, "handle 0x%4.4x", h);
+
+	cp.handle = handle;
+	cp.reason = HCI_ERROR_REMOTE_USER_TERM;
+	hci_send_cmd(hdev, HCI_OP_DISCONNECT, sizeof(cp), &cp);
+}
+
 static void hci_conn_complete_evt(struct hci_dev *hdev, void *data,
 				  struct sk_buff *skb)
 {
@@ -3273,8 +3294,10 @@ static void hci_conn_complete_evt(struct hci_dev *hdev, void *data,
 
 			conn = hci_conn_hash_lookup_ba(hdev, ESCO_LINK,
 						       &ev->bdaddr);
-			if (!conn)
+			if (!conn) {
+				hci_sco_disconnect_orphan(hdev, ev->handle);
 				goto unlock;
+			}
 
 			conn->type = SCO_LINK;
 		}
@@ -3293,8 +3316,12 @@ static void hci_conn_complete_evt(struct hci_dev *hdev, void *data,
 
 	if (!status) {
 		status = hci_conn_set_handle(conn, __le16_to_cpu(ev->handle));
-		if (status)
+		if (status) {
+			/* e.g. it is being aborted: the link is not taken */
+			if (ev->link_type == SCO_LINK)
+				hci_sco_disconnect_orphan(hdev, ev->handle);
 			goto done;
+		}
 
 		if (conn->type == ACL_LINK) {
 			conn->state = BT_CONFIG;
@@ -5178,8 +5205,18 @@ static void hci_sync_conn_complete_evt(struct hci_dev *hdev, void *data,
 
 	conn = hci_conn_hash_lookup_ba(hdev, ev->link_type, &ev->bdaddr);
 	if (!conn) {
-		if (ev->link_type == ESCO_LINK)
-			goto unlock;
+		if (ev->link_type == ESCO_LINK) {
+			/* A SCO_LINK connection still waiting for its link can
+			 * get an eSCO one, see disable_esco in sco.c. It does
+			 * not take it, as before, and the link is left alone.
+			 */
+			conn = hci_conn_hash_lookup_ba(hdev, SCO_LINK,
+						       &ev->bdaddr);
+			if (conn && HCI_CONN_HANDLE_UNSET(conn->handle))
+				goto unlock;
+
+			goto orphan;
+		}
 
 		/* When the link type in the event indicates SCO connection
 		 * and lookup of the connection object fails, then check
@@ -5192,7 +5229,7 @@ static void hci_sync_conn_complete_evt(struct hci_dev *hdev, void *data,
 		 */
 		conn = hci_conn_hash_lookup_ba(hdev, ESCO_LINK, &ev->bdaddr);
 		if (!conn)
-			goto unlock;
+			goto orphan;
 	}
 
 	/* The HCI_Synchronous_Connection_Complete event is only sent once per connection.
@@ -5202,6 +5239,13 @@ static void hci_sync_conn_complete_evt(struct hci_dev *hdev, void *data,
 	 * whether the connection is already set up.
 	 */
 	if (!HCI_CONN_HANDLE_UNSET(conn->handle)) {
+		/* Another link for a connection that is already up, e.g. its
+		 * own setup completing after it took over an abandoned one,
+		 * has no connection waiting for it either.
+		 */
+		if (__le16_to_cpu(ev->handle) != conn->handle)
+			goto orphan;
+
 		bt_dev_err(hdev, "Ignoring HCI_Sync_Conn_Complete event for existing connection");
 		goto unlock;
 	}
@@ -5210,6 +5254,8 @@ static void hci_sync_conn_complete_evt(struct hci_dev *hdev, void *data,
 	case 0x00:
 		status = hci_conn_set_handle(conn, __le16_to_cpu(ev->handle));
 		if (status) {
+			/* e.g. it is being aborted: the link is not taken */
+			hci_sco_disconnect_orphan(hdev, ev->handle);
 			conn->state = BT_CLOSED;
 			break;
 		}
@@ -5260,6 +5306,11 @@ static void hci_sync_conn_complete_evt(struct hci_dev *hdev, void *data,
 	hci_connect_cfm(conn, status);
 	if (status)
 		hci_conn_del(conn);
+	goto unlock;
+
+orphan:
+	if (!status)
+		hci_sco_disconnect_orphan(hdev, ev->handle);
 
 unlock:
 	hci_dev_unlock(hdev);
