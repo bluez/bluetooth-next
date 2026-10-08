@@ -471,6 +471,11 @@ static int send_mcast_pkt(struct sk_buff *skb, struct net_device *netdev)
 	struct lowpan_btle_dev *entry;
 	int err = 0;
 
+	/*
+	 * Peer removal drops the channel reference, so RCU alone is not
+	 * enough.
+	 */
+	spin_lock_bh(&devices_lock);
 	rcu_read_lock();
 
 	list_for_each_entry_rcu(entry, &bt_6lowpan_devices, list) {
@@ -502,6 +507,7 @@ static int send_mcast_pkt(struct sk_buff *skb, struct net_device *netdev)
 	}
 
 	rcu_read_unlock();
+	spin_unlock_bh(&devices_lock);
 
 	return err;
 }
@@ -657,10 +663,10 @@ static struct l2cap_chan *add_peer_chan(struct l2cap_chan *chan,
 
 	lowpan_iphc_uncompress_eui48_lladdr(&peer->peer_addr, peer->lladdr);
 
-	spin_lock(&devices_lock);
+	spin_lock_bh(&devices_lock);
 	INIT_LIST_HEAD(&peer->list);
 	peer_add(dev, peer);
-	spin_unlock(&devices_lock);
+	spin_unlock_bh(&devices_lock);
 
 	/* Notifying peers about us needs to be done without locks held */
 	if (new_netdev)
@@ -695,17 +701,17 @@ static int setup_netdev(struct l2cap_chan *chan, struct lowpan_btle_dev **dev)
 	(*dev)->hdev = chan->conn->hcon->hdev;
 	INIT_LIST_HEAD(&(*dev)->peers);
 
-	spin_lock(&devices_lock);
+	spin_lock_bh(&devices_lock);
 	INIT_LIST_HEAD(&(*dev)->list);
 	list_add_rcu(&(*dev)->list, &bt_6lowpan_devices);
-	spin_unlock(&devices_lock);
+	spin_unlock_bh(&devices_lock);
 
 	err = lowpan_register_netdev(netdev, LOWPAN_LLTYPE_BTLE);
 	if (err < 0) {
 		BT_INFO("register_netdev failed %d", err);
-		spin_lock(&devices_lock);
+		spin_lock_bh(&devices_lock);
 		list_del_rcu(&(*dev)->list);
-		spin_unlock(&devices_lock);
+		spin_unlock_bh(&devices_lock);
 		free_netdev(netdev);
 		goto out;
 	}
@@ -788,7 +794,7 @@ static void chan_close_cb(struct l2cap_chan *chan)
 
 	BT_DBG("chan %p conn %p", chan, chan->conn);
 
-	spin_lock(&devices_lock);
+	spin_lock_bh(&devices_lock);
 
 	list_for_each_entry_rcu(entry, &bt_6lowpan_devices, list) {
 		dev = lowpan_btle_dev(entry->netdev);
@@ -808,7 +814,7 @@ static void chan_close_cb(struct l2cap_chan *chan)
 	}
 
 	if (!err && last && dev && !atomic_read(&dev->peer_count)) {
-		spin_unlock(&devices_lock);
+		spin_unlock_bh(&devices_lock);
 
 		cancel_delayed_work_sync(&dev->notify_peers);
 
@@ -817,7 +823,7 @@ static void chan_close_cb(struct l2cap_chan *chan)
 		INIT_WORK(&entry->delete_netdev, delete_netdev);
 		schedule_work(&entry->delete_netdev);
 	} else {
-		spin_unlock(&devices_lock);
+		spin_unlock_bh(&devices_lock);
 	}
 }
 
@@ -918,18 +924,18 @@ static int bt_6lowpan_disconnect(struct l2cap_conn *conn, u8 dst_type)
 
 	BT_DBG("conn %p dst type %u", conn, dst_type);
 
-	spin_lock(&devices_lock);
+	spin_lock_bh(&devices_lock);
 
 	peer = lookup_peer(conn);
 	if (!peer) {
-		spin_unlock(&devices_lock);
+		spin_unlock_bh(&devices_lock);
 		return -ENOENT;
 	}
 
 	chan = peer->chan;
 	l2cap_chan_hold(chan);
 
-	spin_unlock(&devices_lock);
+	spin_unlock_bh(&devices_lock);
 
 	BT_DBG("peer %p chan %p", peer, chan);
 
@@ -1053,7 +1059,7 @@ static void disconnect_all_peers(void)
 
 		nchans = 0;
 
-		spin_lock(&devices_lock);
+		spin_lock_bh(&devices_lock);
 
 		list_for_each_entry_rcu(entry, &bt_6lowpan_devices, list) {
 			list_for_each_entry_rcu(peer, &entry->peers, list) {
@@ -1070,7 +1076,7 @@ static void disconnect_all_peers(void)
 		}
 
 done:
-		spin_unlock(&devices_lock);
+		spin_unlock_bh(&devices_lock);
 
 		for (i = 0; i < nchans; ++i) {
 			l2cap_chan_close_unlocked(chans[i], ENOENT);
@@ -1195,7 +1201,7 @@ static int lowpan_control_show(struct seq_file *f, void *ptr)
 	struct lowpan_btle_dev *entry;
 	struct lowpan_peer *peer;
 
-	spin_lock(&devices_lock);
+	spin_lock_bh(&devices_lock);
 
 	list_for_each_entry(entry, &bt_6lowpan_devices, list) {
 		list_for_each_entry(peer, &entry->peers, list)
@@ -1203,7 +1209,7 @@ static int lowpan_control_show(struct seq_file *f, void *ptr)
 				   &peer->chan->dst, peer->chan->dst_type);
 	}
 
-	spin_unlock(&devices_lock);
+	spin_unlock_bh(&devices_lock);
 
 	return 0;
 }
@@ -1269,7 +1275,7 @@ static int device_event(struct notifier_block *unused,
 
 	switch (event) {
 	case NETDEV_UNREGISTER:
-		spin_lock(&devices_lock);
+		spin_lock_bh(&devices_lock);
 		list_for_each_entry(entry, &bt_6lowpan_devices, list) {
 			if (entry->netdev == netdev) {
 				BT_DBG("Unregistered netdev %s %p",
@@ -1278,7 +1284,7 @@ static int device_event(struct notifier_block *unused,
 				break;
 			}
 		}
-		spin_unlock(&devices_lock);
+		spin_unlock_bh(&devices_lock);
 		break;
 	}
 
