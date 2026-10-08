@@ -3306,8 +3306,12 @@ static void hci_conn_complete_evt(struct hci_dev *hdev, void *data,
 
 			conn = hci_conn_hash_lookup_ba(hdev, ESCO_LINK,
 						       &ev->bdaddr);
-			if (!conn)
+			if (!conn) {
+				hci_disconnect_unused(hdev,
+						      __le16_to_cpu(ev->handle),
+						      HCI_ERROR_REMOTE_USER_TERM);
 				goto unlock;
+			}
 
 			conn->type = SCO_LINK;
 		}
@@ -3320,6 +3324,16 @@ static void hci_conn_complete_evt(struct hci_dev *hdev, void *data,
 	 * whether the connection is already set up.
 	 */
 	if (!HCI_CONN_HANDLE_UNSET(conn->handle)) {
+		/* Another SCO link for a connection that is already up has
+		 * no connection waiting for it either.
+		 */
+		if (!status && ev->link_type == SCO_LINK &&
+		    __le16_to_cpu(ev->handle) != conn->handle) {
+			hci_disconnect_unused(hdev, __le16_to_cpu(ev->handle),
+					      HCI_ERROR_REMOTE_USER_TERM);
+			goto unlock;
+		}
+
 		bt_dev_err(hdev, "Ignoring HCI_Connection_Complete for existing connection");
 		goto unlock;
 	}
@@ -5212,8 +5226,19 @@ static void hci_sync_conn_complete_evt(struct hci_dev *hdev, void *data,
 
 	conn = hci_conn_hash_lookup_ba(hdev, ev->link_type, &ev->bdaddr);
 	if (!conn) {
-		if (ev->link_type == ESCO_LINK)
-			goto unlock;
+		if (ev->link_type == ESCO_LINK) {
+			/* A controller may answer the setup of a SCO_LINK
+			 * connection with an eSCO link. The connection does
+			 * not take it, as before, and the link is left alone
+			 * while the connection waits for its link.
+			 */
+			conn = hci_conn_hash_lookup_ba(hdev, SCO_LINK,
+						       &ev->bdaddr);
+			if (conn && HCI_CONN_HANDLE_UNSET(conn->handle))
+				goto unlock;
+
+			goto unused;
+		}
 
 		/* When the link type in the event indicates SCO connection
 		 * and lookup of the connection object fails, then check
@@ -5226,7 +5251,7 @@ static void hci_sync_conn_complete_evt(struct hci_dev *hdev, void *data,
 		 */
 		conn = hci_conn_hash_lookup_ba(hdev, ESCO_LINK, &ev->bdaddr);
 		if (!conn)
-			goto unlock;
+			goto unused;
 	}
 
 	/* The HCI_Synchronous_Connection_Complete event is only sent once per connection.
@@ -5236,6 +5261,13 @@ static void hci_sync_conn_complete_evt(struct hci_dev *hdev, void *data,
 	 * whether the connection is already set up.
 	 */
 	if (!HCI_CONN_HANDLE_UNSET(conn->handle)) {
+		/* Another link for a connection that is already up, e.g. its
+		 * own setup completing after it took over an abandoned one,
+		 * has no connection waiting for it either.
+		 */
+		if (__le16_to_cpu(ev->handle) != conn->handle)
+			goto unused;
+
 		bt_dev_err(hdev, "Ignoring HCI_Sync_Conn_Complete event for existing connection");
 		goto unlock;
 	}
@@ -5295,6 +5327,15 @@ static void hci_sync_conn_complete_evt(struct hci_dev *hdev, void *data,
 	hci_connect_cfm(conn, status);
 	if (status)
 		hci_conn_del(conn);
+	goto unlock;
+
+unused:
+	/* No connection waits for this link, e.g. because its setup was
+	 * abandoned while pending: don't leave it up in the controller.
+	 */
+	if (!status)
+		hci_disconnect_unused(hdev, __le16_to_cpu(ev->handle),
+				      HCI_ERROR_REMOTE_USER_TERM);
 
 unlock:
 	hci_dev_unlock(hdev);
