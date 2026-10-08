@@ -3301,8 +3301,15 @@ static void hci_conn_complete_evt(struct hci_dev *hdev, void *data,
 				goto unlock;
 			}
 		} else {
-			if (ev->link_type != SCO_LINK)
+			if (ev->link_type != SCO_LINK) {
+				/* No connection takes this link, e.g. an
+				 * incoming one aborted after it was accepted
+				 */
+				hci_disconnect_unused(hdev,
+						      __le16_to_cpu(ev->handle),
+						      HCI_ERROR_REMOTE_USER_TERM);
 				goto unlock;
+			}
 
 			conn = hci_conn_hash_lookup_ba(hdev, ESCO_LINK,
 						       &ev->bdaddr);
