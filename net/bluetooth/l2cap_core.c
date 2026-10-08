@@ -3876,7 +3876,8 @@ static int l2cap_parse_conf_rsp(struct l2cap_chan *chan, void *rsp, int len,
 		}
 	}
 
-	if (chan->mode == L2CAP_MODE_BASIC && chan->mode != rfc.mode)
+	if ((chan->mode == L2CAP_MODE_BASIC || chan->state == BT_CONNECTED) &&
+	    chan->mode != rfc.mode)
 		return -ECONNREFUSED;
 
 	chan->mode = rfc.mode;
