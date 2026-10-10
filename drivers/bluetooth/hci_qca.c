@@ -2235,6 +2235,11 @@ static void qca_power_off(struct hci_uart *hu)
 	spin_lock_irqsave(&qca->hci_ibs_lock, flags);
 	set_bit(QCA_IBS_DISABLED, &qca->flags);
 	qca_flush(hu);
+	/* A controller that loses power is asleep when it comes back. */
+	timer_delete(&qca->wake_retrans_timer);
+	timer_delete(&qca->tx_idle_timer);
+	qca->tx_ibs_state = HCI_IBS_TX_ASLEEP;
+	qca->rx_ibs_state = HCI_IBS_RX_ASLEEP;
 	spin_unlock_irqrestore(&qca->hci_ibs_lock, flags);
 
 	/* Non-serdev device usually is powered by external power
