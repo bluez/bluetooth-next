@@ -104,6 +104,15 @@ static void hci_devcd_free(struct hci_dev *hdev)
 	hci_devcd_reset(hdev);
 }
 
+void hci_devcd_discard(struct hci_dev *hdev)
+{
+	cancel_delayed_work_sync(&hdev->dump.dump_timeout);
+
+	hci_dev_lock(hdev);
+	hci_devcd_free(hdev);
+	hci_dev_unlock(hdev);
+}
+
 void hci_devcd_shutdown(struct hci_dev *hdev)
 {
 	unsigned long flags;
