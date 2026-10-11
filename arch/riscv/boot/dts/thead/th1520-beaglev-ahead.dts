@@ -76,6 +76,23 @@
 		};
 	};
 
+	reg_vbat_1v8: regulator-vbat-1v8 {
+		compatible = "regulator-fixed";
+		regulator-boot-on;
+		regulator-max-microvolt = <1800000>;
+		regulator-min-microvolt = <1800000>;
+		regulator-name = "vbat-1v8";
+	};
+
+	reg_vbat_3v3: regulator-vbat-3v3 {
+		compatible = "regulator-fixed";
+		enable-active-high;
+		regulator-boot-on;
+		regulator-max-microvolt = <3300000>;
+		regulator-min-microvolt = <3300000>;
+		regulator-name = "vbat-3v3";
+	};
+
 	hdmi-connector {
 		compatible = "hdmi-connector";
 		type = "d";
@@ -152,6 +169,31 @@
 };
 
 &padctrl0_apsys {
+	bluetooth_in_pins: bluetooth-0 {
+		in-pins {
+			bias-disable;
+			drive-strength = <1>;
+			function = "gpio";
+			input-enable;
+			input-schmitt-enable;
+			pins = "GPIO2_30";
+			slew-rate = <0>;
+		};
+	};
+
+	bluetooth_out_pins: bluetooth-1 {
+		out-pins {
+			bias-disable;
+			drive-strength = <3>;
+			function = "gpio";
+			input-disable;
+			input-schmitt-disable;
+			pins = "SDIO1_DETN",	/* GPIO2_29 */
+			       "SDIO1_WPRTN";	/* GPIO2_28 */
+			slew-rate = <0>;
+		};
+	};
+
 	gmac0_pins: gmac0-0 {
 		tx-pins {
 			pins = "GMAC0_TX_CLK",
@@ -268,6 +310,30 @@
 	};
 };
 
+&padctrl1_apsys {
+	uart4_pins: uart4-0 {
+		rx-pins {
+			bias-disable;
+			drive-strength = <1>;
+			function = "uart";
+			input-enable;
+			pins = "UART4_RXD", "UART4_CTSN";
+			input-schmitt-enable;
+			slew-rate = <0>;
+		};
+
+		tx-pins {
+			bias-disable;
+			drive-strength = <3>;
+			function = "uart";
+			input-disable;
+			pins = "UART4_TXD", "UART4_RTSN";
+			input-schmitt-disable;
+			slew-rate = <0>;
+		};
+	};
+};
+
 &sdio0 {
 	bus-width = <4>;
 	max-frequency = <198000000>;
@@ -313,4 +379,27 @@
 	pinctrl-names = "default";
 	pinctrl-0 = <&uart0_pins>;
 	status = "okay";
+};
+
+&uart4 {
+	pinctrl-0 = <&uart4_pins>;
+	pinctrl-names = "default";
+	uart-has-rtscts;
+
+	status = "okay";
+
+	bluetooth {
+		compatible = "brcm,bcm4329-bt";
+		device-wakeup-gpios = <&gpio2 29 GPIO_ACTIVE_HIGH>;
+		interrupt-parent = <&gpio2>;
+		interrupts = <30 IRQ_TYPE_EDGE_RISING>;
+		interrupt-names = "host-wakeup";
+		max-speed = <921600>;
+		pinctrl-0 = <&bluetooth_in_pins>;
+		pinctrl-1 = <&bluetooth_out_pins>;
+		pinctrl-names = "default";
+		shutdown-gpios = <&gpio2 28 GPIO_ACTIVE_HIGH>; 	/* BT-REG-ON */
+		vbat-supply = <&reg_vbat_3v3>;
+		vddio-supply = <&reg_vbat_1v8>;
+	};
 };
