@@ -20,6 +20,7 @@
 
 #include <linux/debugfs.h>
 #include <linux/kstrtox.h>
+#include <linux/rfkill.h>
 
 #include <net/bluetooth/bluetooth.h>
 #include <net/bluetooth/hci_core.h>
@@ -309,6 +310,108 @@ static const struct file_operations sc_only_mode_fops = {
 	.llseek		= default_llseek,
 };
 
+static int force_hw_rfkill_open(struct inode *inode, struct file *file)
+{
+	int err;
+
+	err = debugfs_file_get(file->f_path.dentry);
+	if (err)
+		return err;
+
+	err = simple_open(inode, file);
+	if (err)
+		debugfs_file_put(file->f_path.dentry);
+
+	return err;
+}
+
+static int force_hw_rfkill_release(struct inode *inode, struct file *file)
+{
+	debugfs_file_put(file->f_path.dentry);
+
+	return 0;
+}
+
+/* Test-only hook to simulate a HW rfkill event without needing the
+ * underlying transport driver to assert its real rfkill line. It drives
+ * hci_rfkill_set_hw_state() directly, exercising the same rfkill core
+ * notification (hci_rfkill_set_block()) and power on/off handling that a
+ * genuine HW rfkill interrupt from any driver would trigger.
+ */
+static ssize_t force_hw_rfkill_read(struct file *file, char __user *user_buf,
+				     size_t count, loff_t *ppos)
+{
+	struct hci_dev *hdev = file->private_data;
+	char buf[3];
+	bool blocked;
+
+	mutex_lock(&hdev->unregister_lock);
+	if (hci_dev_test_flag(hdev, HCI_UNREGISTER) ||
+	    IS_ERR_OR_NULL(hdev->rfkill)) {
+		mutex_unlock(&hdev->unregister_lock);
+		return -ENODEV;
+	}
+	blocked = rfkill_hard_blocked(hdev->rfkill);
+	mutex_unlock(&hdev->unregister_lock);
+
+	buf[0] = blocked ? 'Y' : 'N';
+	buf[1] = '\n';
+	buf[2] = '\0';
+	return simple_read_from_buffer(user_buf, count, ppos, buf, 2);
+}
+
+static ssize_t force_hw_rfkill_write(struct file *file,
+				      const char __user *user_buf,
+				      size_t count, loff_t *ppos)
+{
+	struct hci_dev *hdev = file->private_data;
+	bool enable;
+	int err;
+
+	err = kstrtobool_from_user(user_buf, count, &enable);
+	if (err)
+		return err;
+
+	mutex_lock(&hdev->unregister_lock);
+	if (hci_dev_test_flag(hdev, HCI_UNREGISTER) ||
+	    IS_ERR_OR_NULL(hdev->rfkill)) {
+		err = -ENODEV;
+		goto unlock;
+	}
+
+	if (enable == rfkill_hard_blocked(hdev->rfkill)) {
+		err = -EALREADY;
+		goto unlock_flush;
+	}
+
+	hci_rfkill_set_hw_state(hdev, enable);
+	err = count;
+
+unlock_flush:
+	mutex_unlock(&hdev->unregister_lock);
+
+	/* hci_rfkill_set_hw_state() updates the rfkill core state
+	 * synchronously, but applies the HCI_RFKILLED flag and resulting
+	 * power handling asynchronously via hdev->rfkill_block. Flush after
+	 * dropping unregister_lock because the work may submit a sync command
+	 * that also takes this lock.
+	 */
+	flush_work(&hdev->rfkill_block);
+	return err;
+
+unlock:
+	mutex_unlock(&hdev->unregister_lock);
+	return err;
+}
+
+static const struct file_operations force_hw_rfkill_fops = {
+	.open		= force_hw_rfkill_open,
+	.read		= force_hw_rfkill_read,
+	.write		= force_hw_rfkill_write,
+	.llseek		= default_llseek,
+	.release	= force_hw_rfkill_release,
+};
+
 DEFINE_INFO_ATTRIBUTE(hardware_info, hw_info);
 DEFINE_INFO_ATTRIBUTE(firmware_info, fw_info);
 
@@ -355,6 +458,10 @@ void hci_debugfs_create_common(struct hci_dev *hdev)
 	if (hdev->fw_info)
 		debugfs_create_file("firmware_info", 0444, hdev->debugfs,
 				    hdev, &firmware_info_fops);
+
+	if (!IS_ERR_OR_NULL(hdev->rfkill))
+		debugfs_create_file("force_hw_rfkill", 0644, hdev->debugfs,
+				    hdev, &force_hw_rfkill_fops);
 }
 
 static int inquiry_cache_show(struct seq_file *f, void *p)
