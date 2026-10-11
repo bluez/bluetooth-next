@@ -7680,6 +7680,21 @@ done:
 	hci_conn_put(conn);
 }
 
+static void hci_le_past_wait_ready(struct hci_dev *hdev, void *data, int err)
+{
+	struct hci_conn *conn = data;
+
+	if (err)
+		return;
+
+	/* Inform socket layer we are waiting for LE PAST Received */
+	hci_dev_lock(hdev);
+	if (hci_conn_valid(hdev, conn) &&
+	    test_bit(HCI_CONN_CREATE_PA_SYNC, &conn->flags))
+		hci_connect_cfm(conn, 0);
+	hci_dev_unlock(hdev);
+}
+
 static int hci_le_past_params_sync(struct hci_dev *hdev, struct hci_conn *conn,
 				   u16 acl_handle, struct bt_iso_qos *qos)
 {
@@ -7706,9 +7721,10 @@ static int hci_le_past_params_sync(struct hci_dev *hdev, struct hci_conn *conn,
 		return err;
 
 	/* Wait for HCI_EV_LE_PAST_RECEIVED event */
-	return __hci_cmd_sync_status_sk(hdev, HCI_OP_NOP, 0, NULL,
-					HCI_EV_LE_PAST_RECEIVED,
-					conn->conn_timeout, NULL);
+	return __hci_cmd_sync_status_sk_run(hdev, HCI_OP_NOP, 0, NULL,
+					    HCI_EV_LE_PAST_RECEIVED,
+					    conn->conn_timeout, NULL,
+					    hci_le_past_wait_ready, conn);
 }
 
 static int hci_le_pa_create_sync(struct hci_dev *hdev, void *data)
