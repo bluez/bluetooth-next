@@ -62,6 +62,7 @@ enum {
 	BT_SK_PA_SYNC,
 	BT_SK_KILLED,
 	BT_SK_CONNECTING,
+	BT_SK_PAST_READY,
 };
 
 struct iso_pinfo {
@@ -2035,6 +2036,10 @@ static int iso_sock_setsockopt(struct socket *sock, int level, int optname,
 
 		break;
 
+	case BT_ISO_PAST_POLLOUT:
+		err = -EINVAL;
+		break;
+
 	default:
 		err = -ENOPROTOOPT;
 		break;
@@ -2104,6 +2109,13 @@ static int iso_sock_getsockopt(struct socket *sock, int level, int optname,
 		if (copy_to_iter(base, len, &opt->iter_out) != len)
 			err = -EFAULT;
 
+		break;
+
+	case BT_ISO_PAST_POLLOUT:
+		val = 1;
+		if (copy_to_iter(&val, sizeof(val), &opt->iter_out) !=
+		    sizeof(val))
+			err = -EFAULT;
 		break;
 
 	default:
@@ -2278,6 +2290,16 @@ static void iso_conn_ready(struct iso_conn *conn)
 			}
 		}
 
+		/* PA sync listen socket notification for PAST ready */
+		if (conn->hcon->type == PA_LINK &&
+		    test_bit(HCI_CONN_CREATE_PA_SYNC, &conn->hcon->flags)) {
+			set_bit(BT_SK_PAST_READY, &iso_pi(sk)->flags);
+			sk->sk_state_change(sk);
+			release_sock(sk);
+			sock_put(sk);
+			return;
+		}
+
 		iso_sock_ready(sk);
 
 		release_sock(sk);
@@ -2289,7 +2311,10 @@ static void iso_conn_ready(struct iso_conn *conn)
 
 		hdev = hcon->hdev;
 
-		if (test_bit(HCI_CONN_BIG_SYNC, &hcon->flags)) {
+		if (test_bit(HCI_CONN_CREATE_PA_SYNC, &conn->hcon->flags)) {
+			/* PAST ready, not a connection */
+			return;
+		} else if (test_bit(HCI_CONN_BIG_SYNC, &hcon->flags)) {
 			/* A BIS slave hcon is notified to the ISO layer
 			 * after the Command Complete for the LE Setup
 			 * ISO Data Path command is received. Get the
@@ -2900,6 +2925,22 @@ DEFINE_SHOW_ATTRIBUTE(iso_debugfs);
 
 static struct dentry *iso_debugfs;
 
+static __poll_t iso_sock_poll(struct file *file, struct socket *sock,
+			      poll_table *wait)
+{
+	struct sock *sk = sock->sk;
+	__poll_t mask = bt_sock_poll(file, sock, wait);
+
+	/* ISO-specific extension: POLLOUT on listen() socket when PAST setup
+	 * has been completed.
+	 */
+	if (sk->sk_state == BT_LISTEN &&
+	    test_bit(BT_SK_PAST_READY, &iso_pi(sk)->flags))
+		mask |= EPOLLOUT | EPOLLWRNORM;
+
+	return mask;
+}
+
 static const struct proto_ops iso_sock_ops = {
 	.family		= PF_BLUETOOTH,
 	.owner		= THIS_MODULE,
@@ -2911,7 +2952,7 @@ static const struct proto_ops iso_sock_ops = {
 	.getname	= iso_sock_getname,
 	.sendmsg	= iso_sock_sendmsg,
 	.recvmsg	= iso_sock_recvmsg,
-	.poll		= bt_sock_poll,
+	.poll		= iso_sock_poll,
 	.ioctl		= bt_sock_ioctl,
 	.mmap		= sock_no_mmap,
 	.socketpair	= sock_no_socketpair,

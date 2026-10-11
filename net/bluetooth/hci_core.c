@@ -4183,11 +4183,18 @@ static int hci_send_cmd_sync(struct hci_dev *hdev, struct sk_buff *skb)
 		kfree_skb(skb);
 	}
 
-	if (READ_ONCE(hdev->req_status) == HCI_REQ_PEND &&
+	if (HCI_REQ_PENDING(READ_ONCE(hdev->req_status)) &&
 	    !hci_dev_test_and_set_flag(hdev, HCI_CMD_PENDING)) {
 		hci_dev_lock(hdev);
+
 		kfree_skb(hdev->req_skb);
 		hdev->req_skb = skb_get(hdev->sent_cmd);
+
+		if ((bt_cb(hdev->req_skb)->hci.req_flags & HCI_REQ_SKB) &&
+		    cmpxchg(&hdev->req_status, HCI_REQ_QUEUE,
+			    HCI_REQ_PEND) == HCI_REQ_QUEUE)
+			wake_up_interruptible(&hdev->req_wait_q);
+
 		hci_dev_unlock(hdev);
 	}
 

@@ -25,7 +25,7 @@ static void hci_cmd_sync_complete(struct hci_dev *hdev, u8 result, u16 opcode,
 {
 	bt_dev_dbg(hdev, "result 0x%2.2x", result);
 
-	if (READ_ONCE(hdev->req_status) != HCI_REQ_PEND)
+	if (!HCI_REQ_PENDING(READ_ONCE(hdev->req_status)))
 		return;
 
 	hdev->req_result = result;
@@ -155,13 +155,16 @@ static void hci_request_init(struct hci_request *req, struct hci_dev *hdev)
 }
 
 /* This function requires the caller holds hdev->req_lock. */
-struct sk_buff *__hci_cmd_sync_sk(struct hci_dev *hdev, u16 opcode, u32 plen,
-				  const void *param, u8 event, u32 timeout,
-				  struct sock *sk)
+static struct sk_buff *__hci_cmd_sync_sk_run(struct hci_dev *hdev, u16 opcode,
+					     u32 plen, const void *param,
+					     u8 event, u32 timeout,
+					     struct sock *sk,
+					     hci_request_wait_start_t wait_func,
+					     void *wait_data)
 {
 	struct hci_request req;
 	struct sk_buff *skb;
-	int err = 0;
+	long err = 0;
 
 	bt_dev_dbg(hdev, "Opcode 0x%4.4x", opcode);
 
@@ -169,29 +172,58 @@ struct sk_buff *__hci_cmd_sync_sk(struct hci_dev *hdev, u16 opcode, u32 plen,
 
 	hci_cmd_sync_add(&req, opcode, plen, param, event, sk);
 
-	WRITE_ONCE(hdev->req_status, HCI_REQ_PEND);
+	WRITE_ONCE(hdev->req_status, wait_func ? HCI_REQ_QUEUE : HCI_REQ_PEND);
 
 	err = hci_req_sync_run(&req);
-	if (err < 0)
+	if (err < 0) {
+		if (wait_func)
+			wait_func(hdev, wait_data, err);
 		return ERR_PTR(err);
+	}
+
+	if (wait_func) {
+		/* Sleep until we have started waiting for the event */
+		err = wait_event_interruptible_timeout(hdev->req_wait_q,
+						       READ_ONCE(hdev->req_status) != HCI_REQ_QUEUE,
+						       timeout);
+		if (err <= 0 || !HCI_REQ_PENDING(READ_ONCE(hdev->req_status)))
+			goto check_state;
+
+		wait_func(hdev, wait_data, 0);
+		wait_func = NULL;
+
+		timeout = err;
+	}
 
 	err = wait_event_interruptible_timeout(hdev->req_wait_q,
-					       READ_ONCE(hdev->req_status) != HCI_REQ_PEND,
+					       !HCI_REQ_PENDING(READ_ONCE(hdev->req_status)),
 					       timeout);
 
-	if (err == -ERESTARTSYS)
+check_state:
+	if (err == -ERESTARTSYS) {
+		if (wait_func)
+			wait_func(hdev, wait_data, -EINTR);
 		return ERR_PTR(-EINTR);
+	}
 
 	switch (READ_ONCE(hdev->req_status)) {
 	case HCI_REQ_DONE:
+		if (wait_func)
+			wait_func(hdev, wait_data, -EAGAIN);
 		err = -bt_to_errno(hdev->req_result);
 		break;
 
 	case HCI_REQ_CANCELED:
-		err = -hdev->req_result;
+		if (wait_func)
+			wait_func(hdev, wait_data, -ECANCELED);
+		err = -(long)hdev->req_result;
+		if (!IS_ERR_VALUE(err))
+			err = -ECANCELED;
 		break;
 
 	default:
+		if (wait_func)
+			wait_func(hdev, wait_data, -ETIMEDOUT);
 		err = -ETIMEDOUT;
 		break;
 	}
@@ -201,7 +233,7 @@ struct sk_buff *__hci_cmd_sync_sk(struct hci_dev *hdev, u16 opcode, u32 plen,
 	skb = hdev->req_rsp;
 	hdev->req_rsp = NULL;
 
-	bt_dev_dbg(hdev, "end: err %d", err);
+	bt_dev_dbg(hdev, "end: err %ld", err);
 
 	if (err < 0) {
 		kfree_skb(skb);
@@ -215,6 +247,15 @@ struct sk_buff *__hci_cmd_sync_sk(struct hci_dev *hdev, u16 opcode, u32 plen,
 		return ERR_PTR(-ENODATA);
 
 	return skb;
+}
+
+/* This function requires the caller holds hdev->req_lock. */
+struct sk_buff *__hci_cmd_sync_sk(struct hci_dev *hdev, u16 opcode, u32 plen,
+				  const void *param, u8 event, u32 timeout,
+				  struct sock *sk)
+{
+	return __hci_cmd_sync_sk_run(hdev, opcode, plen, param, event, timeout,
+				     sk, NULL, NULL);
 }
 EXPORT_SYMBOL(__hci_cmd_sync_sk);
 
@@ -255,14 +296,17 @@ struct sk_buff *__hci_cmd_sync_ev(struct hci_dev *hdev, u16 opcode, u32 plen,
 EXPORT_SYMBOL(__hci_cmd_sync_ev);
 
 /* This function requires the caller holds hdev->req_lock. */
-int __hci_cmd_sync_status_sk(struct hci_dev *hdev, u16 opcode, u32 plen,
-			     const void *param, u8 event, u32 timeout,
-			     struct sock *sk)
+static int __hci_cmd_sync_status_sk_run(struct hci_dev *hdev, u16 opcode,
+					u32 plen, const void *param, u8 event,
+					u32 timeout, struct sock *sk,
+					hci_request_wait_start_t wait_func,
+					void *wait_data)
 {
 	struct sk_buff *skb;
 	u8 status;
 
-	skb = __hci_cmd_sync_sk(hdev, opcode, plen, param, event, timeout, sk);
+	skb = __hci_cmd_sync_sk_run(hdev, opcode, plen, param, event, timeout,
+				    sk, wait_func, wait_data);
 
 	/* If command return a status event, skb will be set to -ENODATA */
 	if (skb == ERR_PTR(-ENODATA))
@@ -280,6 +324,15 @@ int __hci_cmd_sync_status_sk(struct hci_dev *hdev, u16 opcode, u32 plen,
 	kfree_skb(skb);
 
 	return status;
+}
+
+/* This function requires the caller holds hdev->req_lock. */
+int __hci_cmd_sync_status_sk(struct hci_dev *hdev, u16 opcode, u32 plen,
+			     const void *param, u8 event, u32 timeout,
+			     struct sock *sk)
+{
+	return __hci_cmd_sync_status_sk_run(hdev, opcode, plen, param, event,
+					    timeout, sk, NULL, NULL);
 }
 EXPORT_SYMBOL(__hci_cmd_sync_status_sk);
 
@@ -679,7 +732,7 @@ void hci_cmd_sync_cancel(struct hci_dev *hdev, int err)
 {
 	bt_dev_dbg(hdev, "err 0x%2.2x", err);
 
-	if (READ_ONCE(hdev->req_status) == HCI_REQ_PEND) {
+	if (HCI_REQ_PENDING(READ_ONCE(hdev->req_status))) {
 		hdev->req_result = err;
 		WRITE_ONCE(hdev->req_status, HCI_REQ_CANCELED);
 
@@ -697,7 +750,7 @@ void hci_cmd_sync_cancel_sync(struct hci_dev *hdev, int err)
 {
 	bt_dev_dbg(hdev, "err 0x%2.2x", err);
 
-	if (READ_ONCE(hdev->req_status) == HCI_REQ_PEND) {
+	if (HCI_REQ_PENDING(READ_ONCE(hdev->req_status))) {
 		/* req_result is __u32 so error must be positive to be properly
 		 * propagated.
 		 */
@@ -7627,6 +7680,21 @@ done:
 	hci_conn_put(conn);
 }
 
+static void hci_le_past_wait_ready(struct hci_dev *hdev, void *data, int err)
+{
+	struct hci_conn *conn = data;
+
+	if (err)
+		return;
+
+	/* Inform socket layer we are waiting for LE PAST Received */
+	hci_dev_lock(hdev);
+	if (hci_conn_valid(hdev, conn) &&
+	    test_bit(HCI_CONN_CREATE_PA_SYNC, &conn->flags))
+		hci_connect_cfm(conn, 0);
+	hci_dev_unlock(hdev);
+}
+
 static int hci_le_past_params_sync(struct hci_dev *hdev, struct hci_conn *conn,
 				   u16 acl_handle, struct bt_iso_qos *qos)
 {
@@ -7653,9 +7721,10 @@ static int hci_le_past_params_sync(struct hci_dev *hdev, struct hci_conn *conn,
 		return err;
 
 	/* Wait for HCI_EV_LE_PAST_RECEIVED event */
-	return __hci_cmd_sync_status_sk(hdev, HCI_OP_NOP, 0, NULL,
-					HCI_EV_LE_PAST_RECEIVED,
-					conn->conn_timeout, NULL);
+	return __hci_cmd_sync_status_sk_run(hdev, HCI_OP_NOP, 0, NULL,
+					    HCI_EV_LE_PAST_RECEIVED,
+					    conn->conn_timeout, NULL,
+					    hci_le_past_wait_ready, conn);
 }
 
 static int hci_le_pa_create_sync(struct hci_dev *hdev, void *data)
