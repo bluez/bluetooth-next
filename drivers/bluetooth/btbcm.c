@@ -438,6 +438,11 @@ static const struct dmi_system_id disable_broken_read_transmit_power[] = {
 	{ }
 };
 
+static const char *board_broken_read_transmit_power[] __maybe_unused = {
+	"beagle,beaglev-ahead",
+	NULL
+};
+
 static int btbcm_read_info(struct hci_dev *hdev)
 {
 	struct sk_buff *skb;
@@ -542,12 +547,13 @@ static const struct bcm_subver_table bcm_usb_subver_table[] = {
  * This currently only looks up the device tree board appendix,
  * but can be expanded to other mechanisms.
  */
-static const char *btbcm_get_board_name(struct device *dev)
+static const char *btbcm_get_board_name(struct hci_dev *hdev)
 {
 #ifdef CONFIG_OF
 	struct device_node *root __free(device_node) = of_find_node_by_path("/");
 	char *board_type;
 	const char *tmp;
+	const char **s;
 
 	if (!root)
 		return NULL;
@@ -555,8 +561,15 @@ static const char *btbcm_get_board_name(struct device *dev)
 	if (of_property_read_string_index(root, "compatible", 0, &tmp))
 		return NULL;
 
+	/* disable broken Read LE Min/Max Tx Power on first board found in list */
+	for (s = board_broken_read_transmit_power; *s; s++)
+		if (!strcmp(tmp, *s)) {
+			hci_set_quirk(hdev, HCI_QUIRK_BROKEN_READ_TRANSMIT_POWER);
+			break;
+		}
+
 	/* get rid of any '/' in the compatible string */
-	board_type = devm_kstrdup(dev, tmp, GFP_KERNEL);
+	board_type = devm_kstrdup(&hdev->dev, tmp, GFP_KERNEL);
 	if (!board_type)
 		return NULL;
 
@@ -582,7 +595,7 @@ int btbcm_initialize(struct hci_dev *hdev, bool *fw_load_done, bool use_autobaud
 	const struct firmware *fw;
 	int i, err;
 
-	board_name = btbcm_get_board_name(&hdev->dev);
+	board_name = btbcm_get_board_name(hdev);
 
 	/* Reset */
 	err = btbcm_reset(hdev);
