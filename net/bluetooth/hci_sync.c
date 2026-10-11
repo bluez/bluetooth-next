@@ -5604,6 +5604,8 @@ int hci_dev_close_sync(struct hci_dev *hdev)
 	 */
 	hci_dev_set_flag(hdev, HCI_CMD_DRAIN_WORKQUEUE);
 	synchronize_rcu();
+	/* Explicitly cancel works in case scheduled after setting the flag. */
+	cancel_delayed_work_sync(&hdev->cmd_timer);
 
 	if (hci_dev_test_flag(hdev, HCI_UNREGISTER)) {
 		disable_delayed_work(&hdev->power_off);
