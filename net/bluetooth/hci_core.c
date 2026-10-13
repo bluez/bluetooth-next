@@ -1243,15 +1243,21 @@ struct link_key *hci_add_link_key(struct hci_dev *hdev, struct hci_conn *conn,
 	struct link_key *key, *old_key;
 	u8 old_key_type;
 
+	/* Keep the key alive until all field updates are complete. */
+	rcu_read_lock();
 	old_key = hci_find_link_key(hdev, bdaddr);
 	if (old_key) {
 		old_key_type = old_key->type;
 		key = old_key;
 	} else {
+		rcu_read_unlock();
+
 		old_key_type = conn ? conn->key_type : 0xff;
 		key = kzalloc_obj(*key);
 		if (!key)
 			return NULL;
+
+		rcu_read_lock();
 		list_add_rcu(&key->list, &hdev->link_keys);
 	}
 
@@ -1279,6 +1285,8 @@ struct link_key *hci_add_link_key(struct hci_dev *hdev, struct hci_conn *conn,
 	if (persistent)
 		*persistent = hci_persistent_key(hdev, conn, type,
 						 old_key_type);
+
+	rcu_read_unlock();
 
 	return key;
 }
