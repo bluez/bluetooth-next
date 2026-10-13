@@ -911,6 +911,16 @@ static void hci_power_on(struct work_struct *work)
 
 	BT_DBG("%s", hdev->name);
 
+	/* A public address set while the controller was still up from its
+	 * initial power on, which mgmt counts as off until the auto off, is
+	 * only programmed by the open procedure: close it to open it again.
+	 */
+	if (test_bit(HCI_UP, &hdev->flags) &&
+	    hci_dev_test_flag(hdev, HCI_CONFIG)) {
+		hci_dev_do_close(hdev);
+		hci_dev_set_flag(hdev, HCI_AUTO_OFF);
+	}
+
 	if (test_bit(HCI_UP, &hdev->flags) &&
 	    hci_dev_test_flag(hdev, HCI_MGMT) &&
 	    hci_dev_test_and_clear_flag(hdev, HCI_AUTO_OFF)) {
