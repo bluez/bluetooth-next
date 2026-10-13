@@ -96,6 +96,12 @@ struct hid_report *hid_register_report(struct hid_device *device,
 	if (report_enum->report_id_hash[id])
 		return report_enum->report_id_hash[id];
 
+	if ((id == 0 && report_enum->numbered) ||
+	    (id != 0 && report_enum->report_id_hash[0])) {
+		hid_warn(device, "not allowed to mix numbered and unnumbered reports\n");
+		return NULL;
+	}
+
 	report = kzalloc_obj(struct hid_report);
 	if (!report)
 		return NULL;
