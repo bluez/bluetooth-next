@@ -18,6 +18,7 @@
 #define BTINTEL_PCIE_TLV_TYPE_DBG_CONFIG_SET	0x0100000a
 #define BTINTEL_PCIE_TLV_TYPE_DBG_PRESET_OVERRIDE 0x0100000b
 
+#define BTINTEL_PCIE_DBG_INFO_TLV_VERSION	2
 #define BTINTEL_PCIE_CONFIG_NAME_LEN		64
 #define BTINTEL_PCIE_DOMAIN_BT			0
 #define BTINTEL_PCIE_CORE_TYPE_BT		1
@@ -43,8 +44,17 @@ struct btintel_pcie_addr_value {
 	__le32 value;
 } __packed;
 
+struct btintel_pcie_tlv_dbg_info {
+	struct btintel_pcie_tlv_hdr hdr;
+	struct btintel_pcie_dbg_hdr dbg_hdr;
+	__le32 image_type;
+	__le32 core_type;
+	u8 config_name[BTINTEL_PCIE_CONFIG_NAME_LEN];
+} __packed;
+
 struct btintel_pcie_yoyo_ctx {
 	bool enabled;
+	bool dbg_info_present;
 	struct list_head region_list;
 	struct list_head trigger_list;
 	struct list_head hcmd_list;
