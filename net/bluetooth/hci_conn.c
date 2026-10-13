@@ -290,6 +290,22 @@ static int hci_enhanced_setup_sync(struct hci_dev *hdev, void *data)
 
 	configure_datapath_sync(hdev, &conn->codec);
 
+	hci_dev_lock(hdev);
+
+	/* configure_datapath_sync() runs without the lock */
+	if (!hci_conn_valid(hdev, conn)) {
+		hci_dev_unlock(hdev);
+		return -ECANCELED;
+	}
+
+	/* The link may have come up while this was queued, see
+	 * hci_sco_setup().
+	 */
+	if (!HCI_CONN_HANDLE_UNSET(conn->handle)) {
+		hci_dev_unlock(hdev);
+		return 0;
+	}
+
 	conn->state = BT_CONNECT;
 	conn->out = true;
 
@@ -301,8 +317,6 @@ static int hci_enhanced_setup_sync(struct hci_dev *hdev, void *data)
 
 	cp.tx_bandwidth   = cpu_to_le32(0x00001f40);
 	cp.rx_bandwidth   = cpu_to_le32(0x00001f40);
-
-	hci_dev_lock(hdev);
 
 	switch (conn->codec.id) {
 	case BT_CODEC_MSBC:
@@ -623,6 +637,12 @@ void hci_sco_setup(struct hci_conn *conn, __u8 status)
 
 	link = list_first_entry_or_null(&conn->link_list, struct hci_link, list);
 	if (!link || !link->conn)
+		return;
+
+	/* The link may already be up: a setup abandoned while pending can
+	 * complete after a new connection was made and be matched to it.
+	 */
+	if (!HCI_CONN_HANDLE_UNSET(link->conn->handle))
 		return;
 
 	BT_DBG("hcon %p", conn);

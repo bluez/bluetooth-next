@@ -2400,13 +2400,19 @@ static void hci_cs_add_sco(struct hci_dev *hdev, __u8 status)
 
 	acl = hci_conn_hash_lookup_handle(hdev, handle);
 	if (acl) {
-		link = list_first_entry_or_null(&acl->link_list,
-						struct hci_link, list);
-		if (link && link->conn) {
+		/* Only a link still waiting for its setup can be the one the
+		 * failed command was for: one that is already up must be kept.
+		 */
+		list_for_each_entry(link, &acl->link_list, list) {
+			if (link->conn->state != BT_CONNECT ||
+			    !HCI_CONN_HANDLE_UNSET(link->conn->handle))
+				continue;
+
 			link->conn->state = BT_CLOSED;
 
 			hci_connect_cfm(link->conn, status);
 			hci_conn_del(link->conn);
+			break;
 		}
 	}
 
@@ -2683,13 +2689,19 @@ static void hci_setup_sync_conn_status(struct hci_dev *hdev, __u16 handle,
 
 	acl = hci_conn_hash_lookup_handle(hdev, handle);
 	if (acl) {
-		link = list_first_entry_or_null(&acl->link_list,
-						struct hci_link, list);
-		if (link && link->conn) {
+		/* Only a link still waiting for its setup can be the one the
+		 * failed command was for: one that is already up must be kept.
+		 */
+		list_for_each_entry(link, &acl->link_list, list) {
+			if (link->conn->state != BT_CONNECT ||
+			    !HCI_CONN_HANDLE_UNSET(link->conn->handle))
+				continue;
+
 			link->conn->state = BT_CLOSED;
 
 			hci_connect_cfm(link->conn, status);
 			hci_conn_del(link->conn);
+			break;
 		}
 	}
 
@@ -3205,6 +3217,39 @@ static int hci_read_enc_key_size(struct hci_dev *hdev, struct hci_conn *conn)
 	return hci_send_cmd(hdev, HCI_OP_READ_ENC_KEY_SIZE, sizeof(cp), &cp);
 }
 
+/* Disconnects a link that came up in the controller but that no connection
+ * takes: nothing else would, and its handle would stay in use there.
+ */
+static void hci_disconnect_unused(struct hci_dev *hdev, u16 handle, u8 reason)
+{
+	struct hci_cp_disconnect cp;
+
+	/* Never for an invalid handle or one that a connection uses */
+	if (handle > HCI_CONN_HANDLE_MAX ||
+	    hci_conn_hash_lookup_handle(hdev, handle))
+		return;
+
+	bt_dev_dbg(hdev, "handle 0x%4.4x reason 0x%2.2x", handle, reason);
+
+	cp.handle = cpu_to_le16(handle);
+	cp.reason = reason;
+	hci_send_cmd(hdev, HCI_OP_DISCONNECT, sizeof(cp), &cp);
+}
+
+/* Sets the handle of a connection whose link came up. A connection that is
+ * being aborted refuses it, so its link is disconnected: the abort only
+ * cancels the connect attempt, and finds no handle to disconnect.
+ */
+static u8 hci_conn_complete_set_handle(struct hci_conn *conn, u16 handle)
+{
+	u8 status = hci_conn_set_handle(conn, handle);
+
+	if (status && conn->abort_reason)
+		hci_disconnect_unused(conn->hdev, handle, conn->abort_reason);
+
+	return status;
+}
+
 static void hci_conn_complete_evt(struct hci_dev *hdev, void *data,
 				  struct sk_buff *skb)
 {
@@ -3256,13 +3301,24 @@ static void hci_conn_complete_evt(struct hci_dev *hdev, void *data,
 				goto unlock;
 			}
 		} else {
-			if (ev->link_type != SCO_LINK)
+			if (ev->link_type != SCO_LINK) {
+				/* No connection takes this link, e.g. an
+				 * incoming one aborted after it was accepted
+				 */
+				hci_disconnect_unused(hdev,
+						      __le16_to_cpu(ev->handle),
+						      HCI_ERROR_REMOTE_USER_TERM);
 				goto unlock;
+			}
 
 			conn = hci_conn_hash_lookup_ba(hdev, ESCO_LINK,
 						       &ev->bdaddr);
-			if (!conn)
+			if (!conn) {
+				hci_disconnect_unused(hdev,
+						      __le16_to_cpu(ev->handle),
+						      HCI_ERROR_REMOTE_USER_TERM);
 				goto unlock;
+			}
 
 			conn->type = SCO_LINK;
 		}
@@ -3275,12 +3331,23 @@ static void hci_conn_complete_evt(struct hci_dev *hdev, void *data,
 	 * whether the connection is already set up.
 	 */
 	if (!HCI_CONN_HANDLE_UNSET(conn->handle)) {
+		/* Another SCO link for a connection that is already up has
+		 * no connection waiting for it either.
+		 */
+		if (!status && ev->link_type == SCO_LINK &&
+		    __le16_to_cpu(ev->handle) != conn->handle) {
+			hci_disconnect_unused(hdev, __le16_to_cpu(ev->handle),
+					      HCI_ERROR_REMOTE_USER_TERM);
+			goto unlock;
+		}
+
 		bt_dev_err(hdev, "Ignoring HCI_Connection_Complete for existing connection");
 		goto unlock;
 	}
 
 	if (!status) {
-		status = hci_conn_set_handle(conn, __le16_to_cpu(ev->handle));
+		status = hci_conn_complete_set_handle(conn,
+						      __le16_to_cpu(ev->handle));
 		if (status)
 			goto done;
 
@@ -5166,9 +5233,6 @@ static void hci_sync_conn_complete_evt(struct hci_dev *hdev, void *data,
 
 	conn = hci_conn_hash_lookup_ba(hdev, ev->link_type, &ev->bdaddr);
 	if (!conn) {
-		if (ev->link_type == ESCO_LINK)
-			goto unlock;
-
 		/* When the link type in the event indicates SCO connection
 		 * and lookup of the connection object fails, then check
 		 * if an eSCO connection object exists.
@@ -5177,10 +5241,14 @@ static void hci_sync_conn_complete_evt(struct hci_dev *hdev, void *data,
 		 * SCO or eSCO. The eSCO connection is preferred and tried
 		 * to be setup first and until successfully established,
 		 * the link type will be hinted as eSCO.
+		 *
+		 * The other way around, a controller may answer the setup of
+		 * a SCO connection with an eSCO link.
 		 */
-		conn = hci_conn_hash_lookup_ba(hdev, ESCO_LINK, &ev->bdaddr);
+		conn = hci_conn_hash_lookup_ba(hdev, ev->link_type == SCO_LINK ?
+					       ESCO_LINK : SCO_LINK, &ev->bdaddr);
 		if (!conn)
-			goto unlock;
+			goto unused;
 	}
 
 	/* The HCI_Synchronous_Connection_Complete event is only sent once per connection.
@@ -5190,13 +5258,21 @@ static void hci_sync_conn_complete_evt(struct hci_dev *hdev, void *data,
 	 * whether the connection is already set up.
 	 */
 	if (!HCI_CONN_HANDLE_UNSET(conn->handle)) {
+		/* Another link for a connection that is already up, e.g. its
+		 * own setup completing after it took over an abandoned one,
+		 * has no connection waiting for it either.
+		 */
+		if (__le16_to_cpu(ev->handle) != conn->handle)
+			goto unused;
+
 		bt_dev_err(hdev, "Ignoring HCI_Sync_Conn_Complete event for existing connection");
 		goto unlock;
 	}
 
 	switch (status) {
 	case 0x00:
-		status = hci_conn_set_handle(conn, __le16_to_cpu(ev->handle));
+		status = hci_conn_complete_set_handle(conn,
+						      __le16_to_cpu(ev->handle));
 		if (status) {
 			conn->state = BT_CLOSED;
 			break;
@@ -5231,10 +5307,11 @@ static void hci_sync_conn_complete_evt(struct hci_dev *hdev, void *data,
 	}
 
 	bt_dev_dbg(hdev, "SCO connected with air mode: %02x", ev->air_mode);
-	/* Notify only in case of SCO over HCI transport data path which
-	 * is zero and non-zero value shall be non-HCI transport data path
+	/* Notify only of a link that came up, and only in case of SCO over
+	 * HCI transport data path which is zero and non-zero value shall be
+	 * non-HCI transport data path
 	 */
-	if (conn->codec.data_path == 0 && hdev->notify) {
+	if (!status && conn->codec.data_path == 0 && hdev->notify) {
 		switch (ev->air_mode) {
 		case 0x02:
 			hdev->notify(hdev, HCI_NOTIFY_ENABLE_SCO_CVSD);
@@ -5248,6 +5325,15 @@ static void hci_sync_conn_complete_evt(struct hci_dev *hdev, void *data,
 	hci_connect_cfm(conn, status);
 	if (status)
 		hci_conn_del(conn);
+	goto unlock;
+
+unused:
+	/* No connection waits for this link, e.g. because its setup was
+	 * abandoned while pending: don't leave it up in the controller.
+	 */
+	if (!status)
+		hci_disconnect_unused(hdev, __le16_to_cpu(ev->handle),
+				      HCI_ERROR_REMOTE_USER_TERM);
 
 unlock:
 	hci_dev_unlock(hdev);
@@ -5962,7 +6048,7 @@ static void le_conn_complete_evt(struct hci_dev *hdev, u8 status,
 	 * hci_conn_failed function which is triggered by the HCI
 	 * request completion callbacks used for connecting.
 	 */
-	if (status || hci_conn_set_handle(conn, handle))
+	if (status || hci_conn_complete_set_handle(conn, handle))
 		goto unlock;
 
 	/* Drop the connection if it has been aborted */
