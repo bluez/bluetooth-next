@@ -6083,6 +6083,15 @@ static int hci_disconnect_all_sync(struct hci_dev *hdev, u8 reason)
 		/* Make sure the connection is not freed while unlocking */
 		conn = hci_conn_get(conn);
 		rcu_read_unlock();
+
+		/*
+		 * The LE timeout takes hdev->lock, so drain it before
+		 * deleting the connection. The reference above keeps it
+		 * alive while waiting.
+		 */
+		if (conn->type == LE_LINK)
+			disable_delayed_work_sync(&conn->le_conn_timeout);
+
 		/* Disregard possible errors since hci_conn_del shall have been
 		 * called even in case of errors had occurred since it would
 		 * then cause hci_conn_failed to be called which calls
