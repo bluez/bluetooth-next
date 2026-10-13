@@ -375,6 +375,13 @@ enum {
 	 */
 	HCI_QUIRK_BROKEN_READ_PAGE_SCAN_TYPE,
 
+	/* When this quirk is set, LE connections use the BR/EDR ACL buffer
+	 * pool instead of the dedicated LE pool reported by the controller.
+	 * This is required for controllers that expose an unusably small LE
+	 * pool while accepting LE traffic through their shared ACL pool.
+	 */
+	HCI_QUIRK_USE_BREDR_ACL_BUFFERS_FOR_LE,
+
 	__HCI_NUM_QUIRKS,
 };
 
