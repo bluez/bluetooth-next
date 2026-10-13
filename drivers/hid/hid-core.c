@@ -2033,8 +2033,13 @@ int __hid_request(struct hid_device *hid, struct hid_report *report,
 		return ret;
 	}
 
-	if (reqtype == HID_REQ_GET_REPORT)
-		hid_input_report(hid, report->type, buf, ret, 0);
+	if (reqtype == HID_REQ_GET_REPORT) {
+		if (report->id == 0)
+			ret--;
+
+		if (ret > 0)
+			hid_input_report(hid, report->type, data_buf, ret, 0);
+	}
 
 	return 0;
 }
