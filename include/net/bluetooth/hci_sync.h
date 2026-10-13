@@ -9,8 +9,11 @@
 #define PTR_UINT(_ptr)			((uintptr_t)((void *)_ptr))
 
 #define HCI_REQ_DONE	  0
-#define HCI_REQ_PEND	  1
-#define HCI_REQ_CANCELED  2
+#define HCI_REQ_QUEUE	  BIT(0)
+#define HCI_REQ_PEND	  (HCI_REQ_QUEUE | BIT(1))
+#define HCI_REQ_CANCELED  BIT(2)
+
+#define HCI_REQ_PENDING(req_status) (!!((req_status) & HCI_REQ_PEND))
 
 #define hci_req_sync_lock(hdev)   mutex_lock(&hdev->req_lock)
 #define hci_req_sync_unlock(hdev) mutex_unlock(&hdev->req_lock)
@@ -24,6 +27,9 @@ struct hci_request {
 	 */
 	int			err;
 };
+
+typedef void (*hci_request_wait_start_t)(struct hci_dev *hdev, void *data,
+					 int err);
 
 typedef int (*hci_cmd_sync_work_func_t)(struct hci_dev *hdev, void *data);
 typedef void (*hci_cmd_sync_work_destroy_t)(struct hci_dev *hdev, void *data,
