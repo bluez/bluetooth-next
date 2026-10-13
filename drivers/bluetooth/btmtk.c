@@ -1201,6 +1201,19 @@ static int btmtk_recv_isopkt(struct hci_dev *hdev, void *buffer, int count)
 			/* Complete ISO header */
 			hci_skb_expect(skb) = __le16_to_cpu(dlen);
 
+			/* The interrupt endpoint zero-fills the remainder of
+			 * each transfer, and that padding parses as a header
+			 * with a zero Data_Total_Length. Such a packet carries
+			 * no ISO Data Load at all and is never emitted by the
+			 * controller, so stop parsing here rather than hand a
+			 * bogus handle 0 packet to the stack.
+			 */
+			if (!hci_skb_expect(skb)) {
+				kfree_skb(skb);
+				skb = NULL;
+				break;
+			}
+
 			if (skb_tailroom(skb) < hci_skb_expect(skb)) {
 				kfree_skb(skb);
 				skb = NULL;
