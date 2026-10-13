@@ -6846,6 +6846,16 @@ static void hci_le_remote_feat_complete_evt(struct hci_dev *hdev, void *data,
 				conn->le_tx_def_phys &= ~HCI_LE_SET_PHY_CODED;
 				conn->le_rx_def_phys &= ~HCI_LE_SET_PHY_CODED;
 			}
+
+			/* Request the controller maximum when both sides support
+			 * LL Data Length Extension. The Link Layer negotiates
+			 * the remote limits (Core v5.4, Vol 6, Part B,
+			 * Sec. 4.5.10).
+			 */
+			if ((hdev->le_features[0] & HCI_LE_DATA_LEN_EXT) &&
+			    (conn->le_features[0] & HCI_LE_DATA_LEN_EXT) &&
+			    hdev->le_max_tx_len > 0x001b)
+				hci_le_set_data_len(conn);
 		}
 
 		if (conn->state == BT_CONFIG) {
