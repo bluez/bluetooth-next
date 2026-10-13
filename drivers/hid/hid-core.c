@@ -2565,8 +2565,17 @@ int __hid_hw_raw_request(struct hid_device *hdev,
 	if (ret)
 		return ret;
 
-	return hdev->ll_driver->raw_request(hdev, reportnum, buf, len,
+	ret = hdev->ll_driver->raw_request(hdev, reportnum, buf, len,
 					    rtype, reqtype);
+	if (ret > 0 && reqtype == HID_REQ_GET_REPORT &&
+	    !(hdev->quirks & HID_QUIRK_IGNORE_REPORT_ID_MISMATCH) &&
+	    buf[0] != reportnum) {
+		hid_warn(hdev, "mismatched report ID %u (expected %u)\n",
+			 buf[0], reportnum);
+		return -EINVAL;
+	}
+
+	return ret;
 }
 
 /**
