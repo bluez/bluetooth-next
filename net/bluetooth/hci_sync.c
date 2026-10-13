@@ -2473,11 +2473,16 @@ static int hci_le_del_accept_list_sync(struct hci_dev *hdev,
 	int err;
 
 	/* Check if device is on accept list before removing it */
-	if (!hci_bdaddr_list_lookup(&hdev->le_accept_list, bdaddr, bdaddr_type))
+	hci_dev_lock(hdev);
+	if (!hci_bdaddr_list_lookup(&hdev->le_accept_list, bdaddr,
+				    bdaddr_type)) {
+		hci_dev_unlock(hdev);
 		return 0;
+	}
 
 	cp.bdaddr_type = bdaddr_type;
 	bacpy(&cp.bdaddr, bdaddr);
+	hci_dev_unlock(hdev);
 
 	/* Ignore errors when removing from resolving list as that is likely
 	 * that the device was never added.
@@ -2653,9 +2658,13 @@ static int hci_le_add_accept_list_sync(struct hci_dev *hdev,
 	}
 
 	/* Check if already in accept list */
+	hci_dev_lock(hdev);
 	if (hci_bdaddr_list_lookup(&hdev->le_accept_list, &params->addr,
-				   params->addr_type))
+				   params->addr_type)) {
+		hci_dev_unlock(hdev);
 		return 0;
+	}
+	hci_dev_unlock(hdev);
 
 	*num_entries += 1;
 	cp.bdaddr_type = params->addr_type;
