@@ -194,3 +194,4 @@ int hci_le_read_remote_features(struct hci_conn *conn);
 
 int hci_acl_change_pkt_type(struct hci_conn *conn, u16 pkt_type);
 int hci_le_set_phy(struct hci_conn *conn, u8 tx_phys, u8 rx_phys);
+int hci_le_set_data_len(struct hci_conn *conn);
