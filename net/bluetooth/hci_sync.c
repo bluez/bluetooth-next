@@ -2907,6 +2907,7 @@ static u8 hci_update_accept_list_sync(struct hci_dev *hdev)
 	struct bdaddr_list *b, *t;
 	u8 num_entries = 0;
 	bool pend_conn, pend_report;
+	bool rpa_no_llp = false;
 	u8 filter_policy;
 	size_t i, n;
 	int err;
@@ -3025,6 +3026,17 @@ static u8 hci_update_accept_list_sync(struct hci_dev *hdev)
 			kvfree(params);
 			goto done;
 		}
+
+		/* A bonded peer that advertises with a Resolvable Private
+		 * Address can only be matched by the controller's accept list
+		 * if the controller can resolve addresses itself (LL Privacy).
+		 * When it cannot, note the peer so the scan below can fall back
+		 * to host-side resolution instead of accept list filtering.
+		 */
+		if (!ll_privacy_capable(hdev) &&
+		    hci_find_irk_by_addr(hdev, &params[i].addr,
+					 params[i].addr_type))
+			rpa_no_llp = true;
 	}
 
 	kvfree(params);
@@ -3047,6 +3059,11 @@ static u8 hci_update_accept_list_sync(struct hci_dev *hdev)
 			kvfree(params);
 			goto done;
 		}
+
+		if (!ll_privacy_capable(hdev) &&
+		    hci_find_irk_by_addr(hdev, &params[i].addr,
+					 params[i].addr_type))
+			rpa_no_llp = true;
 	}
 
 	kvfree(params);
@@ -3059,6 +3076,16 @@ static u8 hci_update_accept_list_sync(struct hci_dev *hdev)
 	if (!idr_is_empty(&hdev->adv_monitors_idr) && !hdev->suspended &&
 	    hci_get_adv_monitor_offload_ext(hdev) == HCI_ADV_MONITOR_EXT_NONE &&
 	    hdev->interleave_scan_state != INTERLEAVE_SCAN_ALLOWLIST)
+		err = -EINVAL;
+
+	/* If a pending peer advertises with an RPA but the controller cannot
+	 * resolve addresses (no LL Privacy), accept list filtering would drop
+	 * its resolvable adverts and it could never be reconnected. Scan
+	 * unfiltered instead so the host resolves the RPA in software and
+	 * triggers the connection (see process_adv_report()). Skipped while
+	 * suspended, where host-side resolution is not available.
+	 */
+	if (rpa_no_llp && !hdev->suspended)
 		err = -EINVAL;
 
 done:
