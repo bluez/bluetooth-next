@@ -6,6 +6,8 @@
  *  Copyright (C) 2024  Intel Corporation
  */
 
+#include "btintel_pcie_debug.h"
+
 /* Control and Status Register(BTINTEL_PCIE_CSR) */
 #define BTINTEL_PCIE_CSR_BASE			(0x000)
 #define BTINTEL_PCIE_CSR_FUNC_CTRL_REG		(BTINTEL_PCIE_CSR_BASE + 0x024)
@@ -737,6 +739,7 @@ struct btintel_pcie_data {
 	u32	boot_stage_cache;
 	u32	img_resp_cache;
 	u32	dbg_path_cache;
+	bool	enable_ini;
 
 	u32	cnvi;
 	u32	cnvr;
@@ -778,6 +781,7 @@ struct btintel_pcie_data {
 	u32	debug_table_size;
 	struct btintel_pcie_dump_mem_info	dump_info;
 	struct btintel_pcie_mbox	mbox;
+	struct btintel_pcie_yoyo_ctx yoyo;
 
 	/* Wait queue for mbox_worker to wait for GP0 alive interrupt */
 	wait_queue_head_t	mbox_parse_wait_q;

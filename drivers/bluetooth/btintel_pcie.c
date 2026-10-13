@@ -203,6 +203,90 @@ static inline bool btintel_pcie_dbg_to_wifi(struct btintel_pcie_data *data)
 	return data->dbg_path_cache != BTINTEL_PCIE_DRAM;
 }
 
+#define BTINTEL_PCIE_DBG_INI_FILE "ibt_bt_dbg_cfg.ini"
+
+/*
+ * Loads optional "DBG_PATH=<value>" and "ENABLE_INI=<value>" overrides from
+ * BTINTEL_PCIE_DBG_INI_FILE and applies them to dbg_path_cache and enable_ini.
+ *
+ * DBG_PATH accepts WiFi DBGC (0x06) or legacy host DRAM (0x01); ENABLE_INI
+ * accepts 1 (enabled) or 0 (disabled). Missing or invalid entries leave the
+ * values set by the caller unchanged.
+ */
+static void btintel_pcie_load_dbg_path_from_ini(struct btintel_pcie_data *data)
+{
+	const struct firmware *fw;
+	const char *ini_file = BTINTEL_PCIE_DBG_INI_FILE;
+	char *buf, *cursor, *line;
+	bool dbg_path_applied = false;
+	int err;
+
+	err = request_firmware_direct(&fw, ini_file, &data->pdev->dev);
+	if (err < 0) {
+		BT_ERR("%s not found (%d), using dbg_path=0x%02x", ini_file,
+		       err, data->dbg_path_cache);
+		return;
+	}
+
+	buf = kmemdup_nul(fw->data, fw->size, GFP_KERNEL);
+	release_firmware(fw);
+	if (!buf)
+		return;
+
+	cursor = buf;
+	while ((line = strsep(&cursor, "\n"))) {
+		char *eq, *val;
+		unsigned int parsed;
+
+		line = strim(line);
+		if (!line[0] || line[0] == '#' || line[0] == ';')
+			continue;
+
+		eq = strchr(line, '=');
+		if (!eq)
+			continue;
+
+		*eq = '\0';
+		line = strim(line);
+		val = strim(eq + 1);
+
+		if (!strcasecmp(line, "DBG_PATH")) {
+			BT_DBG("Read DBG_PATH from %s: '%s'", ini_file, val);
+
+			if (!kstrtouint(val, 0, &parsed) &&
+			    (parsed == BTINTEL_PCIE_DRAM ||
+			     parsed == BTINTEL_PCIE_WIFI_DBGC)) {
+				data->dbg_path_cache = parsed;
+				dbg_path_applied = true;
+				BT_DBG("YoYo: DBG_PATH=0x%02x", data->dbg_path_cache);
+			} else {
+				BT_ERR("Invalid DBG_PATH='%s' in %s, using dbg_path=0x%02x",
+				       val, ini_file, data->dbg_path_cache);
+			}
+		} else if (!strcasecmp(line, "ENABLE_INI")) {
+			BT_DBG("Read ENABLE_INI from %s: '%s'", ini_file, val);
+
+			if (!kstrtouint(val, 0, &parsed) && parsed <= 1) {
+				data->enable_ini = !!parsed;
+				BT_DBG("YoYo: ENABLE_INI=%u", data->enable_ini);
+			} else {
+				BT_ERR("Invalid ENABLE_INI='%s' in %s, using enable_ini=%u",
+				       val, ini_file, data->enable_ini);
+			}
+		}
+	}
+
+	if (dbg_path_applied)
+		BT_DBG("Loaded dbg_path=0x%02x from %s", data->dbg_path_cache,
+		       ini_file);
+	else
+		BT_ERR("No valid DBG_PATH in %s, dbg_path=0x%02x", ini_file,
+		       data->dbg_path_cache);
+
+	BT_DBG("ENABLE_INI effective state: %u", data->enable_ini);
+	kfree(buf);
+}
+
 /* Helper function to allocate and setup a debug buffer group
  * @data: driver data structure
  * @buf: pointer to data_buf array pointer
@@ -4101,6 +4185,22 @@ static int btintel_pcie_probe(struct pci_dev *pdev,
 	 * initialized
 	 */
 	data->reset_type = BTINTEL_PCIE_IOSF_PRR_FLR;
+	data->enable_ini = false;
+	btintel_pcie_yoyo_init(&data->yoyo);
+	btintel_pcie_load_dbg_path_from_ini(data);
+
+	/* YoYo configuration is supported only with host DRAM debug routing. */
+	if (data->dbg_path_cache != BTINTEL_PCIE_DRAM)
+		data->enable_ini = false;
+
+	if (data->enable_ini) {
+		err = btintel_pcie_yoyo_load_and_parse(&data->yoyo, &pdev->dev);
+		if (err) {
+			BT_WARN("YoYo configuration is invalid (%d); keeping legacy defaults",
+				err);
+			btintel_pcie_yoyo_cleanup(&data->yoyo);
+		}
+	}
 	err = btintel_pcie_config_pcie(pdev, data);
 	if (err)
 		goto exit_error;
@@ -4128,11 +4228,14 @@ static int btintel_pcie_probe(struct pci_dev *pdev,
 	if (err)
 		goto exit_error;
 
+	data->yoyo.hdev = data->hdev;
 	bt_dev_dbg(data->hdev, "cnvi: 0x%8.8x cnvr: 0x%8.8x", data->cnvi,
 		   data->cnvr);
 	return 0;
 
 exit_error:
+	btintel_pcie_yoyo_cleanup(&data->yoyo);
+
 	/* reset device before exit */
 	btintel_pcie_reset_bt(data);
 
@@ -4172,6 +4275,8 @@ static void btintel_pcie_remove(struct pci_dev *pdev)
 	 */
 	if (current_work() != &data->reset_work)
 		disable_work_sync(&data->reset_work);
+
+	btintel_pcie_yoyo_cleanup(&data->yoyo);
 
 	btintel_pcie_disable_interrupts(data);
 
