@@ -4968,6 +4968,13 @@ static inline int l2cap_conn_param_update_req(struct l2cap_conn *conn,
 	memset(&rsp, 0, sizeof(rsp));
 
 	err = hci_check_conn_params(min, max, latency, to_multiplier);
+	if (!err) {
+		/* Apply local policy only after validating the peer's request. */
+		min = max_t(u16, min, hcon->le_conn_min_interval);
+		max = min_t(u16, max, hcon->le_conn_max_interval);
+		err = hci_check_conn_params(min, max, latency, to_multiplier);
+	}
+
 	if (err)
 		rsp.result = cpu_to_le16(L2CAP_CONN_PARAM_REJECTED);
 	else
