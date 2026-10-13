@@ -3745,7 +3745,7 @@ static void btintel_pcie_perform_pldr(struct btintel_pcie_data *data)
 static int btintel_pcie_perform_flr(struct btintel_pcie_data *data)
 {
 	struct pci_dev *pdev = data->pdev;
-	int err;
+	int err, retry;
 
 	/* pci_try_reset_function() avoids the device_lock ABBA against
 	 * btintel_pcie_remove(): .remove() runs with device_lock held and
@@ -3753,7 +3753,16 @@ static int btintel_pcie_perform_flr(struct btintel_pcie_data *data)
 	 * pci_reset_function() would deadlock by trying to re-acquire
 	 * device_lock here.
 	 */
-	err = pci_try_reset_function(pdev);
+	/* PM callbacks hold the device lock, so the queued resume reset may
+	 * run before the callback releases it. Retry after that lock is dropped.
+	 */
+	for (retry = 0; retry < 3; retry++) {
+		err = pci_try_reset_function(pdev);
+		if (err != -EAGAIN)
+			break;
+
+		usleep_range(1000, 2000);
+	}
 	if (err) {
 		BT_ERR("Failed resetting the pcie device (%d)", err);
 		return err;
@@ -3819,6 +3828,7 @@ static void btintel_pcie_reset_work(struct work_struct *wk)
 		enable_work(&data->hwexp_work);
 		enable_work(&data->fwtrigger_work);
 		enable_work(&data->mbox_work);
+		clear_bit(BTINTEL_PCIE_RECOVERY_IN_PROGRESS, &data->flags);
 	}
 
 out:
@@ -3843,10 +3853,9 @@ out:
  *     in-flight one (whose recovery will reinitialize the device
  *     regardless of the dropped trigger's variant).
  *
- * The bit is cleared only by .remove() / re-probe via fresh devm
- * allocation, which is the intended one-shot semantics: a reset
- * tears down and re-probes 'data', so there is no "in-flight"
- * reset to follow up after device_reprobe() succeeds.
+ * A successful reset clears the bit through .remove() / re-probe via
+ * fresh devm allocation. A failed FLR clears it in reset_work so a
+ * later request can retry; there is no in-flight reset after failure.
  */
 static void btintel_pcie_request_reset(struct btintel_pcie_data *data,
 				       enum btintel_pcie_reset_type type)
