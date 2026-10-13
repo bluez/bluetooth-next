@@ -1317,8 +1317,14 @@ struct smp_irk *hci_add_irk(struct hci_dev *hdev, bdaddr_t *bdaddr,
 {
 	struct smp_irk *irk;
 
+	/*
+	 * Keep the IRK alive until the value and RPA copies are complete.
+	 */
+	rcu_read_lock();
 	irk = hci_find_irk_by_addr(hdev, bdaddr, addr_type);
 	if (!irk) {
+		rcu_read_unlock();
+
 		irk = kzalloc_obj(*irk);
 		if (!irk)
 			return NULL;
@@ -1326,11 +1332,13 @@ struct smp_irk *hci_add_irk(struct hci_dev *hdev, bdaddr_t *bdaddr,
 		bacpy(&irk->bdaddr, bdaddr);
 		irk->addr_type = addr_type;
 
+		rcu_read_lock();
 		list_add_rcu(&irk->list, &hdev->identity_resolving_keys);
 	}
 
 	memcpy(irk->val, val, 16);
 	bacpy(&irk->rpa, rpa);
+	rcu_read_unlock();
 
 	return irk;
 }
