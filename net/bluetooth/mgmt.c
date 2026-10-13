@@ -7460,6 +7460,16 @@ static int load_long_term_keys(struct sock *sk, struct hci_dev *hdev,
 
 	hci_dev_lock(hdev);
 
+	/*
+	 * SMP over LE or BR/EDR may retain pointers to the current LTKs.
+	 */
+	if (hci_conn_num(hdev, LE_LINK) || hci_conn_num(hdev, ACL_LINK)) {
+		err = mgmt_cmd_status(sk, hdev->id,
+				      MGMT_OP_LOAD_LONG_TERM_KEYS,
+				      MGMT_STATUS_BUSY);
+		goto unlock;
+	}
+
 	hci_smp_ltks_clear(hdev);
 
 	for (i = 0; i < key_count; i++) {
@@ -7513,6 +7523,7 @@ static int load_long_term_keys(struct sock *sk, struct hci_dev *hdev,
 	err = mgmt_cmd_complete(sk, hdev->id, MGMT_OP_LOAD_LONG_TERM_KEYS, 0,
 			   NULL, 0);
 
+unlock:
 	hci_dev_unlock(hdev);
 
 	return err;
