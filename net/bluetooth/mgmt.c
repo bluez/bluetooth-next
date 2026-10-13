@@ -1408,6 +1408,13 @@ static int set_powered(struct sock *sk, struct hci_dev *hdev, void *data,
 		return mgmt_cmd_status(sk, hdev->id, MGMT_OP_SET_POWERED,
 				       MGMT_STATUS_INVALID_PARAMS);
 
+	/*
+	 * Wait for the previous power-off completion before publishing a
+	 * new command that could reuse its freed pending-command address.
+	 */
+	if (cp->val)
+		hci_req_sync_lock(hdev);
+
 	hci_dev_lock(hdev);
 
 	if (!cp->val) {
@@ -1451,6 +1458,8 @@ static int set_powered(struct sock *sk, struct hci_dev *hdev, void *data,
 
 failed:
 	hci_dev_unlock(hdev);
+	if (cp->val)
+		hci_req_sync_unlock(hdev);
 	return err;
 }
 
