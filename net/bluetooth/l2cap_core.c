@@ -5328,6 +5328,12 @@ static inline int l2cap_le_credits(struct l2cap_conn *conn,
 
 	l2cap_chan_lock(chan);
 
+	/* Tolerate identifier-zero credits only for a live LE CoC. */
+	if (!cmd->ident &&
+	    (!credits || chan->state != BT_CONNECTED ||
+	     chan->mode != L2CAP_MODE_LE_FLOWCTL))
+		goto unlock;
+
 	max_credits = LE_FLOWCTL_MAX_CREDITS - chan->tx_credits;
 	if (credits > max_credits) {
 		BT_ERR("LE credits overflow");
@@ -5923,8 +5929,18 @@ static inline void l2cap_le_sig_channel(struct l2cap_conn *conn,
 
 	BT_DBG("code 0x%2.2x len %d id 0x%2.2x", cmd->code, len, cmd->ident);
 
-	if (len != skb->len || !cmd->ident) {
+	if (len != skb->len) {
 		BT_DBG("corrupted command");
+		goto drop;
+	}
+
+	if (!cmd->ident) {
+		if (cmd->code != L2CAP_LE_CREDITS ||
+		    len != sizeof(struct l2cap_le_credits))
+			goto drop;
+
+		/* Credits have no response or identifier-matched transaction. */
+		l2cap_le_credits(conn, cmd, len, skb->data);
 		goto drop;
 	}
 
