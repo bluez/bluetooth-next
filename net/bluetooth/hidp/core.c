@@ -248,7 +248,6 @@ static int hidp_get_raw_report(struct hid_device *hid,
 	struct hidp_session *session = hid->driver_data;
 	struct sk_buff *skb;
 	size_t len;
-	int numbered_reports = hid->report_enum[report_type].numbered;
 	int ret;
 
 	if (atomic_read(&session->terminate))
@@ -273,10 +272,11 @@ static int hidp_get_raw_report(struct hid_device *hid,
 
 	/* Set up our wait, and send the report request to the device. */
 	session->waiting_report_type = report_type & HIDP_DATA_RTYPE_MASK;
-	session->waiting_report_number = numbered_reports ? report_number : -1;
+	session->waiting_report_number = report_number ? report_number : -1;
 	set_bit(HIDP_WAITING_FOR_RETURN, &session->flags);
+
 	data[0] = report_number;
-	ret = hidp_send_ctrl_message(session, report_type, data, 1);
+	ret = hidp_send_ctrl_message(session, report_type, data, !!report_number);
 	if (ret < 0)
 		goto err;
 
@@ -302,10 +302,24 @@ static int hidp_get_raw_report(struct hid_device *hid,
 		}
 	}
 
+	/*
+	 * In case of unnumbered reports the response from the device will
+	 * not have the report ID that the upper layers expect, so we need
+	 * to stash it in the buffer ourselves and adjust the data size.
+	 */
+	if (!report_number) {
+		data[0] = 0;
+		data++;
+		count--;
+	}
+
 	skb = session->report_return;
 	if (skb) {
-		len = skb->len < count ? skb->len : count;
+		len = min_t(size_t, skb->len, count);
 		memcpy(data, skb->data, len);
+
+		if (!report_number && len)
+			len++;
 
 		kfree_skb(skb);
 		session->report_return = NULL;
@@ -350,9 +364,12 @@ static int hidp_set_raw_report(struct hid_device *hid, unsigned char reportnum,
 		return -ERESTARTSYS;
 
 	/* Set up our wait, and send the report request to the device. */
-	data[0] = reportnum;
+	if (reportnum)
+		data[0] = reportnum;
+
 	set_bit(HIDP_WAITING_FOR_SEND_ACK, &session->flags);
-	ret = hidp_send_ctrl_message(session, report_type, data, count);
+	ret = hidp_send_ctrl_message(session, report_type,
+				     data + !reportnum, count - !reportnum);
 	if (ret < 0)
 		goto err;
 
