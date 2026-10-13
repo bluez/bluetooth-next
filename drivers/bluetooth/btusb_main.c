@@ -70,6 +70,7 @@ static struct usb_driver btusb_driver;
 #define BTUSB_INTEL_NO_WBS_SUPPORT	BIT(26)
 #define BTUSB_ACTIONS_SEMI		BIT(27)
 #define BTUSB_BARROT			BIT(28)
+#define BTUSB_USE_BREDR_ACL_BUFFERS_FOR_LE BIT(29)
 #define BTUSB_QUALCOMM			BIT(30)
 
 static const struct usb_device_id btusb_table[] = {
@@ -873,7 +874,8 @@ static const struct usb_device_id quirks_table[] = {
 	{ USB_DEVICE(0x2c4e, 0x0115), .driver_info = BTUSB_REALTEK |
 						     BTUSB_WIDEBAND_SPEECH },
 	{ USB_DEVICE(0x2357, 0x0604), .driver_info = BTUSB_REALTEK |
-						     BTUSB_WIDEBAND_SPEECH },
+						     BTUSB_WIDEBAND_SPEECH |
+						     BTUSB_USE_BREDR_ACL_BUFFERS_FOR_LE },
 	{ USB_DEVICE(0x2357, 0x0607), .driver_info = BTUSB_REALTEK |
 						     BTUSB_WIDEBAND_SPEECH },
 	{ USB_DEVICE(0x0b05, 0x190e), .driver_info = BTUSB_REALTEK |
@@ -4748,6 +4750,9 @@ static int btusb_probe(struct usb_interface *intf,
 
 	if (id->driver_info & BTUSB_WIDEBAND_SPEECH)
 		hci_set_quirk(hdev, HCI_QUIRK_WIDEBAND_SPEECH_SUPPORTED);
+
+	if (id->driver_info & BTUSB_USE_BREDR_ACL_BUFFERS_FOR_LE)
+		hci_set_quirk(hdev, HCI_QUIRK_USE_BREDR_ACL_BUFFERS_FOR_LE);
 
 	if (id->driver_info & BTUSB_INVALID_LE_STATES)
 		hci_set_quirk(hdev, HCI_QUIRK_BROKEN_LE_STATES);

@@ -1227,6 +1227,24 @@ static u8 hci_cc_pin_code_neg_reply(struct hci_dev *hdev, void *data,
 	return rp->status;
 }
 
+/* Use the shared ACL pool for controllers whose dedicated LE pool is known to
+ * be unusable for sustained large-SDU traffic.
+ */
+static void hci_le_use_shared_acl_buffer(struct hci_dev *hdev)
+{
+	if (hci_test_quirk(hdev, HCI_QUIRK_USE_BREDR_ACL_BUFFERS_FOR_LE) &&
+	    hdev->le_mtu == HCI_MIN_LE_MTU &&
+	    hdev->acl_mtu > hdev->le_mtu && hdev->acl_pkts) {
+		bt_dev_dbg(hdev,
+			   "LE buffer at minimum (%u:%u), sharing ACL buffer %u:%u",
+			   hdev->le_mtu, hdev->le_pkts,
+			   hdev->acl_mtu, hdev->acl_pkts);
+		hdev->le_mtu = 0;
+		hdev->le_pkts = 0;
+		hdev->le_cnt = 0;
+	}
+}
+
 static u8 hci_cc_le_read_buffer_size(struct hci_dev *hdev, void *data,
 				     struct sk_buff *skb)
 {
@@ -1246,6 +1264,8 @@ static u8 hci_cc_le_read_buffer_size(struct hci_dev *hdev, void *data,
 
 	if (hdev->le_mtu && hdev->le_mtu < HCI_MIN_LE_MTU)
 		return HCI_ERROR_INVALID_PARAMETERS;
+
+	hci_le_use_shared_acl_buffer(hdev);
 
 	return rp->status;
 }
@@ -3938,6 +3958,8 @@ static u8 hci_cc_le_read_buffer_size_v2(struct hci_dev *hdev, void *data,
 
 	if (hdev->le_mtu && hdev->le_mtu < HCI_MIN_LE_MTU)
 		return HCI_ERROR_INVALID_PARAMETERS;
+
+	hci_le_use_shared_acl_buffer(hdev);
 
 	return rp->status;
 }
