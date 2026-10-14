@@ -461,11 +461,6 @@ static int goodix_hid_get_raw_report(struct hid_device *hid,
 		return error;
 	}
 
-	if (buf[0] != reportnum) {
-		dev_err(ts->dev, "incorrect report (%d vs %d expected)",
-			buf[0], reportnum);
-		return -EINVAL;
-	}
 	return len;
 }
 

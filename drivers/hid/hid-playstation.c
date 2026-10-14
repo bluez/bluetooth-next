@@ -813,11 +813,6 @@ static int ps_get_report(struct hid_device *hdev, u8 report_id, u8 *buf,
 		return -EINVAL;
 	}
 
-	if (buf[0] != report_id) {
-		hid_err(hdev, "Invalid reportID received, expected %d got %d\n", report_id, buf[0]);
-		return -EINVAL;
-	}
-
 	if (hdev->bus == BUS_BLUETOOTH && check_crc) {
 		/* Last 4 bytes contains crc32. */
 		u8 crc_offset = size - 4;

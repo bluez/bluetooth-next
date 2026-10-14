@@ -311,13 +311,6 @@ static int i2c_hid_get_report(struct i2c_hid *ihid,
 	recv_len = min(recv_len, ret_count - sizeof(__le16));
 	memcpy(recv_buf, ihid->rawbuf + sizeof(__le16), recv_len);
 
-	if (report_id && recv_len != 0 && recv_buf[0] != report_id) {
-		dev_err(&ihid->client->dev,
-			"device returned incorrect report (%d vs %d expected)\n",
-			recv_buf[0], report_id);
-		return -EINVAL;
-	}
-
 	return recv_len;
 }
 
