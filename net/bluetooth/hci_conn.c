@@ -1110,7 +1110,7 @@ static struct hci_conn *__hci_conn_add(struct hci_dev *hdev, int type,
 		 * remote features are resolved.
 		 */
 		conn->le_tx_def_phys = hdev->le_tx_def_phys;
-		conn->le_rx_def_phys = hdev->le_tx_def_phys;
+		conn->le_rx_def_phys = hdev->le_rx_def_phys;
 		break;
 	case CIS_LINK:
 		/* conn->src should reflect the local identity address */
