@@ -2972,7 +2972,7 @@ struct hci_ev_le_advertising_info {
 
 struct hci_ev_le_advertising_report {
 	__u8    num;
-	struct hci_ev_le_advertising_info info[];
+	__u8    data[];
 } __packed;
 
 #define HCI_EV_LE_CONN_UPDATE_COMPLETE	0x03
@@ -3058,7 +3058,7 @@ struct hci_ev_le_ext_adv_info {
 
 struct hci_ev_le_ext_adv_report {
 	__u8     num;
-	struct hci_ev_le_ext_adv_info info[];
+	__u8     data[];
 } __packed;
 
 #define HCI_EV_LE_PA_SYNC_ESTABLISHED	0x0e
