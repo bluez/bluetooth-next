@@ -868,13 +868,19 @@ static int hci_rfkill_set_block(void *data, bool blocked)
 	struct hci_dev *hdev = data;
 	int err;
 
+	mutex_lock(&hdev->rfkill_lock);
+
 	BT_DBG("%p name %s blocked %d", hdev, hdev->name, blocked);
 
-	if (hci_dev_test_flag(hdev, HCI_USER_CHANNEL))
+	if (hci_dev_test_flag(hdev, HCI_USER_CHANNEL)) {
+		mutex_unlock(&hdev->rfkill_lock);
 		return -EBUSY;
+	}
 
-	if (blocked == hci_dev_test_flag(hdev, HCI_RFKILLED))
+	if (blocked == hci_dev_test_flag(hdev, HCI_RFKILLED)) {
+		mutex_unlock(&hdev->rfkill_lock);
 		return 0;
+	}
 
 	if (blocked) {
 		hci_dev_set_flag(hdev, HCI_RFKILLED);
@@ -894,10 +900,51 @@ static int hci_rfkill_set_block(void *data, bool blocked)
 			}
 		}
 	} else {
+		/* Stay blocked while HW rfkill is still asserted */
+		if (rfkill_blocked(hdev->rfkill)) {
+			mutex_unlock(&hdev->rfkill_lock);
+			return 0;
+		}
 		hci_dev_clear_flag(hdev, HCI_RFKILLED);
 	}
 
+	mutex_unlock(&hdev->rfkill_lock);
+
 	return 0;
+}
+
+void hci_rfkill_set_hw_state(struct hci_dev *hdev, bool blocked)
+{
+	mutex_lock(&hdev->unregister_lock);
+	if (hci_dev_test_flag(hdev, HCI_UNREGISTER) ||
+	    IS_ERR_OR_NULL(hdev->rfkill)) {
+		mutex_unlock(&hdev->unregister_lock);
+		return;
+	}
+
+	/* Clear HCI_RFKILLED before rfkill core notifies userspace, so a
+	 * power-on triggered by the unblock event does not see a stale flag.
+	 */
+	if (!blocked && !rfkill_soft_blocked(hdev->rfkill))
+		hci_dev_clear_flag(hdev, HCI_RFKILLED);
+
+	rfkill_set_hw_state(hdev->rfkill, blocked);
+	schedule_work(&hdev->rfkill_block);
+	mutex_unlock(&hdev->unregister_lock);
+}
+EXPORT_SYMBOL(hci_rfkill_set_hw_state);
+
+static void hci_rfkill_block_work(struct work_struct *work)
+{
+	struct hci_dev *hdev = container_of(work, struct hci_dev, rfkill_block);
+
+	if (!hdev->rfkill)
+		return;
+
+	if (rfkill_blocked(hdev->rfkill))
+		hci_rfkill_set_block(hdev, true);
+	else
+		hci_rfkill_set_block(hdev, false);
 }
 
 static const struct rfkill_ops hci_rfkill_ops = {
@@ -2495,6 +2542,7 @@ struct hci_dev *hci_alloc_dev_priv(int sizeof_priv)
 	mutex_init(&hdev->req_lock);
 	mutex_init(&hdev->mgmt_pending_lock);
 	mutex_init(&hdev->remote_oob_lock);
+	mutex_init(&hdev->rfkill_lock);
 
 	ida_init(&hdev->unset_handle_ida);
 
@@ -2518,6 +2566,7 @@ struct hci_dev *hci_alloc_dev_priv(int sizeof_priv)
 	INIT_LIST_HEAD(&hdev->monitored_devices);
 
 	INIT_LIST_HEAD(&hdev->local_codecs);
+	INIT_WORK(&hdev->rfkill_block, hci_rfkill_block_work);
 	INIT_WORK(&hdev->rx_work, hci_rx_work);
 	INIT_WORK(&hdev->cmd_work, hci_cmd_work);
 	INIT_WORK(&hdev->tx_work, hci_tx_work);
@@ -2683,6 +2732,7 @@ void hci_unregister_dev(struct hci_dev *hdev)
 	disable_work_sync(&hdev->tx_work);
 	disable_work_sync(&hdev->power_on);
 	disable_work_sync(&hdev->error_reset);
+	disable_work_sync(&hdev->rfkill_block);
 	disable_delayed_work_sync(&hdev->cmd_timer);
 	disable_delayed_work_sync(&hdev->ncmd_timer);
 	hci_devcd_shutdown(hdev);
