@@ -2229,12 +2229,25 @@ static void qca_power_off(struct hci_uart *hu)
 	struct qca_power *power;
 
 	/* From this point we go into power off state. But serial port may
-	 * still be open, stop queueing the IBS data and flush all the buffered
-	 * data in skb's.
+	 * still be open, stop queueing the IBS data.
 	 */
 	spin_lock_irqsave(&qca->hci_ibs_lock, flags);
 	set_bit(QCA_IBS_DISABLED, &qca->flags);
+	spin_unlock_irqrestore(&qca->hci_ibs_lock, flags);
+
+	/* The controller loses the IBS state with its power and comes back
+	 * with both sides asleep, as qca_open() assumes. Stop the IBS work and
+	 * timers, drop what they queued and start over from there.
+	 */
+	cancel_work_sync(&qca->ws_awake_device);
+	cancel_work_sync(&qca->ws_awake_rx);
+	timer_delete_sync(&qca->wake_retrans_timer);
+	timer_delete_sync(&qca->tx_idle_timer);
+
+	spin_lock_irqsave(&qca->hci_ibs_lock, flags);
 	qca_flush(hu);
+	qca->tx_ibs_state = HCI_IBS_TX_ASLEEP;
+	qca->rx_ibs_state = HCI_IBS_RX_ASLEEP;
 	spin_unlock_irqrestore(&qca->hci_ibs_lock, flags);
 
 	/* Non-serdev device usually is powered by external power
