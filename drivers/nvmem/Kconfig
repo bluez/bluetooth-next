@@ -185,6 +185,18 @@ config NVMEM_BRCM_NVRAM
 	  This driver provides support for Broadcom's NVRAM that can be accessed
 	  using I/O mapping.
 
+config NVMEM_EFIVAR
+	tristate "UEFI variable NVMEM provider"
+	depends on EFI || COMPILE_TEST
+	help
+	  Say y here to expose the contents of a UEFI variable as an NVMEM
+	  device. This allows the kernel to consume data provisioned in a UEFI
+	  variable, referenced from consumers via the standard nvmem-cells
+	  bindings.
+
+	  This driver can also be built as a module. If so, the module will
+	  be called nvmem-efivar.
+
 config NVMEM_IMX_IIM
 	tristate "i.MX IC Identification Module support"
 	depends on ARCH_MXC || COMPILE_TEST

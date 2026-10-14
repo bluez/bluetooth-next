@@ -1,0 +1,73 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/nvmem/nvmem-efivar.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: UEFI Variable Based nvmem Device
+
+maintainers:
+  - Abel Vesa <abel.vesa@oss.qualcomm.com>
+
+description: |
+  Exposes the contents of a UEFI variable as an NVMEM device, so that data
+  provisioned in a UEFI variable can be consumed through the standard
+  "nvmem-cells" / "nvmem-cell-names" bindings.
+
+  The variable is read via the EFI runtime GetVariable service, which keeps
+  working even on platforms where that service is emulated by firmware (for
+  example the Qualcomm uefisecapp backend) and where direct flash access is not
+  available to the non-secure world. If the variable has not been provisioned,
+  the cells read as zeroes.
+
+allOf:
+  - $ref: nvmem.yaml#
+  - $ref: nvmem-deprecated-cells.yaml#
+
+properties:
+  compatible:
+    const: nvmem-efivar
+
+  efivar-name:
+    $ref: /schemas/types.yaml#/definitions/string
+    description:
+      Name of the UEFI variable to read.
+
+  efivar-guid:
+    $ref: /schemas/types.yaml#/definitions/string
+    description:
+      Vendor GUID of the UEFI variable, in the canonical
+      "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" form. Optional; when omitted
+      the variable is looked up by name across the whole variable store.
+
+required:
+  - compatible
+  - efivar-name
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    nvmem-efivar {
+        compatible = "nvmem-efivar";
+        efivar-name = "ConfigData";
+        #address-cells = <1>;
+        #size-cells = <1>;
+
+        cell_a: cell@0 {
+            reg = <0x0 0x6>;
+        };
+
+        cell_b: cell@6 {
+            reg = <0x6 0x6>;
+        };
+    };
+
+    /* A consumer references a cell through the standard nvmem bindings:
+     *
+     * &some_device {
+     *     nvmem-cells = <&cell_a>;
+     *     nvmem-cell-names = "some-value";
+     * };
+     */
+...
