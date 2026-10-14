@@ -1097,13 +1097,15 @@ static int mesh_send_done_sync(struct hci_dev *hdev, void *data)
 {
 	struct mgmt_mesh_tx *mesh_tx;
 
-	hci_dev_clear_flag(hdev, HCI_MESH_SENDING);
 	if (list_empty(&hdev->adv_instances))
 		hci_disable_advertising_sync(hdev);
-	mesh_tx = mgmt_mesh_next(hdev, NULL);
 
+	hci_dev_lock(hdev);
+	mesh_tx = mgmt_mesh_next(hdev, NULL);
 	if (mesh_tx)
 		mesh_send_complete(hdev, mesh_tx, false);
+	hci_dev_clear_flag(hdev, HCI_MESH_SENDING);
+	hci_dev_unlock(hdev);
 
 	return 0;
 }
@@ -1112,18 +1114,30 @@ static int mesh_send_sync(struct hci_dev *hdev, void *data);
 static void mesh_send_start_complete(struct hci_dev *hdev, void *data, int err);
 static void mesh_next(struct hci_dev *hdev, void *data, int err)
 {
-	struct mgmt_mesh_tx *mesh_tx = mgmt_mesh_next(hdev, NULL);
+	struct mgmt_mesh_tx *mesh_tx;
+	int ret;
 
-	if (!mesh_tx)
+	hci_dev_lock(hdev);
+
+	if (hci_dev_test_flag(hdev, HCI_MESH_SENDING)) {
+		hci_dev_unlock(hdev);
 		return;
+	}
 
-	err = hci_cmd_sync_queue(hdev, mesh_send_sync, mesh_tx,
+	mesh_tx = mgmt_mesh_next(hdev, NULL);
+	if (!mesh_tx) {
+		hci_dev_unlock(hdev);
+		return;
+	}
+
+	ret = hci_cmd_sync_queue(hdev, mesh_send_sync, mesh_tx,
 				 mesh_send_start_complete);
-
-	if (err < 0)
+	if (ret < 0)
 		mesh_send_complete(hdev, mesh_tx, false);
 	else
 		hci_dev_set_flag(hdev, HCI_MESH_SENDING);
+
+	hci_dev_unlock(hdev);
 }
 
 static void mesh_send_done(struct work_struct *work)
@@ -2312,9 +2326,12 @@ static void mesh_send_start_complete(struct hci_dev *hdev, void *data, int err)
 	/* Report any errors here, but don't report completion */
 
 	if (mgmt_err) {
+		hci_dev_lock(hdev);
 		hci_dev_clear_flag(hdev, HCI_MESH_SENDING);
 		/* Send Complete Error Code for handle */
 		mesh_send_complete(hdev, mesh_tx, false);
+		hci_dev_unlock(hdev);
+
 		if (err != -ECANCELED)
 			mesh_next(hdev, NULL, 0);
 		return;
@@ -2544,10 +2561,8 @@ static int mesh_send(struct sock *sk, struct hci_dev *hdev, void *data, u16 len)
 		err = mgmt_cmd_status(sk, hdev->id, MGMT_OP_MESH_SEND,
 				      MGMT_STATUS_FAILED);
 
-		if (mesh_tx) {
-			if (sending)
-				mgmt_mesh_remove(mesh_tx);
-		}
+		if (mesh_tx)
+			mgmt_mesh_remove(mesh_tx);
 	} else {
 		hci_dev_set_flag(hdev, HCI_MESH_SENDING);
 
