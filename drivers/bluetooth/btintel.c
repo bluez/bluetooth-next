@@ -1238,6 +1238,17 @@ static bool btintel_firmware_version(struct hci_dev *hdev,
 {
 	const u8 *fw_ptr;
 
+	/* Invalidate any previously cached boot_addr up front so that if
+	 * this firmware image lacks CMD_WRITE_BOOT_PARAMS below, the TOP
+	 * silent reset replay path in btintel_pcie does not reuse a stale
+	 * address from an earlier firmware load.
+	 */
+	if (hdev->bus == HCI_PCI) {
+		struct btintel_data *data = hci_get_priv(hdev);
+
+		data->boot_addr = 0;
+	}
+
 	fw_ptr = fw->data;
 
 	while (fw_ptr - fw->data < fw->size) {
@@ -1254,6 +1265,18 @@ static bool btintel_firmware_version(struct hci_dev *hdev,
 			params = (void *)(fw_ptr + sizeof(*cmd));
 
 			*boot_addr = le32_to_cpu(params->boot_addr);
+
+			/* boot_addr is cached only for the PCIe TOP silent
+			 * reset replay path. UART (hci_intel) devices have no
+			 * struct btintel_data allocated as hci_dev private
+			 * data, so hci_get_priv(hdev) would return memory past
+			 * the end of hdev; skip the cache write there.
+			 */
+			if (hdev->bus == HCI_PCI) {
+				struct btintel_data *data = hci_get_priv(hdev);
+
+				data->boot_addr = *boot_addr;
+			}
 
 			bt_dev_info(hdev, "Boot Address: 0x%x", *boot_addr);
 
@@ -2059,10 +2082,29 @@ static int btintel_boot_wait_d0(struct hci_dev *hdev, ktime_t calltime,
 	return 0;
 }
 
+/* Returns true when a TOP silent reset is pending on this hdev and the
+ * caller must cancel whatever FW-download/boot step it was about to run
+ * instead of proceeding, so the reset dispatch in btintel_pcie_setup()
+ * is not bypassed.
+ */
+static bool btintel_top_reset_pending(struct hci_dev *hdev)
+{
+	if (hdev->bus == HCI_PCI && btintel_test_flag(hdev, INTEL_TOP_RESET)) {
+		bt_dev_info(hdev, "INTEL_TOP_RESET flag set, cancel boot");
+		return true;
+	}
+
+	return false;
+}
+
 static int btintel_boot(struct hci_dev *hdev, u32 boot_addr)
 {
 	ktime_t calltime;
 	int err;
+
+	/* TOP reset flag set, abort FW download before sending Intel soft reset */
+	if (btintel_top_reset_pending(hdev))
+		return -ECANCELED;
 
 	calltime = ktime_get();
 
@@ -3543,12 +3585,13 @@ static int btintel_try_load_unlocker(struct hci_dev *hdev,
 int btintel_bootloader_setup_tlv(struct hci_dev *hdev,
 				 struct intel_version_tlv *ver)
 {
-	u32 boot_param;
-	char ddcname[64];
-	int err;
-	struct intel_version_tlv new_ver;
 	struct btintel_data *data = hci_get_priv(hdev);
 	u8 hw_variant = INTEL_HW_VARIANT(ver->cnvi_bt);
+	struct intel_version_tlv new_ver;
+	bool backup = false;
+	char ddcname[64];
+	u32 boot_param;
+	int err, i;
 
 	bt_dev_dbg(hdev, "");
 
@@ -3562,8 +3605,14 @@ int btintel_bootloader_setup_tlv(struct hci_dev *hdev,
 	 * same hdev instance if there is any error on firmware download.
 	 * Need to clear stale bits of previous firmware download attempt.
 	 */
-	for (int i = 0; i < __INTEL_NUM_FLAGS; i++)
+	if (btintel_test_flag(hdev, INTEL_TOP_RESET))
+		backup = true;
+
+	for (i = 0; i < __INTEL_NUM_FLAGS; i++)
 		btintel_clear_flag(hdev, i);
+
+	if (backup)
+		btintel_set_flag(hdev, INTEL_TOP_RESET);
 
 	btintel_set_flag(hdev, INTEL_BOOTLOADER);
 
@@ -3597,8 +3646,15 @@ int btintel_bootloader_setup_tlv(struct hci_dev *hdev,
 		return err;
 
 	/* check if controller is already having an operational firmware */
-	if (ver->img_type == BTINTEL_IMG_OP)
+	if (ver->img_type == BTINTEL_IMG_OP) {
+		/* A pending TOP reset must still be dispatched by the
+		 * caller even though there is no bootloader stage to run
+		 * through btintel_boot() in this case.
+		 */
+		if (btintel_top_reset_pending(hdev))
+			return -ECANCELED;
 		goto finish;
+	}
 
 	err = btintel_boot(hdev, boot_param);
 	if (err)
