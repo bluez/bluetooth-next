@@ -435,11 +435,20 @@ static void btintel_pcie_prepare_tx(struct txq *txq, u16 tfd_index,
 
 static inline void btintel_pcie_dump_debug_registers(struct hci_dev *hdev)
 {
-	struct btintel_pcie_data *data = hci_get_drvdata(hdev);
+	struct btintel_pcie_data *data;
 	u16 cr_hia, cr_tia;
 	u32 reg, mbox_reg;
 	struct sk_buff *skb;
 	u8 buf[80];
+
+	/* The interrupts are enabled before the hci_dev is allocated and
+	 * data->hdev is published only after hci_register_dev() succeeds, so
+	 * an interrupt handler can get here with a NULL hdev.
+	 */
+	if (!hdev)
+		return;
+
+	data = hci_get_drvdata(hdev);
 
 	skb = alloc_skb(1024, GFP_ATOMIC);
 	if (!skb)
