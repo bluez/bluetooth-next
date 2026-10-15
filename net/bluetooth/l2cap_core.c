@@ -5391,6 +5391,11 @@ static inline int l2cap_le_credits(struct l2cap_conn *conn,
 
 	l2cap_chan_lock(chan);
 
+	if (chan->state != BT_CONNECTED ||
+	    (chan->mode != L2CAP_MODE_LE_FLOWCTL &&
+	     chan->mode != L2CAP_MODE_EXT_FLOWCTL))
+		goto unlock;
+
 	max_credits = LE_FLOWCTL_MAX_CREDITS - chan->tx_credits;
 	if (credits > max_credits) {
 		BT_ERR("LE credits overflow");
@@ -5403,6 +5408,9 @@ static inline int l2cap_le_credits(struct l2cap_conn *conn,
 	}
 
 	chan->tx_credits += credits;
+
+	if (test_bit(FLAG_PENDING_SECURITY, &chan->flags))
+		goto unlock;
 
 	/* Resume sending */
 	l2cap_le_flowctl_send(chan);
@@ -7967,6 +7975,8 @@ static void l2cap_security_cfm(struct hci_conn *hcon, u8 status, u8 encrypt)
 	mutex_lock(&conn->lock);
 
 	list_for_each_entry(chan, &conn->chan_l, list) {
+		bool pending_le;
+
 		l2cap_chan_lock(chan);
 
 		lockdep_assert_held(&chan->conn->lock);
@@ -7974,7 +7984,12 @@ static void l2cap_security_cfm(struct hci_conn *hcon, u8 status, u8 encrypt)
 		BT_DBG("chan %p scid 0x%4.4x state %s", chan, chan->scid,
 		       state_to_string(chan->state));
 
-		if (!status && encrypt)
+		pending_le = hcon->type == LE_LINK &&
+			     (chan->mode == L2CAP_MODE_LE_FLOWCTL ||
+			      chan->mode == L2CAP_MODE_EXT_FLOWCTL) &&
+			     test_bit(FLAG_PENDING_SECURITY, &chan->flags);
+
+		if (!status && encrypt && !pending_le)
 			chan->sec_level = hcon->sec_level;
 
 		if (!__l2cap_no_conn_pending(chan)) {
@@ -7984,7 +7999,21 @@ static void l2cap_security_cfm(struct hci_conn *hcon, u8 status, u8 encrypt)
 
 		if (!status && (chan->state == BT_CONNECTED ||
 				chan->state == BT_CONFIG)) {
-			chan->ops->resume(chan);
+			if (pending_le) {
+				if (!encrypt ||
+				    !smp_sufficient_security(hcon, chan->sec_level,
+							    SMP_ALLOW_STK)) {
+					l2cap_chan_unlock(chan);
+					continue;
+				}
+
+				clear_bit(FLAG_PENDING_SECURITY, &chan->flags);
+				chan->sec_level = hcon->sec_level;
+				l2cap_le_flowctl_send(chan);
+			}
+
+			if (!pending_le || chan->tx_credits)
+				chan->ops->resume(chan);
 			l2cap_check_encryption(chan, encrypt);
 			l2cap_chan_unlock(chan);
 			continue;
