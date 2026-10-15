@@ -473,6 +473,8 @@ enum {
 	HCI_MESH,
 	HCI_MESH_SENDING,
 
+	HCI_HW_RFKILLED,
+
 	__HCI_NUM_FLAGS,
 };
 
