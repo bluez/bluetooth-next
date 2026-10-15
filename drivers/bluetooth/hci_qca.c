@@ -1873,6 +1873,12 @@ static int qca_power_on(struct hci_dev *hdev)
 			gpiod_set_value_cansleep(qcadev->bt_en, 1);
 			/* Controller needs time to bootup. */
 			msleep(150);
+
+			if (soc_type == QCA_QCA2066) {
+				ret = qca_port_reopen(hu);
+				if (ret)
+					break;
+			}
 		}
 	}
 
