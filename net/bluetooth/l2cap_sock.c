@@ -993,10 +993,15 @@ static int l2cap_sock_setsockopt(struct socket *sock, int level, int optname,
 		} else if ((sk->sk_state == BT_CONNECT2 &&
 			    test_bit(BT_SK_DEFER_SETUP, &bt_sk(sk)->flags)) ||
 			   sk->sk_state == BT_CONNECTED) {
-			if (!l2cap_chan_check_security(chan, true))
+			if (!l2cap_chan_check_security(chan, true)) {
+				if (conn->hcon->type == LE_LINK &&
+				    (chan->mode == L2CAP_MODE_LE_FLOWCTL ||
+				     chan->mode == L2CAP_MODE_EXT_FLOWCTL))
+					set_bit(FLAG_PENDING_SECURITY, &chan->flags);
 				set_bit(BT_SK_SUSPEND, &bt_sk(sk)->flags);
-			else
+			} else {
 				sk->sk_state_change(sk);
+			}
 		} else {
 			err = -EINVAL;
 		}
