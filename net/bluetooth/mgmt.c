@@ -1395,18 +1395,12 @@ static int set_powered_sync(struct hci_dev *hdev, void *data)
 	return hci_set_powered_sync(hdev, cp.val);
 }
 
-static int set_powered(struct sock *sk, struct hci_dev *hdev, void *data,
-		       u16 len)
+static int __set_powered(struct sock *sk, struct hci_dev *hdev,
+			 void *data, u16 len)
 {
 	struct mgmt_mode *cp = data;
 	struct mgmt_pending_cmd *cmd;
 	int err;
-
-	bt_dev_dbg(hdev, "sock %p", sk);
-
-	if (cp->val != 0x00 && cp->val != 0x01)
-		return mgmt_cmd_status(sk, hdev->id, MGMT_OP_SET_POWERED,
-				       MGMT_STATUS_INVALID_PARAMS);
 
 	hci_dev_lock(hdev);
 
@@ -1451,6 +1445,32 @@ static int set_powered(struct sock *sk, struct hci_dev *hdev, void *data,
 
 failed:
 	hci_dev_unlock(hdev);
+	return err;
+}
+
+static int set_powered(struct sock *sk, struct hci_dev *hdev, void *data,
+		       u16 len)
+{
+	struct mgmt_mode *cp = data;
+	int err;
+
+	bt_dev_dbg(hdev, "sock %p", sk);
+
+	if (cp->val != 0x00 && cp->val != 0x01)
+		return mgmt_cmd_status(sk, hdev->id, MGMT_OP_SET_POWERED,
+				       MGMT_STATUS_INVALID_PARAMS);
+
+	if (!cp->val)
+		return __set_powered(sk, hdev, data, len);
+
+	/*
+	 * Wait for the previous power-off completion before publishing a
+	 * new command that could reuse its freed pending-command address.
+	 */
+	hci_req_sync_lock(hdev);
+	err = __set_powered(sk, hdev, data, len);
+	hci_req_sync_unlock(hdev);
+
 	return err;
 }
 
