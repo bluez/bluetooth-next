@@ -340,6 +340,12 @@ enum {
 	 */
 	HCI_QUIRK_BROKEN_LE_CODED,
 
+	/* The controller needs an explicit LE Set Data Length request for
+	 * each central-role connection despite accepting suggested defaults.
+	 * Set during the vendor setup callback for affected firmware only.
+	 */
+	HCI_QUIRK_NEEDS_LE_SET_DATA_LEN,
+
 	/*
 	 * When this quirk is set, the HCI_OP_READ_ENC_KEY_SIZE command is
 	 * skipped during an HCI_EV_ENCRYPT_CHANGE event. This is required

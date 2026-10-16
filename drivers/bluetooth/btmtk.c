@@ -47,6 +47,24 @@ struct btmtk_global_desc {
 	__le32 section_num;
 } __packed;
 
+static bool btmtk_needs_manual_dle(struct hci_dev *hdev, u32 dev_id,
+				   const struct btmtk_patch_header *hdr)
+{
+	static const u8 affected_build[16] = "20260724143815";
+	struct btmtk_data *data;
+
+	if (hdev->bus != HCI_USB || dev_id != 0x7922)
+		return false;
+
+	data = hci_get_priv(hdev);
+	if (!data->udev)
+		return false;
+
+	return le16_to_cpu(data->udev->descriptor.idVendor) == 0x0489 &&
+	       le16_to_cpu(data->udev->descriptor.idProduct) == 0xe0f6 &&
+	       !memcmp(hdr->datetime, affected_build, sizeof(affected_build));
+}
+
 struct btmtk_section_map {
 	__le32 sectype;
 	__le32 secoffset;
@@ -219,6 +237,9 @@ int btmtk_setup_firmware_79xx(struct hci_dev *hdev, const char *fwname,
 	u32 section_num, dl_size, section_offset;
 	u8 cmd[64];
 
+	/* Re-evaluate the firmware-specific workaround on every setup. */
+	hci_clear_quirk(hdev, HCI_QUIRK_NEEDS_LE_SET_DATA_LEN);
+
 	err = request_firmware(&fw, fwname, &hdev->dev);
 	if (err < 0) {
 		bt_dev_err(hdev, "Failed to load firmware file (%d)", err);
@@ -346,6 +367,14 @@ next_section:
 	}
 	/* Wait a few moments for firmware activation done */
 	usleep_range(100000, 120000);
+
+	/* This firmware accepts maximum suggested defaults but needs an
+	 * explicit per-link request to negotiate a larger TX data length.
+	 */
+	if (btmtk_needs_manual_dle(hdev, dev_id, hdr)) {
+		hci_set_quirk(hdev, HCI_QUIRK_NEEDS_LE_SET_DATA_LEN);
+		bt_dev_info(hdev, "Using explicit LE data length requests");
+	}
 
 err_release_fw:
 	release_firmware(fw);
