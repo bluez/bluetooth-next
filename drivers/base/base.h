@@ -106,6 +106,9 @@ struct driver_private {
  * @dead: This device is currently either in the process of or has been
  *	  removed from the system. Any asynchronous events scheduled for this
  *	  device should exit without taking any action.
+ * @reprobe: request scheduled with device_schedule_reprobe(), held until
+ *	     its work has released the driver; cancelled when the binding
+ *	     that scheduled it ends
  *
  * Nothing outside of the driver core should ever touch these fields.
  */
@@ -119,6 +122,7 @@ struct device_private {
 	const struct device_driver *async_driver;
 	char *deferred_probe_reason;
 	struct device *device;
+	struct device_reprobe *reprobe;
 	u8 dead:1;
 };
 #define to_device_private_parent(obj)	\
