@@ -1392,7 +1392,6 @@ struct smp_ltk *hci_add_ltk(struct hci_dev *hdev, bdaddr_t *bdaddr,
 		key = kzalloc_obj(*key);
 		if (!key)
 			return NULL;
-		list_add_rcu(&key->list, &hdev->long_term_keys);
 	}
 
 	bacpy(&key->bdaddr, bdaddr);
@@ -1403,6 +1402,9 @@ struct smp_ltk *hci_add_ltk(struct hci_dev *hdev, bdaddr_t *bdaddr,
 	key->rand = rand;
 	key->enc_size = enc_size;
 	key->type = type;
+
+	if (!old_key)
+		list_add_rcu(&key->list, &hdev->long_term_keys);
 
 	return key;
 }
