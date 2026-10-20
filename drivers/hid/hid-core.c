@@ -96,6 +96,12 @@ struct hid_report *hid_register_report(struct hid_device *device,
 	if (report_enum->report_id_hash[id])
 		return report_enum->report_id_hash[id];
 
+	if ((id == 0 && report_enum->numbered) ||
+	    (id != 0 && report_enum->report_id_hash[0])) {
+		hid_warn(device, "not allowed to mix numbered and unnumbered reports\n");
+		return NULL;
+	}
+
 	report = kzalloc_obj(struct hid_report);
 	if (!report)
 		return NULL;
@@ -2033,8 +2039,13 @@ int __hid_request(struct hid_device *hid, struct hid_report *report,
 		return ret;
 	}
 
-	if (reqtype == HID_REQ_GET_REPORT)
-		hid_input_report(hid, report->type, buf, ret, 0);
+	if (reqtype == HID_REQ_GET_REPORT) {
+		if (report->id == 0)
+			ret--;
+
+		if (ret > 0)
+			hid_input_report(hid, report->type, data_buf, ret, 0);
+	}
 
 	return 0;
 }
@@ -2554,8 +2565,17 @@ int __hid_hw_raw_request(struct hid_device *hdev,
 	if (ret)
 		return ret;
 
-	return hdev->ll_driver->raw_request(hdev, reportnum, buf, len,
+	ret = hdev->ll_driver->raw_request(hdev, reportnum, buf, len,
 					    rtype, reqtype);
+	if (ret > 0 && reqtype == HID_REQ_GET_REPORT &&
+	    !(hdev->quirks & HID_QUIRK_IGNORE_REPORT_ID_MISMATCH) &&
+	    buf[0] != reportnum) {
+		hid_warn(hdev, "mismatched report ID %u (expected %u)\n",
+			 buf[0], reportnum);
+		return -EINVAL;
+	}
+
+	return ret;
 }
 
 /**

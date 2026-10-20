@@ -160,9 +160,9 @@ int quicki2c_get_report(struct quicki2c_device *qcdev, u8 report_type,
 		return ret;
 	}
 
-	if (HIDI2C_DATA_LEN(le16_to_cpu(rpt->len)) != buf_len || rpt->data[0] != reportnum) {
-		dev_err_once(qcdev->dev, "Invalid packet, len (%d vs %zu) report id (%d vs %d)\n",
-			     le16_to_cpu(rpt->len), buf_len, rpt->data[0], reportnum);
+	if (HIDI2C_DATA_LEN(le16_to_cpu(rpt->len)) != buf_len) {
+		dev_err_once(qcdev->dev, "Invalid packet length (%d vs %zu)\n",
+			     le16_to_cpu(rpt->len), buf_len);
 		return -EINVAL;
 	}
 
