@@ -1775,8 +1775,11 @@ static inline void hci_conn_drop(struct hci_conn *conn)
 		}
 
 		cancel_delayed_work(&conn->disc_work);
-		queue_delayed_work(conn->hdev->workqueue,
-				   &conn->disc_work, timeo);
+		rcu_read_lock();
+		if (!hci_dev_test_flag(conn->hdev, HCI_CMD_DRAIN_WORKQUEUE))
+			queue_delayed_work(conn->hdev->workqueue,
+					   &conn->disc_work, timeo);
+		rcu_read_unlock();
 	}
 }
 
