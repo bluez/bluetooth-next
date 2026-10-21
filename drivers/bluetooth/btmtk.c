@@ -7,6 +7,7 @@
 #include <linux/usb.h>
 #include <linux/iopoll.h>
 #include <linux/overflow.h>
+#include <linux/string.h>
 #include <linux/unaligned.h>
 
 #include <net/bluetooth/bluetooth.h>
@@ -1587,6 +1588,25 @@ static int btmtk_recv_isopkt(struct hci_dev *hdev, void *buffer, int count)
 
 			/* Complete ISO header */
 			hci_skb_expect(skb) = __le16_to_cpu(dlen);
+
+			if (!hci_skb_expect(skb)) {
+				/* The interrupt endpoint zero-fills the
+				 * remainder of the transfer after the one
+				 * packet it carries. Confirm that is what
+				 * this is before dropping it.
+				 */
+				if (!mem_is_zero(buffer, count)) {
+					kfree_skb(skb);
+					skb = NULL;
+
+					err = -EILSEQ;
+					break;
+				}
+
+				kfree_skb(skb);
+				skb = NULL;
+				break;
+			}
 
 			if (skb_tailroom(skb) < hci_skb_expect(skb)) {
 				kfree_skb(skb);
