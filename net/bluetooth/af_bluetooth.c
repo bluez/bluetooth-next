@@ -935,11 +935,11 @@ static int __init bt_init(void)
 
 	BT_INFO("Core ver %s", VERSION);
 
+	bt_debugfs = debugfs_create_dir("bluetooth", NULL);
+
 	err = bt_selftest();
 	if (err < 0)
-		return err;
-
-	bt_debugfs = debugfs_create_dir("bluetooth", NULL);
+		goto cleanup_debugfs;
 
 	bt_leds_init();
 
@@ -983,7 +983,9 @@ cleanup_sysfs:
 	bt_sysfs_cleanup();
 cleanup_led:
 	bt_leds_cleanup();
+cleanup_debugfs:
 	debugfs_remove_recursive(bt_debugfs);
+	bt_debugfs = NULL;
 	return err;
 }
 
