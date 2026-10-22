@@ -323,6 +323,10 @@ static void msft_remove_addr_filters_sync(struct hci_dev *hdev, u8 handle)
 		if (address_filter->pattern_handle != handle)
 			continue;
 
+		/* A queued cancel still owns this linked filter. */
+		if (address_filter->state == AF_STATE_REMOVING)
+			continue;
+
 		list_del(&address_filter->list);
 
 		/* Keep the address filter and let
@@ -333,13 +337,6 @@ static void msft_remove_addr_filters_sync(struct hci_dev *hdev, u8 handle)
 			address_filter->state = AF_STATE_REMOVING;
 			continue;
 		}
-
-		/* Keep the address filter and let
-		 * msft_cancel_address_filter_sync() remove and free the address
-		 * filter
-		 */
-		if (address_filter->state == AF_STATE_REMOVING)
-			continue;
 
 		list_add_tail(&address_filter->list, &head);
 	}
@@ -720,7 +717,8 @@ void msft_do_close(struct hci_dev *hdev)
 
 static int msft_cancel_address_filter_sync(struct hci_dev *hdev, void *data)
 {
-	struct msft_monitor_addr_filter_data *address_filter = data;
+	struct msft_monitor_addr_filter_data *address_filter = NULL;
+	struct msft_monitor_addr_filter_data *entry;
 	struct msft_cp_le_cancel_monitor_advertisement cp;
 	struct msft_data *msft = hdev->msft_data;
 	struct sk_buff *skb;
@@ -735,9 +733,23 @@ static int msft_cancel_address_filter_sync(struct hci_dev *hdev, void *data)
 	if (!test_bit(HCI_UP, &hdev->flags))
 		return 0;
 
+	/* Reset may free data and restore HCI_UP. Find the pointer
+	 * without dereferencing it. A replacement cannot finish its queued
+	 * add before this cancel on req_workqueue.
+	 */
 	mutex_lock(&msft->filter_lock);
-	list_del(&address_filter->list);
+	list_for_each_entry(entry, &msft->address_filters, list) {
+		if (entry != data || entry->state != AF_STATE_REMOVING)
+			continue;
+
+		address_filter = entry;
+		list_del(&address_filter->list);
+		break;
+	}
 	mutex_unlock(&msft->filter_lock);
+
+	if (!address_filter)
+		return 0;
 
 	cp.sub_opcode = MSFT_OP_LE_CANCEL_MONITOR_ADVERTISEMENT;
 	cp.handle = address_filter->msft_handle;
@@ -1067,10 +1079,10 @@ report_state:
 	} else {
 		if (address_filter && address_filter->state == AF_STATE_ADDED) {
 			address_filter->state = AF_STATE_REMOVING;
-			hci_cmd_sync_queue(hdev,
-					   msft_cancel_address_filter_sync,
-					   address_filter,
-					   NULL);
+			if (hci_cmd_sync_queue(
+				    hdev, msft_cancel_address_filter_sync,
+				    address_filter, NULL) < 0)
+				address_filter->state = AF_STATE_ADDED;
 		}
 		msft_device_lost(hdev, &ev->bdaddr, addr_type, mgmt_handle);
 	}
