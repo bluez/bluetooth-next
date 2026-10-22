@@ -1342,9 +1342,15 @@ static void mgmt_set_powered_complete(struct hci_dev *hdev, void *data, int err)
 	struct mgmt_pending_cmd *cmd = data;
 	struct mgmt_mode *cp;
 
-	/* Make sure cmd still outstanding. */
-	if (err == -ECANCELED || !mgmt_pending_valid(hdev, cmd))
+	if (err == -ECANCELED)
 		return;
+
+	hci_dev_lock(hdev);
+
+	/* Other management commands may reuse the old command address. */
+	if (pending_find(MGMT_OP_SET_POWERED, hdev) != cmd ||
+	    !mgmt_pending_valid(hdev, cmd))
+		goto unlock;
 
 	cp = cmd->param;
 
@@ -1352,10 +1358,8 @@ static void mgmt_set_powered_complete(struct hci_dev *hdev, void *data, int err)
 
 	if (!err) {
 		if (cp->val) {
-			hci_dev_lock(hdev);
 			restart_le_actions(hdev);
 			hci_update_passive_scan(hdev);
-			hci_dev_unlock(hdev);
 		}
 
 		send_settings_rsp(cmd->sk, cmd->opcode, hdev);
@@ -1371,6 +1375,9 @@ static void mgmt_set_powered_complete(struct hci_dev *hdev, void *data, int err)
 	}
 
 	mgmt_pending_free(cmd);
+
+unlock:
+	hci_dev_unlock(hdev);
 }
 
 static int set_powered_sync(struct hci_dev *hdev, void *data)
@@ -1380,8 +1387,9 @@ static int set_powered_sync(struct hci_dev *hdev, void *data)
 
 	mutex_lock(&hdev->mgmt_pending_lock);
 
-	/* Make sure cmd still outstanding. */
-	if (!__mgmt_pending_listed(hdev, cmd)) {
+	/* A dequeued request may have waited across a controller reset. */
+	if (!__mgmt_pending_listed(hdev, cmd) ||
+	    cmd->opcode != MGMT_OP_SET_POWERED) {
 		mutex_unlock(&hdev->mgmt_pending_lock);
 		return -ECANCELED;
 	}
@@ -1395,18 +1403,12 @@ static int set_powered_sync(struct hci_dev *hdev, void *data)
 	return hci_set_powered_sync(hdev, cp.val);
 }
 
-static int set_powered(struct sock *sk, struct hci_dev *hdev, void *data,
-		       u16 len)
+static int __set_powered(struct sock *sk, struct hci_dev *hdev,
+			 void *data, u16 len)
 {
 	struct mgmt_mode *cp = data;
 	struct mgmt_pending_cmd *cmd;
 	int err;
-
-	bt_dev_dbg(hdev, "sock %p", sk);
-
-	if (cp->val != 0x00 && cp->val != 0x01)
-		return mgmt_cmd_status(sk, hdev->id, MGMT_OP_SET_POWERED,
-				       MGMT_STATUS_INVALID_PARAMS);
 
 	hci_dev_lock(hdev);
 
@@ -1454,6 +1456,32 @@ failed:
 	return err;
 }
 
+static int set_powered(struct sock *sk, struct hci_dev *hdev, void *data,
+		       u16 len)
+{
+	struct mgmt_mode *cp = data;
+	int err;
+
+	bt_dev_dbg(hdev, "sock %p", sk);
+
+	if (cp->val != 0x00 && cp->val != 0x01)
+		return mgmt_cmd_status(sk, hdev->id, MGMT_OP_SET_POWERED,
+				       MGMT_STATUS_INVALID_PARAMS);
+
+	if (!cp->val)
+		return __set_powered(sk, hdev, data, len);
+
+	/*
+	 * Wait for the previous power-off completion before publishing a
+	 * new command that could reuse its freed pending-command address.
+	 */
+	hci_req_sync_lock(hdev);
+	err = __set_powered(sk, hdev, data, len);
+	hci_req_sync_unlock(hdev);
+
+	return err;
+}
+
 int mgmt_new_settings(struct hci_dev *hdev)
 {
 	return new_settings(hdev, NULL);
@@ -1468,6 +1496,11 @@ struct cmd_lookup {
 static void settings_rsp(struct mgmt_pending_cmd *cmd, void *data)
 {
 	struct cmd_lookup *match = data;
+
+	/* A queued power request must not retain the freed command. */
+	if (cmd->opcode == MGMT_OP_SET_POWERED)
+		hci_cmd_sync_dequeue(match->hdev, set_powered_sync, cmd,
+				     mgmt_set_powered_complete);
 
 	send_settings_rsp(cmd->sk, cmd->opcode, match->hdev);
 
