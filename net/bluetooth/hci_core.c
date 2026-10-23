@@ -2997,6 +2997,17 @@ static u8 hci_dev_classify_pkt_type(struct hci_dev *hdev, struct sk_buff *skb)
 	return hci_skb_pkt_type(skb);
 }
 
+/* Queue hdev->rx_work, unless hdev->workqueue is being drained by
+ * hci_dev_close_sync(), which would otherwise WARN and drop the work.
+ */
+static void hci_sched_rx(struct hci_dev *hdev)
+{
+	rcu_read_lock();
+	if (!hci_dev_test_flag(hdev, HCI_CMD_DRAIN_WORKQUEUE))
+		queue_work(hdev->workqueue, &hdev->rx_work);
+	rcu_read_unlock();
+}
+
 /* Receive frame from HCI drivers */
 int hci_recv_frame(struct hci_dev *hdev, struct sk_buff *skb)
 {
@@ -3050,7 +3061,7 @@ int hci_recv_frame(struct hci_dev *hdev, struct sk_buff *skb)
 	__net_timestamp(skb);
 
 	skb_queue_tail(&hdev->rx_q, skb);
-	queue_work(hdev->workqueue, &hdev->rx_work);
+	hci_sched_rx(hdev);
 
 	return 0;
 }
@@ -3066,7 +3077,7 @@ int hci_recv_diag(struct hci_dev *hdev, struct sk_buff *skb)
 	__net_timestamp(skb);
 
 	skb_queue_tail(&hdev->rx_q, skb);
-	queue_work(hdev->workqueue, &hdev->rx_work);
+	hci_sched_rx(hdev);
 
 	return 0;
 }
