@@ -636,7 +636,13 @@ static void build_pairing_cmd(struct l2cap_conn *conn,
 	u8 local_dist = 0, remote_dist = 0, oob_flag = SMP_OOB_NOT_PRESENT;
 
 	if (hci_dev_test_flag(hdev, HCI_BONDABLE)) {
-		local_dist = SMP_DIST_ENC_KEY | SMP_DIST_SIGN;
+		/* Always distribute our identity address when bonding, so the
+		 * peer can tell who it is bonded with. Without privacy the IRK
+		 * sent along with it is all zeros, which the specification
+		 * defines as having no resolvable private address. Some
+		 * peripherals only reconnect to hosts that did this.
+		 */
+		local_dist = SMP_DIST_ENC_KEY | SMP_DIST_SIGN | SMP_DIST_ID_KEY;
 		remote_dist = SMP_DIST_ENC_KEY | SMP_DIST_SIGN;
 		authreq |= SMP_AUTH_BONDING;
 	} else {
