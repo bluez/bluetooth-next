@@ -2514,8 +2514,9 @@ static int hci_le_add_resolve_list_sync(struct hci_dev *hdev,
 {
 	struct hci_cp_le_add_to_resolv_list cp;
 	struct smp_irk *irk;
+	struct bdaddr_list_with_irk *entry;
 	struct hci_conn_params *p;
-	bool exists;
+	bool has_irk, programmed, stale;
 
 	if (!ll_privacy_capable(hdev))
 		return 0;
@@ -2533,21 +2534,45 @@ static int hci_le_add_resolve_list_sync(struct hci_dev *hdev,
 	} else if (!(params->flags & HCI_CONN_FLAG_ADDRESS_RESOLUTION))
 		return 0;
 
+	/* Copy the IRK and compare it with the programmed one now, as both
+	 * can be replaced or freed while waiting for the controller below.
+	 */
+	hci_dev_lock(hdev);
+
+	rcu_read_lock();
 	irk = hci_find_irk_by_addr(hdev, &params->addr, params->addr_type);
-	if (!irk)
-		return 0;
+	has_irk = irk;
+	if (has_irk)
+		memcpy(cp.peer_irk, irk->val, sizeof(cp.peer_irk));
+	rcu_read_unlock();
 
 	/* Check if the IK has _not_ been programmed yet. */
-	hci_dev_lock(hdev);
-	exists = hci_bdaddr_list_lookup_with_irk(
-		&hdev->le_resolv_list, &params->addr, params->addr_type);
+	entry = hci_bdaddr_list_lookup_with_irk(&hdev->le_resolv_list,
+						&params->addr,
+						params->addr_type);
+	programmed = entry;
+	stale = entry && (!has_irk || memcmp(entry->peer_irk, cp.peer_irk,
+					     sizeof(cp.peer_irk)));
+
 	hci_dev_unlock(hdev);
-	if (exists)
+
+	if (programmed && !stale)
+		return 0;
+
+	/* The device paired again with a new IRK, or without one, under the
+	 * same identity address. Remove the entry, or the controller keeps
+	 * resolving with the old IRK and the device cannot reconnect. Ignore
+	 * errors as hci_le_del_accept_list_sync() does.
+	 */
+	if (stale)
+		hci_le_del_resolve_list_sync(hdev, &params->addr,
+					     params->addr_type);
+
+	if (!has_irk)
 		return 0;
 
 	cp.bdaddr_type = params->addr_type;
 	bacpy(&cp.bdaddr, &params->addr);
-	memcpy(cp.peer_irk, irk->val, 16);
 
 	/* Default privacy mode is always Network */
 	params->privacy_mode = HCI_NETWORK_PRIVACY;
