@@ -1248,6 +1248,7 @@ static int hci_set_adv_set_random_addr_sync(struct hci_dev *hdev, u8 instance,
 					    bdaddr_t *random_addr)
 {
 	struct hci_cp_le_set_adv_set_rand_addr cp;
+	struct adv_info *adv = NULL;
 	int err;
 
 	if (!instance) {
@@ -1261,9 +1262,12 @@ static int hci_set_adv_set_random_addr_sync(struct hci_dev *hdev, u8 instance,
 			return err;
 	}
 
+	if (instance)
+		adv = hci_find_adv_instance(hdev, instance);
+
 	memset(&cp, 0, sizeof(cp));
 
-	cp.handle = instance;
+	cp.handle = adv ? adv->handle : instance;
 	bacpy(&cp.bdaddr, random_addr);
 
 	return __hci_cmd_sync_status(hdev, HCI_OP_LE_SET_ADV_SET_RAND_ADDR,
@@ -2067,6 +2071,8 @@ int hci_enable_advertising(struct hci_dev *hdev)
 int hci_remove_ext_adv_instance_sync(struct hci_dev *hdev, u8 instance,
 				     struct sock *sk)
 {
+	struct adv_info *adv = NULL;
+	u8 handle;
 	int err;
 
 	if (!ext_adv_capable(hdev))
@@ -2077,11 +2083,16 @@ int hci_remove_ext_adv_instance_sync(struct hci_dev *hdev, u8 instance,
 		return err;
 
 	/* If request specifies an instance that doesn't exist, fail */
-	if (instance > 0 && !hci_find_adv_instance(hdev, instance))
-		return -EINVAL;
+	if (instance > 0) {
+		adv = hci_find_adv_instance(hdev, instance);
+		if (!adv)
+			return -EINVAL;
+	}
+
+	handle = adv ? adv->handle : instance;
 
 	return __hci_cmd_sync_status_sk(hdev, HCI_OP_LE_REMOVE_ADV_SET,
-					sizeof(instance), &instance, 0,
+					sizeof(handle), &handle, 0,
 					HCI_CMD_TIMEOUT, sk);
 }
 
