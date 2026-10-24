@@ -2728,6 +2728,19 @@ static void btintel_set_ppag(struct hci_dev *hdev, struct intel_version_tlv *ver
 	/* PPAG table is located at element[1] */
 	p = &elements[1];
 
+	if (p->type != ACPI_TYPE_PACKAGE || p->package.count < 2) {
+		bt_dev_warn(hdev, "PPAG-BT: Invalid PPAG table format");
+		kfree(buffer.pointer);
+		return;
+	}
+
+	if (p->package.elements[0].type != ACPI_TYPE_INTEGER ||
+	    p->package.elements[1].type != ACPI_TYPE_INTEGER) {
+		bt_dev_warn(hdev, "PPAG-BT: Invalid element types in PPAG table");
+		kfree(buffer.pointer);
+		return;
+	}
+
 	domain = (u32)p->package.elements[0].integer.value;
 	mode = (u32)p->package.elements[1].integer.value;
 	kfree(buffer.pointer);
