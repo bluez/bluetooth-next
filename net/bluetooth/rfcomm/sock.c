@@ -83,9 +83,14 @@ static void rfcomm_sk_state_change(struct rfcomm_dlc *d, int err)
 	if (parent) {
 		if (d->state == BT_CLOSED) {
 			sock_set_flag(sk, SOCK_ZAPPED);
+			/* keep the listener alive across the unlink */
+			sock_hold(parent);
 			bt_accept_unlink(sk);
+			parent->sk_data_ready(parent);
+			sock_put(parent);
+		} else {
+			parent->sk_data_ready(parent);
 		}
-		parent->sk_data_ready(parent);
 	} else {
 		if (d->state == BT_CONNECTED)
 			rfcomm_session_getaddr(d->session,
