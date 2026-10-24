@@ -636,7 +636,13 @@ static void build_pairing_cmd(struct l2cap_conn *conn,
 	u8 local_dist = 0, remote_dist = 0, oob_flag = SMP_OOB_NOT_PRESENT;
 
 	if (hci_dev_test_flag(hdev, HCI_BONDABLE)) {
-		local_dist = SMP_DIST_ENC_KEY | SMP_DIST_SIGN;
+		/* Always distribute our identity address when bonding, so the
+		 * peer can tell who it is bonded with. Without privacy the IRK
+		 * sent along with it is all zeros, which the specification
+		 * defines as having no resolvable private address. Some
+		 * peripherals only reconnect to hosts that did this.
+		 */
+		local_dist = SMP_DIST_ENC_KEY | SMP_DIST_SIGN | SMP_DIST_ID_KEY;
 		remote_dist = SMP_DIST_ENC_KEY | SMP_DIST_SIGN;
 		authreq |= SMP_AUTH_BONDING;
 	} else {
@@ -2621,6 +2627,16 @@ static int smp_cmd_ident_addr_info(struct l2cap_conn *conn,
 	     info->addr_type != hcon->dst_type)) {
 		bt_dev_err(hcon->hdev,
 			   "ignoring IRK with invalid identity address");
+		goto distribute;
+	}
+
+	/* An all-zero IRK means the peer has no resolvable private address
+	 * (Core Specification, Vol 3, Part H, 3.6.4). The key is known to
+	 * everyone, so storing it would let any device pose as this peer
+	 * with resolvable private addresses generated from it.
+	 */
+	if (!memchr_inv(smp->irk, 0, sizeof(smp->irk))) {
+		bt_dev_dbg(hcon->hdev, "ignoring all-zero IRK");
 		goto distribute;
 	}
 
