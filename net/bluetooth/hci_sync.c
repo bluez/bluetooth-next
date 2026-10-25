@@ -5382,6 +5382,8 @@ static const struct {
 			 "and will not be used."),
 	HCI_QUIRK_BROKEN(WRITE_SC_SUPPORT,
 			 "HCI BR/EDR Secure Connections is advertised, but cannot be enabled."),
+	HCI_QUIRK_BROKEN(WRITE_CURRENT_IAC_LAP,
+			 "HCI Write Current IAC LAP is advertised, but hangs the controller."),
 	HCI_QUIRK_BROKEN(LE_CODED,
 			 "HCI LE Coded PHY feature bit is set, "
 			 "but its usage is not supported.")
@@ -6246,6 +6248,12 @@ static int hci_write_iac_sync(struct hci_dev *hdev)
 	struct hci_cp_write_current_iac_lap cp;
 
 	if (!hci_dev_test_flag(hdev, HCI_DISCOVERABLE))
+		return 0;
+
+	/* Controllers that wedge on the write are left alone. They already
+	 * hold the GIAC, so general discoverable mode works without it.
+	 */
+	if (hci_test_quirk(hdev, HCI_QUIRK_BROKEN_WRITE_CURRENT_IAC_LAP))
 		return 0;
 
 	memset(&cp, 0, sizeof(cp));

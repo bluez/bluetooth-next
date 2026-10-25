@@ -603,6 +603,12 @@ static int aml_setup(struct hci_uart *hu)
 	 */
 	hci_set_quirk(hdev, HCI_QUIRK_BROKEN_WRITE_SC_SUPPORT);
 
+	/* Write Current IAC LAP is advertised, but the controller stops
+	 * answering HCI as soon as it is sent, until the combo chip is power
+	 * cycled. It is sent when the adapter is made discoverable.
+	 */
+	hci_set_quirk(hdev, HCI_QUIRK_BROKEN_WRITE_CURRENT_IAC_LAP);
+
 	err = aml_power_on(amldev);
 	if (err)
 		return err;
