@@ -123,6 +123,7 @@ struct aml_serdev {
 	struct clk *lpo_clk;
 	const struct aml_device_data *aml_dev_data;
 	const char *firmware_name;
+	bool shared_antenna;
 	bool powered;
 };
 
@@ -569,6 +570,9 @@ static int aml_parse_dt(struct aml_serdev *amldev)
 		return -ENODEV;
 	}
 
+	amldev->shared_antenna = device_property_read_bool(pdev,
+							   "amlogic,shared-antenna");
+
 	amldev->bt_supply = devm_regulator_get(pdev, "vddio");
 	if (IS_ERR(amldev->bt_supply)) {
 		dev_err(pdev, "Failed to acquire regulator");
@@ -696,6 +700,8 @@ static int aml_flush(struct hci_uart *hu)
 static int aml_setup_controller(struct hci_uart *hu, struct aml_serdev *amldev,
 				struct hci_dev *hdev)
 {
+	bool single_antenna = amldev->aml_dev_data->is_coex ||
+			      amldev->shared_antenna;
 	int err;
 	int i;
 
@@ -717,7 +723,7 @@ static int aml_setup_controller(struct hci_uart *hu, struct aml_serdev *amldev,
 	if (err)
 		return err;
 
-	err = aml_config_rf(hdev, amldev->aml_dev_data->is_coex);
+	err = aml_config_rf(hdev, single_antenna);
 	if (err)
 		return err;
 
