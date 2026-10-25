@@ -46,6 +46,12 @@ properties:
 
   local-bd-address: true
 
+  amlogic,shared-antenna:
+    type: boolean
+    description:
+      Bluetooth and Wi-Fi share a single antenna. The controller has to be
+      configured for it, otherwise its receive path is severely attenuated.
+
 required:
   - compatible
   - clocks
