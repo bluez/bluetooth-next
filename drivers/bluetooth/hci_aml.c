@@ -528,6 +528,10 @@ static int aml_check_bdaddr(struct hci_dev *hdev)
 	if (!bacmp(&paddr->bdaddr, AML_BDADDR_DEFAULT)) {
 		bt_dev_info(hdev, "amlbt using default bdaddr (%pM)", &paddr->bdaddr);
 		hci_set_quirk(hdev, HCI_QUIRK_INVALID_BDADDR);
+		/* Nothing is kept across a power cycle either, so let the
+		 * firmware description provide an address.
+		 */
+		hci_set_quirk(hdev, HCI_QUIRK_USE_BDADDR_PROPERTY);
 	}
 
 exit:
