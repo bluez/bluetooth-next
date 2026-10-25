@@ -3507,7 +3507,8 @@ int hci_write_sc_support_sync(struct hci_dev *hdev, u8 val)
 {
 	int err;
 
-	if (!bredr_sc_enabled(hdev) || lmp_host_sc_capable(hdev))
+	if (!bredr_sc_enabled(hdev) || lmp_host_sc_capable(hdev) ||
+	    hci_test_quirk(hdev, HCI_QUIRK_BROKEN_WRITE_SC_SUPPORT))
 		return 0;
 
 	err = __hci_cmd_sync_status(hdev, HCI_OP_WRITE_SC_SUPPORT,
@@ -5164,7 +5165,8 @@ static int hci_write_sc_support_1_sync(struct hci_dev *hdev)
 	u8 support = 0x01;
 
 	if (!hci_dev_test_flag(hdev, HCI_SSP_ENABLED) ||
-	    !bredr_sc_enabled(hdev))
+	    !bredr_sc_enabled(hdev) ||
+	    hci_test_quirk(hdev, HCI_QUIRK_BROKEN_WRITE_SC_SUPPORT))
 		return 0;
 
 	return __hci_cmd_sync_status(hdev, HCI_OP_WRITE_SC_SUPPORT,
@@ -5378,6 +5380,8 @@ static const struct {
 			 "HCI WRITE AUTH PAYLOAD TIMEOUT command leads "
 			 "to unexpected SMP errors when pairing "
 			 "and will not be used."),
+	HCI_QUIRK_BROKEN(WRITE_SC_SUPPORT,
+			 "HCI BR/EDR Secure Connections is advertised, but cannot be enabled."),
 	HCI_QUIRK_BROKEN(LE_CODED,
 			 "HCI LE Coded PHY feature bit is set, "
 			 "but its usage is not supported.")

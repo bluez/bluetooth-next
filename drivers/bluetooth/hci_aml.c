@@ -598,6 +598,11 @@ static int aml_setup(struct hci_uart *hu)
 	/* Setup bdaddr */
 	hdev->set_bdaddr = aml_set_bdaddr;
 
+	/* The controller lists BR/EDR Secure Connections among its extended
+	 * features and then rejects the command that turns host support on.
+	 */
+	hci_set_quirk(hdev, HCI_QUIRK_BROKEN_WRITE_SC_SUPPORT);
+
 	err = aml_power_on(amldev);
 	if (err)
 		return err;

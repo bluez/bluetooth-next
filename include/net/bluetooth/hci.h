@@ -375,6 +375,20 @@ enum {
 	 */
 	HCI_QUIRK_BROKEN_READ_PAGE_SCAN_TYPE,
 
+	/*
+	 * When this quirk is set, the HCI_OP_WRITE_SC_SUPPORT command is
+	 * not supported.
+	 *
+	 * This quirk is intended for controllers that list BR/EDR Secure
+	 * Connections among their extended features and then reject the
+	 * command that turns host support on. Without it the failure takes
+	 * the whole of hci_dev_open_sync() with it and the controller can
+	 * never be powered on.
+	 *
+	 * This quirk must be set before hci_register_dev is called.
+	 */
+	HCI_QUIRK_BROKEN_WRITE_SC_SUPPORT,
+
 	__HCI_NUM_QUIRKS,
 };
 
