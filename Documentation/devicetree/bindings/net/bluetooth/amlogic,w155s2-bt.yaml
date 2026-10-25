@@ -15,6 +15,9 @@ description:
 maintainers:
   - Yang Li <yang.li@amlogic.com>
 
+allOf:
+  - $ref: /schemas/net/bluetooth/bluetooth-controller.yaml#
+
 properties:
   compatible:
     oneOf:
@@ -40,6 +43,8 @@ properties:
   firmware-name:
     maxItems: 1
     description: specify the path of firmware bin to load
+
+  local-bd-address: true
 
 required:
   - compatible
