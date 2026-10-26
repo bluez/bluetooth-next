@@ -905,17 +905,33 @@ ignore_setup_fw:
 		goto ignore_func_on;
 	}
 
-	/* Enable Bluetooth protocol */
+	/*
+	 * Enable Bluetooth protocol. While the Wi-Fi function of a combo
+	 * chip is still starting its firmware, the request is refused, so
+	 * retry it.
+	 */
 	wmt_params.op = BTMTK_WMT_FUNC_CTRL;
 	wmt_params.flag = 0;
 	wmt_params.dlen = sizeof(param);
 	wmt_params.data = &param;
-	wmt_params.status = NULL;
+	wmt_params.status = &status;
 
-	err = mtk_hci_wmt_sync(hdev, &wmt_params);
-	if (err < 0) {
-		bt_dev_err(hdev, "Failed to send wmt func ctrl (%d)", err);
-		return err;
+	for (i = 0; i < 10; i++) {
+		err = mtk_hci_wmt_sync(hdev, &wmt_params);
+		if (err < 0) {
+			bt_dev_err(hdev, "Failed to send wmt func ctrl (%d)",
+				   err);
+			return err;
+		}
+
+		if (status == BTMTK_WMT_ON_DONE)
+			break;
+		msleep(500);
+	}
+
+	if (status != BTMTK_WMT_ON_DONE) {
+		bt_dev_err(hdev, "Bluetooth function refused to start");
+		return -EIO;
 	}
 
 	set_bit(BTMTKSDIO_PATCH_ENABLED, &bdev->tx_state);
