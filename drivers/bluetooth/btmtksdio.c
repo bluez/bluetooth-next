@@ -234,8 +234,16 @@ static int mtk_hci_wmt_sync(struct hci_dev *hdev,
 
 	switch (wmt_evt->whdr.op) {
 	case BTMTK_WMT_SEMAPHORE:
+		/*
+		 * 0: the other function (Wi-Fi on MT7663/MT7668) holds the
+		 *    semaphore and is downloading the shared patch
+		 * 1: the patch is ready
+		 * 2: the patch needs downloading
+		 */
 		if (wmt_evt->whdr.flag == 2)
 			status = BTMTK_WMT_PATCH_UNDONE;
+		else if (wmt_evt->whdr.flag == 0)
+			status = BTMTK_WMT_PATCH_PROGRESS;
 		else
 			status = BTMTK_WMT_PATCH_DONE;
 		break;
@@ -838,20 +846,35 @@ static int mt76xx_setup(struct hci_dev *hdev, const char *fwname)
 	struct btmtk_hci_wmt_params wmt_params;
 	struct btmtk_tci_sleep tci_sleep;
 	struct sk_buff *skb;
-	int err, status;
+	int err, status, i;
 	u8 param = 0x1;
 
-	/* Query whether the firmware is already download */
+	/*
+	 * Query whether the firmware is already downloaded. While the Wi-Fi
+	 * function downloads the shared patch, wait for it to finish.
+	 */
 	wmt_params.op = BTMTK_WMT_SEMAPHORE;
 	wmt_params.flag = 1;
 	wmt_params.dlen = 0;
 	wmt_params.data = NULL;
 	wmt_params.status = &status;
 
-	err = mtk_hci_wmt_sync(hdev, &wmt_params);
-	if (err < 0) {
-		bt_dev_err(hdev, "Failed to query firmware status (%d)", err);
-		return err;
+	for (i = 0; i < 50; i++) {
+		err = mtk_hci_wmt_sync(hdev, &wmt_params);
+		if (err < 0) {
+			bt_dev_err(hdev, "Failed to query firmware status (%d)",
+				   err);
+			return err;
+		}
+
+		if (status != BTMTK_WMT_PATCH_PROGRESS)
+			break;
+		msleep(100);
+	}
+
+	if (status == BTMTK_WMT_PATCH_PROGRESS) {
+		bt_dev_err(hdev, "Patch download by the other function did not finish");
+		return -EBUSY;
 	}
 
 	if (status == BTMTK_WMT_PATCH_DONE) {
