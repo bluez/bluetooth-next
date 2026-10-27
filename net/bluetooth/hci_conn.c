@@ -1911,11 +1911,20 @@ struct hci_conn *hci_connect_sco(struct hci_dev *hdev, int type, bdaddr_t *dst,
 		}
 	}
 
-	link = hci_conn_link(acl, sco);
-	if (!link) {
+	if (sco->link) {
+		/* The existing link already owns the hold on the ACL, and the
+		 * caller needs its own hold on the SCO connection, which
+		 * hci_conn_link() only takes for a new link.
+		 */
 		hci_conn_drop(acl);
-		hci_conn_drop(sco);
-		return ERR_PTR(-ENOLINK);
+		hci_conn_hold(sco);
+	} else {
+		link = hci_conn_link(acl, sco);
+		if (!link) {
+			hci_conn_drop(acl);
+			hci_conn_drop(sco);
+			return ERR_PTR(-ENOLINK);
+		}
 	}
 
 	sco->setting = setting;
