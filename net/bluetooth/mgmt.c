@@ -6322,7 +6322,14 @@ static void stop_discovery_complete(struct hci_dev *hdev, void *data, int err)
 			  cmd->param, 1);
 	mgmt_pending_free(cmd);
 
-	if (!err)
+	/* Go back to DISCOVERY_FINDING when stopping failed while the inquiry
+	 * or the LE scan is still running, so that the discovery can be
+	 * stopped again.
+	 */
+	if (err && (test_bit(HCI_INQUIRY, &hdev->flags) ||
+		    hci_dev_test_flag(hdev, HCI_LE_SCAN)))
+		hci_discovery_set_state(hdev, DISCOVERY_FINDING);
+	else
 		hci_discovery_set_state(hdev, DISCOVERY_STOPPED);
 }
 
