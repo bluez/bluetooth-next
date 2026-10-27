@@ -70,6 +70,7 @@ static struct usb_driver btusb_driver;
 #define BTUSB_INTEL_NO_WBS_SUPPORT	BIT(26)
 #define BTUSB_ACTIONS_SEMI		BIT(27)
 #define BTUSB_BARROT			BIT(28)
+#define BTUSB_BROKEN_LL_PRIVACY		BIT(29)
 #define BTUSB_QUALCOMM			BIT(30)
 
 static const struct usb_device_id btusb_table[] = {
@@ -529,7 +530,8 @@ static const struct usb_device_id quirks_table[] = {
 	{ USB_DEVICE(0x8087, 0x0a2b), .driver_info = BTUSB_INTEL_COMBINED },
 	{ USB_DEVICE(0x8087, 0x0aa7), .driver_info = BTUSB_INTEL_COMBINED |
 						     BTUSB_INTEL_BROKEN_SHUTDOWN_LED },
-	{ USB_DEVICE(0x8087, 0x0aaa), .driver_info = BTUSB_INTEL_COMBINED },
+	{ USB_DEVICE(0x8087, 0x0aaa), .driver_info = BTUSB_INTEL_COMBINED |
+						     BTUSB_BROKEN_LL_PRIVACY },
 
 	/* Other Intel Bluetooth devices */
 	{ USB_VENDOR_AND_INTERFACE_INFO(0x8087, 0xe0, 0x01, 0x01),
@@ -4607,6 +4609,9 @@ static int btusb_probe(struct usb_interface *intf,
 		if (id->driver_info & BTUSB_INTEL_BROKEN_SHUTDOWN_LED)
 			btintel_set_flag(hdev, INTEL_BROKEN_SHUTDOWN_LED);
 	}
+
+	if (id->driver_info & BTUSB_BROKEN_LL_PRIVACY)
+		hci_set_quirk(hdev, HCI_QUIRK_BROKEN_LL_PRIVACY);
 
 	if (id->driver_info & BTUSB_MARVELL)
 		hdev->set_bdaddr = btusb_set_bdaddr_marvell;
