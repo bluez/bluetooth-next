@@ -1909,6 +1909,14 @@ struct hci_conn *hci_connect_sco(struct hci_dev *hdev, int type, bdaddr_t *dst,
 			hci_conn_drop(acl);
 			return sco;
 		}
+	} else if (READ_ONCE(sco->abort_reason)) {
+		/* The connection is being disconnected and stays BT_CONNECTED
+		 * until the Disconnection Complete event, so no setup would
+		 * be sent for it and it would be closed under the new socket
+		 * as soon as the event arrives.
+		 */
+		hci_conn_drop(acl);
+		return ERR_PTR(-ECONNABORTED);
 	}
 
 	if (sco->link) {
@@ -3272,7 +3280,7 @@ int hci_abort_conn(struct hci_conn *conn, u8 reason)
 
 	bt_dev_dbg(hdev, "handle 0x%2.2x reason 0x%2.2x", conn->handle, reason);
 
-	conn->abort_reason = reason;
+	WRITE_ONCE(conn->abort_reason, reason);
 
 	/* Cancel the connect attempt. A return of 0 means the create command
 	 * was still queued and got dequeued, so there is nothing to disconnect.
