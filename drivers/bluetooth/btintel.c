@@ -1260,6 +1260,12 @@ static bool btintel_firmware_version(struct hci_dev *hdev,
 {
 	const u8 *fw_ptr;
 
+	if (hdev->bus == HCI_PCI) {
+		struct btintel_data *data = hci_get_priv(hdev);
+
+		data->boot_addr = 0;
+	}
+
 	fw_ptr = fw->data;
 
 	while (fw_ptr - fw->data < fw->size) {
@@ -1276,6 +1282,12 @@ static bool btintel_firmware_version(struct hci_dev *hdev,
 			params = (void *)(fw_ptr + sizeof(*cmd));
 
 			*boot_addr = le32_to_cpu(params->boot_addr);
+
+			if (hdev->bus == HCI_PCI) {
+				struct btintel_data *data = hci_get_priv(hdev);
+
+				data->boot_addr = *boot_addr;
+			}
 
 			bt_dev_info(hdev, "Boot Address: 0x%x", *boot_addr);
 
@@ -2085,6 +2097,13 @@ static int btintel_boot(struct hci_dev *hdev, u32 boot_addr)
 {
 	ktime_t calltime;
 	int err;
+
+	/* Let the transport replace the Intel soft reset for a TOP reset */
+	if (hdev->bus == HCI_PCI &&
+	    btintel_test_flag(hdev, INTEL_TOP_RESET)) {
+		bt_dev_info(hdev, "TOP reset pending, skipping Intel soft reset");
+		return -ECANCELED;
+	}
 
 	calltime = ktime_get();
 
@@ -3571,6 +3590,7 @@ int btintel_bootloader_setup_tlv(struct hci_dev *hdev,
 	struct intel_version_tlv new_ver;
 	struct btintel_data *data = hci_get_priv(hdev);
 	u8 hw_variant = INTEL_HW_VARIANT(ver->cnvi_bt);
+	bool top_reset = btintel_test_flag(hdev, INTEL_TOP_RESET);
 
 	bt_dev_dbg(hdev, "");
 
@@ -3586,6 +3606,9 @@ int btintel_bootloader_setup_tlv(struct hci_dev *hdev,
 	 */
 	for (int i = 0; i < __INTEL_NUM_FLAGS; i++)
 		btintel_clear_flag(hdev, i);
+
+	if (top_reset)
+		btintel_set_flag(hdev, INTEL_TOP_RESET);
 
 	btintel_set_flag(hdev, INTEL_BOOTLOADER);
 
@@ -3619,8 +3642,13 @@ int btintel_bootloader_setup_tlv(struct hci_dev *hdev,
 		return err;
 
 	/* check if controller is already having an operational firmware */
-	if (ver->img_type == BTINTEL_IMG_OP)
+	if (ver->img_type == BTINTEL_IMG_OP) {
+		if (top_reset) {
+			bt_dev_err(hdev, "TOP reset requested on operational image");
+			return -EALREADY;
+		}
 		goto finish;
+	}
 
 	err = btintel_boot(hdev, boot_param);
 	if (err)
