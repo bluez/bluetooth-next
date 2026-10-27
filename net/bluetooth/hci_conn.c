@@ -1935,6 +1935,17 @@ struct hci_conn *hci_connect_sco(struct hci_dev *hdev, int type, bdaddr_t *dst,
 		}
 	}
 
+	/* Taking the hold cannot stop a hci_conn_timeout() that is already
+	 * running: it may have seen no holder and be about to abort the
+	 * connection. It does not take hdev->lock, so wait for it and check
+	 * abort_reason again.
+	 */
+	cancel_delayed_work_sync(&sco->disc_work);
+	if (sco->abort_reason) {
+		hci_conn_drop(sco);
+		return ERR_PTR(-ECONNABORTED);
+	}
+
 	sco->setting = setting;
 	sco->codec = *codec;
 
