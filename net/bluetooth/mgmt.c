@@ -4434,7 +4434,7 @@ static int set_phy_configuration(struct sock *sk, struct hci_dev *hdev,
 				      MGMT_STATUS_FAILED);
 
 		if (cmd)
-			mgmt_pending_remove(cmd);
+			mgmt_pending_free(cmd);
 	}
 
 unlock:
@@ -8621,7 +8621,7 @@ static int read_local_ssp_oob_req(struct hci_dev *hdev, struct sock *sk,
 				 read_local_oob_ext_data_complete);
 
 	if (err < 0) {
-		mgmt_pending_remove(cmd);
+		mgmt_pending_free(cmd);
 		return err;
 	}
 
