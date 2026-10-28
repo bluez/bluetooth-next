@@ -1754,8 +1754,8 @@ static int qca_port_reopen(struct hci_uart *hu)
 	 * Without this, we will have RTS and CTS synchronization
 	 * issues.
 	 */
-	serdev_device_close(hu->serdev);
-	ret = serdev_device_open(hu->serdev);
+	hci_uart_serdev_close(hu);
+	ret = hci_uart_serdev_open(hu);
 	if (ret) {
 		bt_dev_err(hu->hdev, "failed to open port");
 		return ret;
@@ -1779,12 +1779,12 @@ static int qca_regulator_init(struct hci_uart *hu)
 	qcadev = serdev_device_get_drvdata(hu->serdev);
 
 	if (!qcadev->bt_power->vregs_on) {
-		serdev_device_close(hu->serdev);
+		hci_uart_serdev_close(hu);
 		ret = qca_regulator_enable(qcadev);
 		if (ret)
 			return ret;
 
-		ret = serdev_device_open(hu->serdev);
+		ret = hci_uart_serdev_open(hu);
 		if (ret) {
 			bt_dev_err(hu->hdev, "failed to open port");
 			return ret;
@@ -2060,8 +2060,8 @@ out:
 		if (retries < MAX_INIT_RETRIES) {
 			bt_dev_warn(hdev, "Retry BT power ON:%d", retries);
 			if (hu->serdev) {
-				serdev_device_close(hu->serdev);
-				ret = serdev_device_open(hu->serdev);
+				hci_uart_serdev_close(hu);
+				ret = hci_uart_serdev_open(hu);
 				if (ret) {
 					bt_dev_err(hdev, "failed to open port");
 					return ret;
