@@ -1543,7 +1543,10 @@ static void hci_cmd_timeout(struct work_struct *work)
 		hdev->reset(hdev);
 
 	atomic_set(&hdev->cmd_cnt, 1);
-	queue_work(hdev->workqueue, &hdev->cmd_work);
+	rcu_read_lock();
+	if (!hci_dev_test_flag(hdev, HCI_CMD_DRAIN_WORKQUEUE))
+		queue_work(hdev->workqueue, &hdev->cmd_work);
+	rcu_read_unlock();
 }
 
 /* HCI ncmd timer function */
