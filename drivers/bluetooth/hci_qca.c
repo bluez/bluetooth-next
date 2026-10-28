@@ -1425,6 +1425,7 @@ static int qca_send_power_pulse(struct hci_uart *hu, bool on)
 	ret = serdev_device_write_buf(hu->serdev, &cmd, sizeof(cmd));
 	if (ret < 0) {
 		bt_dev_err(hu->hdev, "failed to send power pulse %02x", cmd);
+		hci_uart_set_flow_control(hu, false);
 		return ret;
 	}
 
