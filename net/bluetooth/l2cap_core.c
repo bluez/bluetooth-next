@@ -4591,8 +4591,7 @@ static inline int l2cap_config_req(struct l2cap_conn *conn,
 
 	lockdep_assert_held(&chan->conn->lock);
 
-	if (chan->state != BT_CONFIG && chan->state != BT_CONNECT2 &&
-	    chan->state != BT_CONNECTED) {
+	if (chan->state != BT_CONFIG && chan->state != BT_CONNECT2) {
 		cmd_reject_invalid_cid(conn, cmd->ident, chan->scid,
 				       chan->dcid);
 		goto unlock;
@@ -4708,6 +4707,11 @@ static inline int l2cap_config_rsp(struct l2cap_conn *conn,
 	chan = l2cap_get_chan_by_scid(conn, scid);
 	if (!chan)
 		return 0;
+
+	if (chan->state == BT_CONNECTED) {
+		l2cap_chan_put(chan);
+		return 0;
+	}
 
 	l2cap_chan_lock(chan);
 
