@@ -2775,7 +2775,63 @@ static int __maybe_unused qca_resume(struct device *dev)
 	return 0;
 }
 
-static SIMPLE_DEV_PM_OPS(qca_pm_ops, qca_suspend, qca_resume);
+struct qca_reprobe {
+	struct work_struct work;
+	struct device *dev;
+};
+
+static void qca_reprobe_work(struct work_struct *work)
+{
+	struct qca_reprobe *reprobe = container_of(work, struct qca_reprobe,
+						   work);
+	int ret;
+
+	ret = device_reprobe(reprobe->dev);
+	if (ret && ret != -EPROBE_DEFER)
+		dev_err(reprobe->dev, "Failed to reprobe device (error %d)\n",
+			ret);
+
+	put_device(reprobe->dev);
+	kfree(reprobe);
+}
+
+static int __maybe_unused qca_restore(struct device *dev)
+{
+	struct serdev_device *serdev = to_serdev_device(dev);
+	struct qca_serdev *qcadev = serdev_device_get_drvdata(serdev);
+	struct hci_uart *hu = &qcadev->serdev_hu;
+	struct qca_reprobe *reprobe;
+
+	qca_resume(dev);
+
+	/* Without power control hdev->setup() runs only once, at probe, as
+	 * the SoC is expected to keep its firmware. Hibernation powers the
+	 * SoC off, so rebind the driver to download the firmware again. The
+	 * rebind can't run from a PM callback, and qcadev is gone once it
+	 * does, so it gets a work item of its own.
+	 */
+	if (hci_test_quirk(hu->hdev, HCI_QUIRK_NON_PERSISTENT_SETUP))
+		return 0;
+
+	reprobe = kzalloc_obj(*reprobe);
+	if (!reprobe)
+		return -ENOMEM;
+
+	INIT_WORK(&reprobe->work, qca_reprobe_work);
+	reprobe->dev = get_device(dev);
+	queue_work(system_freezable_wq, &reprobe->work);
+
+	return 0;
+}
+
+static const struct dev_pm_ops qca_pm_ops = {
+	.suspend = pm_sleep_ptr(qca_suspend),
+	.resume = pm_sleep_ptr(qca_resume),
+	.freeze = pm_sleep_ptr(qca_suspend),
+	.thaw = pm_sleep_ptr(qca_resume),
+	.poweroff = pm_sleep_ptr(qca_suspend),
+	.restore = pm_sleep_ptr(qca_restore),
+};
 
 #ifdef CONFIG_OF
 static const struct of_device_id qca_bluetooth_of_match[] = {
