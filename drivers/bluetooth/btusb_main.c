@@ -2972,6 +2972,19 @@ static int btusb_setup_realtek(struct hci_dev *hdev)
 	return ret;
 }
 
+/* Private diagnostic: test the reported Link Layer maximum as an HCI size. */
+static int btusb_ub500_test_post_init(struct hci_dev *hdev)
+{
+	if (hdev->le_mtu != 27 || hdev->le_pkts != 8 ||
+	    hdev->le_max_tx_len != 251)
+		return -EINVAL;
+
+	bt_dev_info(hdev, "UB500 TEST ONLY: LE ACL MTU 27 -> %u; LE packets %u unchanged",
+		    hdev->le_max_tx_len, hdev->le_pkts);
+	hdev->le_mtu = hdev->le_max_tx_len;
+	return 0;
+}
+
 static int btusb_recv_event_realtek(struct hci_dev *hdev, struct sk_buff *skb)
 {
 	if (skb->len >= HCI_EVENT_HDR_SIZE + 1 &&
@@ -4715,6 +4728,9 @@ static int btusb_probe(struct usb_interface *intf,
 	    (id->driver_info & BTUSB_REALTEK)) {
 		btrtl_set_driver_name(hdev, btusb_driver.name);
 		hdev->setup = btusb_setup_realtek;
+		if (le16_to_cpu(data->udev->descriptor.idVendor) == 0x2357 &&
+		    le16_to_cpu(data->udev->descriptor.idProduct) == 0x0604)
+			hdev->post_init = btusb_ub500_test_post_init;
 		hdev->shutdown = btrtl_shutdown_realtek;
 		hdev->reset = btusb_rtl_reset;
 		hdev->hw_error = btusb_rtl_hw_error;
