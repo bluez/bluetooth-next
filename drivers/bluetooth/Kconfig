@@ -118,7 +118,6 @@ config BT_HCIBTSDIO
 config BT_HCIUART
 	tristate "HCI UART driver"
 	depends on SERIAL_DEV_BUS || !SERIAL_DEV_BUS
-	depends on NVMEM || !NVMEM
 	depends on POWER_SEQUENCING || !POWER_SEQUENCING
 	depends on TTY
 	help
