@@ -1745,6 +1745,27 @@ static bool qca_wakeup(struct hci_dev *hdev)
 	return wakeup;
 }
 
+static void qca_port_close(struct hci_uart *hu)
+{
+	/* HCI_UART_PROTO_READY tracks whether the port is open, so a port
+	 * left closed by a failed qca_port_open() is not closed again by
+	 * hci_uart_close() or hci_uart_unregister_device().
+	 */
+	if (test_and_clear_bit(HCI_UART_PROTO_READY, &hu->flags))
+		serdev_device_close(hu->serdev);
+}
+
+static int qca_port_open(struct hci_uart *hu)
+{
+	int ret;
+
+	ret = serdev_device_open(hu->serdev);
+	if (!ret)
+		set_bit(HCI_UART_PROTO_READY, &hu->flags);
+
+	return ret;
+}
+
 static int qca_port_reopen(struct hci_uart *hu)
 {
 	int ret;
@@ -1754,8 +1775,8 @@ static int qca_port_reopen(struct hci_uart *hu)
 	 * Without this, we will have RTS and CTS synchronization
 	 * issues.
 	 */
-	serdev_device_close(hu->serdev);
-	ret = serdev_device_open(hu->serdev);
+	qca_port_close(hu);
+	ret = qca_port_open(hu);
 	if (ret) {
 		bt_dev_err(hu->hdev, "failed to open port");
 		return ret;
@@ -1779,12 +1800,12 @@ static int qca_regulator_init(struct hci_uart *hu)
 	qcadev = serdev_device_get_drvdata(hu->serdev);
 
 	if (!qcadev->bt_power->vregs_on) {
-		serdev_device_close(hu->serdev);
+		qca_port_close(hu);
 		ret = qca_regulator_enable(qcadev);
 		if (ret)
 			return ret;
 
-		ret = serdev_device_open(hu->serdev);
+		ret = qca_port_open(hu);
 		if (ret) {
 			bt_dev_err(hu->hdev, "failed to open port");
 			return ret;
@@ -1865,6 +1886,19 @@ static int qca_power_on(struct hci_dev *hdev)
 	case QCA_WCN6855:
 	case QCA_WCN7850:
 		ret = qca_regulator_init(hu);
+		break;
+
+	case QCA_QCA2066:
+		qcadev = serdev_device_get_drvdata(hu->serdev);
+		if (qcadev->bt_en) {
+			gpiod_set_value_cansleep(qcadev->bt_en, 0);
+			msleep(50);
+			gpiod_set_value_cansleep(qcadev->bt_en, 1);
+			/* Controller needs time to bootup. */
+			msleep(50);
+		}
+
+		ret = qca_port_reopen(hu);
 		break;
 
 	default:
@@ -2060,8 +2094,8 @@ out:
 		if (retries < MAX_INIT_RETRIES) {
 			bt_dev_warn(hdev, "Retry BT power ON:%d", retries);
 			if (hu->serdev) {
-				serdev_device_close(hu->serdev);
-				ret = serdev_device_open(hu->serdev);
+				qca_port_close(hu);
+				ret = qca_port_open(hu);
 				if (ret) {
 					bt_dev_err(hdev, "failed to open port");
 					return ret;
