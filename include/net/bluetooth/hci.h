@@ -375,6 +375,38 @@ enum {
 	 */
 	HCI_QUIRK_BROKEN_READ_PAGE_SCAN_TYPE,
 
+	/*
+	 * When this quirk is set, the HCI_OP_WRITE_SC_SUPPORT command is
+	 * not supported.
+	 *
+	 * This quirk is intended for controllers that list BR/EDR Secure
+	 * Connections among their extended features and then reject the
+	 * command that turns host support on. Without it the failure takes
+	 * the whole of hci_dev_open_sync() with it and the controller can
+	 * never be powered on.
+	 *
+	 * This quirk must be set before hci_register_dev is called.
+	 */
+	HCI_QUIRK_BROKEN_WRITE_SC_SUPPORT,
+
+	/* When this quirk is set, HCI_OP_WRITE_CURRENT_IAC_LAP is never sent.
+	 *
+	 * Some controllers list the command among the ones they support, and
+	 * answer Read Current IAC LAP quite happily, but wedge and stop
+	 * responding to anything at all the moment the write is issued - even
+	 * when the value being written is the general inquiry access code the
+	 * controller already reports. Going discoverable is what triggers the
+	 * write, so on such a controller the adapter dies precisely when it is
+	 * asked to become visible.
+	 *
+	 * Skipping the write costs limited discoverable mode, which needs the
+	 * LIAC programmed. General discoverable mode is unaffected: the GIAC
+	 * is what these controllers already have.
+	 *
+	 * This quirk must be set before hci_register_dev is called.
+	 */
+	HCI_QUIRK_BROKEN_WRITE_CURRENT_IAC_LAP,
+
 	__HCI_NUM_QUIRKS,
 };
 
