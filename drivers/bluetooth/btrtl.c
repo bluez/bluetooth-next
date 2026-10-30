@@ -31,6 +31,20 @@
 #define RTL_ROM_LMP_8852A	0x8852
 #define RTL_ROM_LMP_8851B	0x8851
 #define RTL_ROM_LMP_8922A	0x8922
+
+/* RTL8852BD: the RTL8852B silicon cut that reports rom_version 3 */
+#define RTL_8852BD_ROM_VERSION	3
+#define RTL_8852BD_FW		"rtl_bt/rtl8852bd_eco4.bin"
+#define RTL_ECO4_MAGIC		"E4RD"
+#define RTL_ECO4_FRAG_LEN	252
+#define RTL_ECO4_MAX_INDEX	0x7f
+#define RTL_ECO4_END_FLAG	0x80
+#define RTL_ECO4_ATTEMPTS	3
+/* Vendor write-memory command: [0x21][addr:le32][value:le32] */
+#define RTL_OP_WRITE_MEM	0xfc62
+#define RTL_WRITE_MEM_TYPE	0x21
+/* Holds the RAM address that 0xfc20 fragments are streamed into */
+#define RTL_ECO4_DL_PTR		0x801200cc
 #define RTL_CONFIG_MAGIC	0x8723ab55
 
 #define RTL_VSC_OP_COREDUMP	0xfcff
@@ -922,6 +936,184 @@ static int btrtl_setup_rtl8723a(struct hci_dev *hdev,
 				     btrtl_dev->fw_len);
 }
 
+static bool btrtl_is_8852bd(const struct btrtl_device_info *btrtl_dev)
+{
+	const struct id_table *ic = btrtl_dev->ic_info;
+
+	return ic && ic->lmp_subver == RTL_ROM_LMP_8852A &&
+	       ic->hci_rev == 0xb && ic->hci_bus == HCI_USB &&
+	       btrtl_dev->rom_version == RTL_8852BD_ROM_VERSION;
+}
+
+/* Send a vendor command and return the status byte of its Command Complete
+ * event, or a negative errno if the command could not be issued.
+ */
+static int rtl_eco4_cmd(struct hci_dev *hdev, u16 opcode, u32 plen,
+			const void *param)
+{
+	struct sk_buff *skb;
+	int status;
+
+	skb = __hci_cmd_sync(hdev, opcode, plen, param, HCI_INIT_TIMEOUT);
+	if (IS_ERR(skb)) {
+		rtl_dev_err(hdev, "eco4: opcode 0x%04x failed (%ld)", opcode,
+			    PTR_ERR(skb));
+		return PTR_ERR(skb);
+	}
+
+	status = skb->len ? skb->data[0] : -EIO;
+	kfree_skb(skb);
+	return status;
+}
+
+/* The RTL8852BD needs an "eco 4" patch that no linux-firmware container
+ * provides. Realtek ships it as several records, each with its own RAM load
+ * address. RTL_8852BD_FW holds them as:
+ *
+ *   "E4RD" | __le32 count | count * (__le32 load, __le32 len, u8 data[len])
+ *
+ * Before the fragments of a record are sent, the record's load address is
+ * written into RTL_ECO4_DL_PTR so the controller stores them there. Data
+ * fragments carry plain indices (setting bit 7 on a data fragment wedges the
+ * controller); a single empty fragment with RTL_ECO4_END_FLAG commits the
+ * patch at the end.
+ */
+static int rtl_download_eco4_once(struct hci_dev *hdev,
+				  const struct firmware *fw)
+{
+	struct hci_rp_read_local_version *rp;
+	const u8 *p = fw->data + 8;
+	const u8 *end = fw->data + fw->size;
+	u32 count = get_unaligned_le32(fw->data + 4);
+	struct sk_buff *skb;
+	u8 *frag;
+	u16 subver;
+	u32 i;
+	int ret = 0;
+
+	frag = kmalloc(RTL_ECO4_FRAG_LEN + 1, GFP_KERNEL);
+	if (!frag)
+		return -ENOMEM;
+
+	for (i = 0; i < count; i++) {
+		u8 setup[9];
+		u32 load, len, off;
+		u8 index = 1;
+
+		if (end - p < 8) {
+			ret = -EINVAL;
+			goto out;
+		}
+		load = get_unaligned_le32(p);
+		len = get_unaligned_le32(p + 4);
+		p += 8;
+		if (!len || len > end - p) {
+			ret = -EINVAL;
+			goto out;
+		}
+
+		setup[0] = RTL_WRITE_MEM_TYPE;
+		put_unaligned_le32(RTL_ECO4_DL_PTR, setup + 1);
+		put_unaligned_le32(load, setup + 5);
+		ret = rtl_eco4_cmd(hdev, RTL_OP_WRITE_MEM, sizeof(setup), setup);
+		if (ret) {
+			rtl_dev_err(hdev, "eco4: record %u: set load address failed (%d)",
+				    i, ret);
+			ret = ret < 0 ? ret : -EIO;
+			goto out;
+		}
+
+		for (off = 0; off < len; off += RTL_ECO4_FRAG_LEN) {
+			u32 flen = min_t(u32, RTL_ECO4_FRAG_LEN, len - off);
+
+			frag[0] = index;
+			memcpy(frag + 1, p + off, flen);
+			ret = rtl_eco4_cmd(hdev, 0xfc20, flen + 1, frag);
+			if (ret) {
+				rtl_dev_err(hdev, "eco4: record %u: fragment %u failed (%d)",
+					    i, index, ret);
+				ret = ret < 0 ? ret : -EIO;
+				goto out;
+			}
+			index = index < RTL_ECO4_MAX_INDEX ? index + 1 : 1;
+		}
+		p += len;
+	}
+
+	frag[0] = RTL_ECO4_END_FLAG;
+	/* the version check below decides whether the commit worked */
+	ret = rtl_eco4_cmd(hdev, 0xfc20, 1, frag);
+	if (ret > 0)
+		rtl_dev_warn(hdev, "eco4: commit status 0x%02x", ret);
+
+	/* All of the above can succeed while the patch fails to start, which
+	 * leaves the controller on ROM code with a dead radio. The ROM reports
+	 * lmp_subver 0x8852; the running patch does not.
+	 */
+	skb = btrtl_read_local_version(hdev);
+	if (IS_ERR(skb)) {
+		ret = PTR_ERR(skb);
+		goto out;
+	}
+	rp = (struct hci_rp_read_local_version *)skb->data;
+	subver = le16_to_cpu(rp->lmp_subver);
+	rtl_dev_info(hdev, "fw version 0x%04x%04x",
+		     le16_to_cpu(rp->hci_rev), subver);
+	kfree_skb(skb);
+
+	ret = subver == RTL_ROM_LMP_8852A ? -EAGAIN : 0;
+	if (ret)
+		rtl_dev_err(hdev, "eco4: patch did not start");
+out:
+	kfree(frag);
+	return ret;
+}
+
+static int rtl_download_eco4(struct hci_dev *hdev)
+{
+	const struct firmware *fw;
+	struct sk_buff *skb;
+	int attempt, ret;
+
+	ret = request_firmware(&fw, RTL_8852BD_FW, &hdev->dev);
+	if (ret < 0) {
+		rtl_dev_err(hdev, "eco4: failed to load %s (%d)",
+			    RTL_8852BD_FW, ret);
+		return ret;
+	}
+	if (fw->size < 8 || memcmp(fw->data, RTL_ECO4_MAGIC, 4)) {
+		rtl_dev_err(hdev, "eco4: %s: bad container", RTL_8852BD_FW);
+		ret = -EINVAL;
+		goto out;
+	}
+
+	for (attempt = 1; attempt <= RTL_ECO4_ATTEMPTS; attempt++) {
+		ret = rtl_download_eco4_once(hdev, fw);
+		if (!ret) {
+			rtl_dev_info(hdev, "RTL8852BD eco4 patch running (attempt %d)",
+				     attempt);
+			break;
+		}
+		if (ret == -EINVAL || ret == -ENOMEM)
+			break;
+		if (attempt == RTL_ECO4_ATTEMPTS)
+			break;
+
+		rtl_dev_warn(hdev, "eco4: attempt %d failed (%d), retrying",
+			     attempt, ret);
+		/* drop any partially loaded patch before the next attempt */
+		skb = __hci_cmd_sync(hdev, HCI_OP_RESET, 0, NULL,
+				     HCI_INIT_TIMEOUT);
+		if (!IS_ERR(skb))
+			kfree_skb(skb);
+		msleep(100);
+	}
+
+out:
+	release_firmware(fw);
+	return ret;
+}
+
 static int btrtl_setup_rtl8723b(struct hci_dev *hdev,
 				struct btrtl_device_info *btrtl_dev)
 {
@@ -930,6 +1122,14 @@ static int btrtl_setup_rtl8723b(struct hci_dev *hdev,
 	u8 *tbuff;
 
 	ret = rtlbt_parse_firmware(hdev, btrtl_dev, &fw_data);
+	/* linux-firmware has no patch for the RTL8852BD; the parser reports
+	 * -EINVAL (v1 EPATCH) or -ENODATA (v2 container) for it.
+	 */
+	if ((ret == -EINVAL || ret == -ENODATA) && btrtl_is_8852bd(btrtl_dev)) {
+		rtl_dev_info(hdev, "RTL8852BD: using eco4 patch");
+		ret = rtl_download_eco4(hdev);
+		goto out;
+	}
 	if (ret < 0)
 		goto out;
 
@@ -1558,6 +1758,7 @@ MODULE_FIRMWARE("rtl_bt/rtl8852bs_fw.bin");
 MODULE_FIRMWARE("rtl_bt/rtl8852bs_config.bin");
 MODULE_FIRMWARE("rtl_bt/rtl8852bu_fw.bin");
 MODULE_FIRMWARE("rtl_bt/rtl8852bu_config.bin");
+MODULE_FIRMWARE(RTL_8852BD_FW);
 MODULE_FIRMWARE("rtl_bt/rtl8852btu_fw.bin");
 MODULE_FIRMWARE("rtl_bt/rtl8852btu_config.bin");
 MODULE_FIRMWARE("rtl_bt/rtl8852cu_fw.bin");
