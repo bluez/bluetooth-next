@@ -71,6 +71,7 @@ struct intel_tlv {
 /* CNVR */
 #define BTINTEL_CNVR_FMP2		0x910
 #define BTINTEL_CNVR_WHP2		0xA10	/* Whale Peak2 - Panther Lake */
+#define BTINTEL_CNVR_PEP		0xA30   /* PeP2 / PeP STC */
 
 #define BTINTEL_IMG_BOOTLOADER		0x01	/* Bootloader image */
 #define BTINTEL_IMG_IML			0x02	/* Intermediate image */
@@ -221,6 +222,34 @@ struct btintel_sar_inc_pwr {
 	u8	le_2mhz;
 	u8	le_lr;
 };
+
+/* DCR-3475: BT SAR Per Modulation Offset (BPMO)
+ *
+ * BPMO_NUM_MODULATIONS = 16 (indices 0-12 active, 13-15 reserved).
+ */
+#define BTINTEL_BPMO_NUM_MODULATIONS	16
+
+/* BPMO UEFI variable (Revision 0) layout:
+ *   [0]       Header/revision (0 = Revision 0)
+ *   [1..4]    Mode (0 = disabled, 1 = enabled, little-endian u32)
+ *   [5..20]   Chain A per-modulation offsets (u8, format xxxxx.yyy)
+ *   [21..36]  Chain B per-modulation offsets (u8, format xxxxx.yyy)
+ * Index-to-modulation mapping (sc_sar.h scSar_bpmoModulation_en):
+ *   0=BR, 1=EDR2M, 2=EDR3M, 3=LE1M, 4=LE2M, 5=CS, 6=LRS2, 7=LRS8,
+ *   8=HDT2, 9=HDT3, 10=HDT4, 11=HDT6, 12=HDT7P5, 13-15=reserved
+ */
+struct btintel_bpmo {
+	u8	header;
+	__le32	mode;
+	u8	chain_a[BTINTEL_BPMO_NUM_MODULATIONS];
+	u8	chain_b[BTINTEL_BPMO_NUM_MODULATIONS];
+} __packed;
+
+#define BTINTEL_DDC_ID_SAR_BRDS_LIMIT_2G4	0x0311
+
+#define BTINTEL_DDC_ID_SAR_BPMO_ENABLE		0x0359
+#define BTINTEL_DDC_ID_SAR_BPMO_CHAIN_A		0x035A
+#define BTINTEL_DDC_ID_SAR_BPMO_CHAIN_B		0x035B
 
 /* Bluetooth SAR feature (BRDS), Revision 2 - per-chain sub-band power limits */
 struct btintel_sar_band_limits {

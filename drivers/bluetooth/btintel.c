@@ -28,7 +28,13 @@
 #define ECDSA_OFFSET		644
 #define ECDSA_HEADER_LEN	320
 
+#define BTINTEL_EFI_BPMO	L"UefiCnvBtBPMO"
+#define BTINTEL_EFI_BRDS	L"UefiCnvBtBRDS"
 #define BTINTEL_EFI_DSBR	L"UefiCnvCommonDSBR"
+
+static efi_guid_t btintel_efi_sar_guid =
+	EFI_GUID(0x42780dd5, 0x9a7d, 0x404c,
+		 0x80, 0xe4, 0x7f, 0x70, 0x94, 0x36, 0x03, 0x94);
 
 enum {
 	DSM_SET_WDISABLE2_DELAY = 1,
@@ -3092,6 +3098,7 @@ static union acpi_object *btintel_acpi_get_bt_pkg(union acpi_object *buffer)
 	}
 	return ERR_PTR(-ENOENT);
 }
+#endif /* CONFIG_ACPI */
 
 static int btintel_send_sar_ddc(struct hci_dev *hdev, struct btintel_cp_ddc_write *data, u8 len)
 {
@@ -3107,6 +3114,7 @@ static int btintel_send_sar_ddc(struct hci_dev *hdev, struct btintel_cp_ddc_writ
 	return 0;
 }
 
+#ifdef CONFIG_ACPI
 static int btintel_send_edr(struct hci_dev *hdev, struct btintel_cp_ddc_write *cmd,
 			    int id, struct btintel_sar_inc_pwr *sar)
 {
@@ -3162,7 +3170,153 @@ static int btintel_send_edr3(struct hci_dev *hdev, struct btintel_cp_ddc_write *
 	cmd->data[0] = sar->edr3;
 	return btintel_send_sar_ddc(hdev, cmd, 4);
 }
+#endif /* CONFIG_ACPI */
 
+/* btintel_send_sar_complete - send HCI_Intel_SarInitializeState_CMD (0xFE25)
+ *
+ * Sent once after all SAR DDC writes are complete.
+ */
+static int btintel_send_sar_complete(struct hci_dev *hdev)
+{
+	struct sk_buff *skb;
+	bool enable = true;
+
+	skb = __hci_cmd_sync(hdev, 0xfe25, 1, &enable, HCI_CMD_TIMEOUT);
+	if (IS_ERR(skb)) {
+		bt_dev_err(hdev, "BT_SAR: failed to send SAR initialization complete (%ld)",
+			   PTR_ERR(skb));
+		return PTR_ERR(skb);
+	}
+	kfree_skb(skb);
+	return 0;
+}
+
+/* btintel_write_bpmo_ddc - write BPMO DDC constants to firmware
+ *
+ * Writes DDC_ID_SAR_BPMO_ENABLE (1 byte), DDC_ID_SAR_BPMO_OFFSET_A (16 bytes)
+ * and DDC_ID_SAR_BPMO_OFFSET_B (16 bytes) via HCI WriteDdcConst (0xfc8b).
+ * Values are passed through unchanged from the BIOS UEFI variable; no
+ * arithmetic is performed by the driver (HLD DCR-3475 §5.1 step 2).
+ */
+static int btintel_write_bpmo_ddc(struct hci_dev *hdev,
+				  const struct btintel_bpmo *bpmo)
+{
+	u8 buffer[sizeof(struct btintel_cp_ddc_write) + BTINTEL_BPMO_NUM_MODULATIONS];
+	struct btintel_cp_ddc_write *cmd = (void *)buffer;
+	int ret;
+
+	/* Enable flag (1 byte) — SarBpmoEnable (0x0359) */
+	cmd->len     = 3;
+	cmd->id      = cpu_to_le16(BTINTEL_DDC_ID_SAR_BPMO_ENABLE);
+	cmd->data[0] = !!(le32_to_cpu(bpmo->mode) & BIT(0));
+	ret = btintel_send_sar_ddc(hdev, cmd, 4);
+	if (ret) {
+		bt_dev_err(hdev, "BT_BPMO: failed to write DDC enable (0x%04x): %d",
+			   BTINTEL_DDC_ID_SAR_BPMO_ENABLE, ret);
+		return ret;
+	}
+	/* Chain A per-modulation offsets (16 bytes) — SarBpmoChainA (0x035A) */
+	cmd->len = 2 + BTINTEL_BPMO_NUM_MODULATIONS;
+	cmd->id  = cpu_to_le16(BTINTEL_DDC_ID_SAR_BPMO_CHAIN_A);
+	memcpy(cmd->data, bpmo->chain_a, BTINTEL_BPMO_NUM_MODULATIONS);
+	ret = btintel_send_sar_ddc(hdev, cmd,
+				   sizeof(*cmd) + BTINTEL_BPMO_NUM_MODULATIONS);
+	if (ret) {
+		bt_dev_err(hdev, "BT_BPMO: failed to write DDC chain A (0x%04x): %d",
+			   BTINTEL_DDC_ID_SAR_BPMO_CHAIN_A, ret);
+		return ret;
+	}
+	/* Chain B per-modulation offsets (16 bytes) — SarBpmoChainB (0x035B) */
+	cmd->len = 2 + BTINTEL_BPMO_NUM_MODULATIONS;
+	cmd->id  = cpu_to_le16(BTINTEL_DDC_ID_SAR_BPMO_CHAIN_B);
+	memcpy(cmd->data, bpmo->chain_b, BTINTEL_BPMO_NUM_MODULATIONS);
+	ret = btintel_send_sar_ddc(hdev, cmd,
+				   sizeof(*cmd) + BTINTEL_BPMO_NUM_MODULATIONS);
+	if (ret) {
+		bt_dev_err(hdev, "BT_BPMO: failed to write DDC chain B (0x%04x): %d",
+			   BTINTEL_DDC_ID_SAR_BPMO_CHAIN_B, ret);
+		return ret;
+	}
+	return 0;
+}
+
+/* btintel_uefi_get_bpmo - read BT per-modulation SAR offsets from UEFI variable
+ *
+ * Reads UefiCnvBtBPMO (CNV_UEFI_VAR_BPMO, Revision 0) from the UEFI runtime
+ * variable store for the PeP/SCP2 path.
+ *
+ * Returns  0           on success; @bpmo is filled.
+ * Returns -ENOENT      if the variable is absent.
+ * Returns -EOPNOTSUPP  if EFI runtime is unavailable or revision unsupported.
+ * Returns -EINVAL/-EIO on structural or read errors.
+ *
+ * Layout confirmed by BIOS team (Kobi), total 37 bytes:
+ *   u8  header/revision  (offset 0)
+ *   u32 mode      (offset 1, no padding — struct is __packed)
+ *   u8  chain_a[16] (offset 5)
+ *   u8  chain_b[16] (offset 21)
+ */
+static int btintel_uefi_get_bpmo(struct hci_dev *hdev, struct btintel_bpmo *bpmo)
+{
+	unsigned long data_size = sizeof(*bpmo);
+	efi_status_t status;
+
+	if (!IS_ENABLED(CONFIG_EFI))
+		return -EOPNOTSUPP;
+
+	if (!efi_rt_services_supported(EFI_RT_SUPPORTED_GET_VARIABLE))
+		return -EOPNOTSUPP;
+
+	status = efi.get_variable(BTINTEL_EFI_BPMO, &btintel_efi_sar_guid, NULL,
+				  &data_size, bpmo);
+	if (status == EFI_NOT_FOUND)
+		return -ENOENT;
+	/* larger variable = future revision; treat as unsupported rather than error */
+	if (status == EFI_BUFFER_TOO_SMALL)
+		return -EOPNOTSUPP;
+	if (status != EFI_SUCCESS) {
+		bt_dev_warn(hdev, "BT_BPMO: UEFI variable read error (0x%lx)",
+			    status);
+		return -EIO;
+	}
+
+	if (data_size < sizeof(*bpmo)) {
+		bt_dev_warn(hdev, "BT_BPMO: UEFI variable too small (%lu < %zu)",
+			    data_size, sizeof(*bpmo));
+		return -EINVAL;
+	}
+
+	if (bpmo->header != 0) {
+		bt_dev_dbg(hdev, "BT_BPMO: unsupported UEFI revision %u",
+			   bpmo->header);
+		return -EOPNOTSUPP;
+	}
+
+	return 0;
+}
+
+/* btintel_set_bpmo - apply UEFI BT per-modulation SAR offsets to firmware */
+static int btintel_set_bpmo(struct hci_dev *hdev)
+{
+	struct btintel_bpmo bpmo;
+	int ret;
+
+	ret = btintel_uefi_get_bpmo(hdev, &bpmo);
+	if (ret == 0) {
+		if (!(le32_to_cpu(bpmo.mode) & BIT(0)))
+			return 0;
+		ret = btintel_write_bpmo_ddc(hdev, &bpmo);
+		if (ret)
+			bt_dev_err(hdev, "BT_BPMO: DDC write failed (%d)", ret);
+		return ret;
+	}
+
+	if (ret != -ENOENT && ret != -EOPNOTSUPP)
+		bt_dev_warn(hdev, "BT_BPMO: UEFI read failed (%d)", ret);
+	return -ENOENT;
+}
+
+#ifdef CONFIG_ACPI
 static int btintel_set_legacy_sar(struct hci_dev *hdev, struct btintel_sar_inc_pwr *sar)
 {
 	struct btintel_cp_ddc_write *cmd;
@@ -3202,9 +3356,7 @@ static int btintel_set_legacy_sar(struct hci_dev *hdev, struct btintel_sar_inc_p
 static int btintel_set_mutual_sar(struct hci_dev *hdev, struct btintel_sar_inc_pwr *sar)
 {
 	struct btintel_cp_ddc_write *cmd;
-	struct sk_buff *skb;
 	u8 buffer[64];
-	bool enable;
 	int ret;
 
 	cmd = (void *)buffer;
@@ -3249,15 +3401,7 @@ static int btintel_set_mutual_sar(struct hci_dev *hdev, struct btintel_sar_inc_p
 	if (ret)
 		return ret;
 
-	enable = true;
-	skb = __hci_cmd_sync(hdev, 0xfe25, 1, &enable, HCI_CMD_TIMEOUT);
-	if (IS_ERR(skb)) {
-		bt_dev_warn(hdev, "Failed to send Intel SAR Enable (%ld)", PTR_ERR(skb));
-		return PTR_ERR(skb);
-	}
-
-	kfree_skb(skb);
-	return 0;
+	return btintel_send_sar_complete(hdev);
 }
 
 /* btintel_send_sar_rev2_band - send DDC command for one Rev2 sub-band
@@ -3544,9 +3688,109 @@ error:
 }
 #endif /* CONFIG_ACPI */
 
+/* btintel_uefi_get_brds - read SAR limits from UEFI variable UefiCnvBtBRDS
+ *
+ * Primary SAR data source that expose BRDS
+ * via UEFI instead of ACPI.  Uses the same GUID as UefiCnvBtBPMO.
+ *
+ * Writes BRDS DDC only — does NOT call btintel_set_bpmo() or send 0xFE25.
+ * BPMO and 0xFE25 are handled independently by the caller.
+ *
+ * CNV_UEFI_VAR_BRDS revision 2 layout (confirmed by BIOS team, 19 bytes):
+ *   u8  header          - CNV_UEFI_VAR_HEADER (0x02 = revision 2)
+ *   u32 mode            - bit 0: SAR enabled (0=disabled, 1=enabled)
+ *   u32 inc_power_mode  - 0=enabled, 1=disabled
+ *   u8  chain_a[5]      - BT_SAR_POWER_LIMITS chain A [2G4,5G2,5G8,6G1,6G3]
+ *   u8  chain_b[5]      - BT_SAR_POWER_LIMITS chain B [2G4,5G2,5G8,6G1,6G3]
+ */
+static int btintel_uefi_get_brds(struct hci_dev *hdev)
+{
+	struct {
+		u8  header;      /* CNV_UEFI_VAR_HEADER: 0x02 = revision 2 */
+		__le32 mode;     /* bit 0: 1=SAR enabled, 0=disabled        */
+		__le32 inc_power_mode; /* 0=enabled, 1=disabled            */
+		u8  chain_a[5];  /* sub-band limits chain A: [2G4,5G2,5G8,6G1,6G3] */
+		u8  chain_b[5];  /* sub-band limits chain B: [2G4,5G2,5G8,6G1,6G3] */
+	} __packed var;
+	unsigned long data_size = sizeof(var);
+	efi_status_t status;
+
+	if (!IS_ENABLED(CONFIG_EFI))
+		return -EOPNOTSUPP;
+
+	if (!efi_rt_services_supported(EFI_RT_SUPPORTED_GET_VARIABLE))
+		return -EOPNOTSUPP;
+
+	status = efi.get_variable(BTINTEL_EFI_BRDS, &btintel_efi_sar_guid, NULL,
+				  &data_size, &var);
+	if (status == EFI_NOT_FOUND)
+		return -ENOENT;
+	/* larger variable = future revision; treat as unsupported rather than error */
+	if (status == EFI_BUFFER_TOO_SMALL)
+		return -EOPNOTSUPP;
+	if (status != EFI_SUCCESS) {
+		bt_dev_warn(hdev, "BT_SAR: UEFI BRDS read error (0x%lx)", status);
+		return -EIO;
+	}
+
+	if (data_size < sizeof(var)) {
+		bt_dev_warn(hdev, "BT_SAR: UEFI BRDS too small (%lu < %zu)",
+			    data_size, sizeof(var));
+		return -EINVAL;
+	}
+
+	if (var.header != 0x02) {
+		bt_dev_warn(hdev, "BT_SAR: UEFI BRDS unsupported revision 0x%02x", var.header);
+		return -EOPNOTSUPP;
+	}
+
+	if (!(le32_to_cpu(var.mode) & BIT(0))) {
+		bt_dev_dbg(hdev, "BT_SAR: UEFI BRDS SAR not enabled in BIOS");
+		return -EOPNOTSUPP;
+	}
+
+	/* BT operates at 2.4 GHz only — write SarBrdsLimit2G4 (0x0311) with chain A/B pair. */
+	{
+		u8 buf[sizeof(struct btintel_cp_ddc_write) + 2];
+		struct btintel_cp_ddc_write *cmd = (void *)buf;
+		int ret;
+
+		cmd->len     = 4; /* 2 (id) + 2 (data) */
+		cmd->id      = cpu_to_le16(BTINTEL_DDC_ID_SAR_BRDS_LIMIT_2G4);
+		cmd->data[0] = var.chain_a[0]; /* subBand2G4 Chain A */
+		cmd->data[1] = var.chain_b[0]; /* subBand2G4 Chain B */
+
+		ret = btintel_send_sar_ddc(hdev, cmd, sizeof(*cmd) + 2);
+		if (ret) {
+			bt_dev_warn(hdev, "BT_SAR: BRDS DDC write failed (0x%04x): %d",
+				    BTINTEL_DDC_ID_SAR_BRDS_LIMIT_2G4, ret);
+			return ret;
+		}
+	}
+	return 0;
+}
+
 static int btintel_set_specific_absorption_rate(struct hci_dev *hdev,
 						struct intel_version_tlv *ver)
 {
+	u16 cnvi = ver->cnvi_top & 0xfff;
+	u16 cnvr = ver->cnvr_top & 0xfff;
+	int ret;
+
+	/* SCP2/SCP2F with PeP CNVr: UEFI path, independent of CONFIG_ACPI */
+	if ((cnvi == BTINTEL_CNVI_SCP2 || cnvi == BTINTEL_CNVI_SCP2_C0 ||
+	     cnvi == BTINTEL_CNVI_SCP2F) && cnvr == BTINTEL_CNVR_PEP) {
+		ret = btintel_uefi_get_brds(hdev);
+		if (ret && ret != -ENOENT && ret != -EOPNOTSUPP)
+			bt_dev_warn(hdev, "BT_SAR: BRDS DDC failed (%d)", ret);
+
+		ret = btintel_set_bpmo(hdev);
+		if (ret && ret != -ENOENT)
+			bt_dev_warn(hdev, "BT_BPMO: failed (%d)", ret);
+
+		return btintel_send_sar_complete(hdev);
+	}
+
 #ifdef CONFIG_ACPI
 	return btintel_acpi_set_sar(hdev, ver);
 #endif
