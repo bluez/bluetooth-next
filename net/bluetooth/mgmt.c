@@ -11075,6 +11075,26 @@ void mgmt_conn_subrate_notify(struct hci_dev *hdev, struct hci_conn *conn,
 	mgmt_event(MGMT_EV_CONN_SUBRATE, hdev, &ev, sizeof(ev), NULL);
 }
 
+void mgmt_conn_update_notify(struct hci_dev *hdev, struct hci_conn *conn)
+{
+	struct mgmt_ev_conn_subrate ev;
+
+	bacpy(&ev.addr.bdaddr, &conn->dst);
+	ev.addr.type = link_to_bdaddr(conn->type, conn->dst_type);
+	ev.status = MGMT_STATUS_SUCCESS;
+	/* The connection interval is in units of 1.25 ms and the event uses
+	 * units of 0.125 ms. Connection updates don't report subrating, so
+	 * keep the values of the last connection rate change, if any.
+	 */
+	ev.interval = cpu_to_le16(conn->le_conn_interval * 10);
+	ev.subrate = cpu_to_le16(conn->le_subrate ? : 1);
+	ev.latency = cpu_to_le16(conn->le_conn_latency);
+	ev.cont_num = cpu_to_le16(conn->le_cont_num);
+	ev.supv_timeout = cpu_to_le16(conn->le_supv_timeout);
+
+	mgmt_event(MGMT_EV_CONN_SUBRATE, hdev, &ev, sizeof(ev), NULL);
+}
+
 void mgmt_exit(void)
 {
 	hci_mgmt_chan_unregister(&chan);

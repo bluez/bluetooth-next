@@ -6032,6 +6032,7 @@ static void le_conn_complete_evt(struct hci_dev *hdev, u8 status,
 	conn->le_conn_interval = interval;
 	conn->le_conn_latency = latency;
 	conn->le_supv_timeout = supervision_timeout;
+	mgmt_conn_update_notify(hdev, conn);
 
 	hci_debugfs_create_conn(conn);
 	hci_conn_add_sysfs(conn);
@@ -6296,6 +6297,7 @@ static void hci_le_conn_update_complete_evt(struct hci_dev *hdev, void *data,
 		conn->le_conn_interval = le16_to_cpu(ev->interval);
 		conn->le_conn_latency = le16_to_cpu(ev->latency);
 		conn->le_supv_timeout = le16_to_cpu(ev->supervision_timeout);
+		mgmt_conn_update_notify(hdev, conn);
 	}
 
 	hci_dev_unlock(hdev);
