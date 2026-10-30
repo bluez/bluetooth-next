@@ -2589,6 +2589,7 @@ void mgmt_adv_monitor_device_lost(struct hci_dev *hdev, u16 handle,
 				  bdaddr_t *bdaddr, u8 addr_type);
 void mgmt_conn_subrate_notify(struct hci_dev *hdev, struct hci_conn *conn,
 			      u8 status);
+void mgmt_conn_update_notify(struct hci_dev *hdev, struct hci_conn *conn);
 
 int hci_abort_conn(struct hci_conn *conn, u8 reason);
 void hci_le_conn_update(struct hci_conn *conn, u16 min, u16 max, u16 latency,
