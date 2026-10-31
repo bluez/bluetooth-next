@@ -2095,8 +2095,15 @@ void hci_conn_del_sysfs(struct hci_conn *conn);
 /* Use ext create connection if command is supported */
 #define use_ext_conn(dev) (((dev)->commands[37] & 0x80) && \
 	!hci_test_quirk((dev), HCI_QUIRK_BROKEN_EXT_CREATE_CONN))
-/* Extended advertising support */
-#define ext_adv_capable(dev) (((dev)->le_features[1] & HCI_LE_EXT_ADV))
+/* Extended advertising support
+ *
+ * Controllers shall reject legacy advertising, scanning and initiating
+ * commands with Command Disallowed once an extended advertising command
+ * has been issued (Core Spec 5.3, Vol 4, Part E, 3.1.1), so extended
+ * advertising can't be used when extended scanning is broken.
+ */
+#define ext_adv_capable(dev) (((dev)->le_features[1] & HCI_LE_EXT_ADV) && \
+			      !hci_test_quirk((dev), HCI_QUIRK_BROKEN_EXT_SCAN))
 
 /* Maximum advertising length */
 #define max_adv_len(dev) \
