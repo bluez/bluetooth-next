@@ -3026,6 +3026,17 @@ static void hci_cs_le_read_remote_features(struct hci_dev *hdev, u8 status)
 			status = 0x00;
 		}
 
+		/* Some controllers reject the command with Controller Busy
+		 * right after the connection has been established. The
+		 * remote features are not required to use the connection,
+		 * so continue without them instead of dropping it.
+		 */
+		if (status == HCI_ERROR_CONTROLLER_BUSY) {
+			bt_dev_warn(hdev, "Remote features busy, continuing without them");
+			conn->state = BT_CONNECTED;
+			status = 0x00;
+		}
+
 		hci_connect_cfm(conn, status);
 	}
 
