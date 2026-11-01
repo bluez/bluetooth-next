@@ -7018,6 +7018,7 @@ static int hci_le_create_conn_sync(struct hci_dev *hdev, void *data)
 {
 	struct hci_cp_le_create_conn cp;
 	struct hci_conn_params *params;
+	struct smp_irk *irk;
 	u8 own_addr_type;
 	int err;
 	struct hci_conn *conn = data;
@@ -7057,7 +7058,16 @@ static int hci_le_create_conn_sync(struct hci_dev *hdev, void *data)
 
 	hci_dev_lock(hdev);
 
-	params = hci_conn_params_lookup(hdev, &conn->dst, conn->dst_type);
+	/* conn->dst may hold the peer's RPA, but connection parameters are
+	 * stored under its identity address.
+	 */
+	irk = hci_get_irk(hdev, &conn->dst, conn->dst_type);
+	if (irk)
+		params = hci_conn_params_lookup(hdev, &irk->bdaddr,
+						irk->addr_type);
+	else
+		params = hci_conn_params_lookup(hdev, &conn->dst,
+						conn->dst_type);
 	if (params) {
 		conn->le_conn_min_interval = params->conn_min_interval;
 		conn->le_conn_max_interval = params->conn_max_interval;
