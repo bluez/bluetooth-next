@@ -76,7 +76,7 @@ static int mrvl_open(struct hci_uart *hu)
 	hu->priv = mrvl;
 
 	if (hu->serdev) {
-		ret = serdev_device_open(hu->serdev);
+		ret = hci_uart_serdev_open(hu);
 		if (ret)
 			goto err;
 	}
@@ -95,7 +95,7 @@ static int mrvl_close(struct hci_uart *hu)
 	BT_DBG("hu %p", hu);
 
 	if (hu->serdev)
-		serdev_device_close(hu->serdev);
+		hci_uart_serdev_close(hu);
 
 	skb_queue_purge(&mrvl->txq);
 	skb_queue_purge(&mrvl->rawq);
