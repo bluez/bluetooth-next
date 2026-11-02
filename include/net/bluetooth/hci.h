@@ -375,6 +375,16 @@ enum {
 	 */
 	HCI_QUIRK_BROKEN_READ_PAGE_SCAN_TYPE,
 
+	/* When this quirk is set, the controller is not treated as LL Privacy
+	 * capable even though it claims to support it in its LE features, so
+	 * the resolving list is never used. This is required for controllers
+	 * whose firmware crashes (Hardware Error) when the resolving list is
+	 * programmed.
+	 *
+	 * This quirk must be set before hci_register_dev is called.
+	 */
+	HCI_QUIRK_BROKEN_LL_PRIVACY,
+
 	__HCI_NUM_QUIRKS,
 };
 
