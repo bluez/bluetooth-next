@@ -274,7 +274,9 @@ enum {
 	/*
 	 * When this quirk is set, the HCI_OP_LE_SET_EXT_SCAN_ENABLE command is
 	 * disabled. This is required for some Broadcom controllers which
-	 * erroneously claim to support extended scanning.
+	 * erroneously claim to support extended scanning. Extended
+	 * advertising is disabled as well, since legacy and extended
+	 * commands can't be mixed.
 	 *
 	 * This quirk can be set before hci_register_dev is called or
 	 * during the hdev->setup vendor callback.
@@ -724,6 +726,7 @@ enum {
 #define HCI_ERROR_UNSUPPORTED_REMOTE_FEATURE	0x1a
 #define HCI_ERROR_INVALID_LL_PARAMS	0x1e
 #define HCI_ERROR_UNSPECIFIED		0x1f
+#define HCI_ERROR_CONTROLLER_BUSY	0x3a
 #define HCI_ERROR_ADVERTISING_TIMEOUT	0x3c
 #define HCI_ERROR_CANCELLED_BY_HOST	0x44
 
