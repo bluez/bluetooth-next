@@ -2285,9 +2285,8 @@ int hci_bdaddr_list_del_with_irk(struct list_head *list, bdaddr_t *bdaddr,
 	return 0;
 }
 
-/* This function requires the caller holds hdev->lock */
-struct hci_conn_params *hci_conn_params_lookup(struct hci_dev *hdev,
-					       bdaddr_t *addr, u8 addr_type)
+static struct hci_conn_params *conn_params_find(struct hci_dev *hdev,
+						bdaddr_t *addr, u8 addr_type)
 {
 	struct hci_conn_params *params;
 
@@ -2299,6 +2298,27 @@ struct hci_conn_params *hci_conn_params_lookup(struct hci_dev *hdev,
 	}
 
 	return NULL;
+}
+
+/* This function requires the caller holds hdev->lock */
+struct hci_conn_params *hci_conn_params_lookup(struct hci_dev *hdev,
+					       bdaddr_t *addr, u8 addr_type)
+{
+	struct hci_conn_params *params;
+	struct smp_irk *irk;
+
+	params = conn_params_find(hdev, addr, addr_type);
+	if (params)
+		return params;
+
+	/* A bonded peer's parameters are stored under its identity address,
+	 * so an RPA that resolves to it finds the same entry.
+	 */
+	irk = hci_get_irk(hdev, addr, addr_type);
+	if (!irk)
+		return NULL;
+
+	return conn_params_find(hdev, &irk->bdaddr, irk->addr_type);
 }
 
 /* This function requires the caller holds hdev->lock or rcu_read_lock */
