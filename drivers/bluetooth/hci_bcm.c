@@ -148,6 +148,7 @@ struct bcm_device {
 	bool			no_uart_clock_set;
 	bool			use_autobaud_mode;
 	bool			acl_priority;
+	bool			adv_type_fixup;
 	u8			pcm_int_params[5];
 	u32			max_autobaud_speed;
 };
@@ -686,6 +687,9 @@ static int bcm_recv_event(struct hci_dev *hdev, struct sk_buff *skb)
 	struct hci_uart *hu = hci_get_drvdata(hdev);
 	struct bcm_data *bcm = hu->priv;
 
+	if (bcm->dev && bcm->dev->adv_type_fixup)
+		btbcm_fixup_le_adv_report(skb);
+
 	if (bcm->dev && bcm->dev->acl_priority)
 		btbcm_set_acl_priority_on_connect(hdev, skb);
 
@@ -1100,6 +1104,7 @@ static int bcm_get_resources(struct bcm_device *dev)
 
 	if (x86_apple_machine && !bcm_apple_get_resources(dev)) {
 		dev->acl_priority = true;
+		dev->adv_type_fixup = true;
 		return 0;
 	}
 

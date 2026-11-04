@@ -282,6 +282,36 @@ void btbcm_set_acl_priority_on_connect(struct hci_dev *hdev, struct sk_buff *skb
 }
 EXPORT_SYMBOL_GPL(btbcm_set_acl_priority_on_connect);
 
+/* The BCM4364 and BCM4377 of the T2 Macs set bits above the event type of LE
+ * Advertising Reports, 0x13 and 0x23 for ADV_NONCONN_IND for example. The
+ * core drops reports of unknown types, so clear them.
+ */
+void btbcm_fixup_le_adv_report(struct sk_buff *skb)
+{
+	struct hci_event_hdr *hdr = (void *)skb->data;
+	struct hci_ev_le_advertising_info *info;
+	u8 *p, *end;
+	u8 num;
+
+	if (hci_skb_pkt_type(skb) != HCI_EVENT_PKT ||
+	    skb->len < HCI_EVENT_HDR_SIZE + 2 || hdr->evt != HCI_EV_LE_META)
+		return;
+
+	p = skb->data + HCI_EVENT_HDR_SIZE;
+	if (p[0] != HCI_EV_LE_ADVERTISING_REPORT)
+		return;
+
+	num = p[1];
+	p += 2;
+	end = skb->data + skb->len;
+	while (num-- && p + sizeof(*info) + 1 <= end) {
+		info = (void *)p;
+		info->type &= 0x0f;
+		p += sizeof(*info) + info->length + 1;
+	}
+}
+EXPORT_SYMBOL_GPL(btbcm_fixup_le_adv_report);
+
 int btbcm_patchram(struct hci_dev *hdev, const struct firmware *fw)
 {
 	const struct hci_command_hdr *cmd;
