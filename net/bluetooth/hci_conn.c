@@ -1896,6 +1896,7 @@ struct hci_conn *hci_connect_sco(struct hci_dev *hdev, int type, bdaddr_t *dst,
 	struct hci_conn *acl;
 	struct hci_conn *sco;
 	struct hci_link *link;
+	bool new_sco = false;
 
 	acl = hci_connect_acl(hdev, dst, BT_SECURITY_LOW, HCI_AT_NO_BONDING,
 			      CONN_REASON_SCO_CONNECT, timeout);
@@ -1909,12 +1910,19 @@ struct hci_conn *hci_connect_sco(struct hci_dev *hdev, int type, bdaddr_t *dst,
 			hci_conn_drop(acl);
 			return sco;
 		}
+
+		new_sco = true;
 	}
 
 	link = hci_conn_link(acl, sco);
 	if (!link) {
 		hci_conn_drop(acl);
-		hci_conn_drop(sco);
+
+		if (new_sco)
+			hci_conn_del(sco);
+		else
+			hci_conn_drop(sco);
+
 		return ERR_PTR(-ENOLINK);
 	}
 
