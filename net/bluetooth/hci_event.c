@@ -3919,6 +3919,16 @@ static void hci_encrypt_change_v3_evt(struct hci_dev *hdev, void *data,
 	if (!conn)
 		goto unlock;
 
+	/* Opportunistic encryption (eks_mode 0x02) encrypts the link without
+	 * a key from pairing, so the host doesn't treat the link as encrypted:
+	 * the key size is 0, and with HCI_CONN_ENCRYPT set the key size check
+	 * would refuse every L2CAP channel.
+	 */
+	if (ev->eks_mode == 0x02) {
+		clear_bit(HCI_CONN_ENCRYPT_PEND, conn->flags);
+		goto unlock;
+	}
+
 	hci_change_encrypt(conn, ev->status, ev->mode, ev->mic_len);
 
 unlock:
@@ -7926,6 +7936,8 @@ static void hci_le_read_all_remote_features_evt(struct hci_dev *hdev,
 			conn->le_tx_def_phys &= ~HCI_LE_SET_PHY_HDT;
 			conn->le_rx_def_phys &= ~HCI_LE_SET_PHY_HDT;
 		}
+
+		hci_le_eks_oppt_encrypt(conn);
 	}
 
 	if (conn->state == BT_CONFIG) {
