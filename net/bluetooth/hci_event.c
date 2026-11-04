@@ -3093,12 +3093,18 @@ static void hci_cs_le_enable_encrypt_v2(struct hci_dev *hdev, u8 status)
 	if (!conn)
 		goto unlock;
 
-	clear_bit(HCI_CONN_ENCRYPT_PEND, conn->flags);
-
 	/* An opportunistic encryption that cannot be started just leaves
 	 * the link unencrypted, as it was.
 	 */
-	if (cp->encryption == 0x01 || conn->state != BT_CONNECTED)
+	if (cp->encryption == 0x01) {
+		if (!test_bit(HCI_CONN_ENCRYPT, conn->flags))
+			clear_bit(HCI_CONN_OPP_ENCRYPT, conn->flags);
+		goto unlock;
+	}
+
+	clear_bit(HCI_CONN_ENCRYPT_PEND, conn->flags);
+
+	if (conn->state != BT_CONNECTED)
 		goto unlock;
 
 	hci_disconnect(conn, HCI_ERROR_AUTH_FAILURE);
@@ -3918,6 +3924,30 @@ static void hci_encrypt_change_v3_evt(struct hci_dev *hdev, void *data,
 	conn = hci_conn_hash_lookup_handle(hdev, __le16_to_cpu(ev->handle));
 	if (!conn)
 		goto unlock;
+
+	/* Opportunistic encryption (eks_mode 0x02), started by this side or
+	 * by the remote, encrypts the link without a key from pairing: it is
+	 * marked with HCI_CONN_OPP_ENCRYPT, has no key size, and doesn't
+	 * change the security level as it is not authenticated. If it could
+	 * not be started the link is just left unencrypted, as it was.
+	 */
+	if (ev->eks_mode == 0x02 ||
+	    (test_bit(HCI_CONN_OPP_ENCRYPT, conn->flags) &&
+	     !test_bit(HCI_CONN_ENCRYPT, conn->flags))) {
+		if (ev->status || !ev->mode) {
+			clear_bit(HCI_CONN_OPP_ENCRYPT, conn->flags);
+			goto unlock;
+		}
+
+		set_bit(HCI_CONN_OPP_ENCRYPT, conn->flags);
+		set_bit(HCI_CONN_ENCRYPT, conn->flags);
+		set_bit(HCI_CONN_AES_CCM, conn->flags);
+		conn->mic_len = ev->mic_len;
+		goto unlock;
+	}
+
+	/* Encryption with a key from pairing replaces the opportunistic one */
+	clear_bit(HCI_CONN_OPP_ENCRYPT, conn->flags);
 
 	hci_change_encrypt(conn, ev->status, ev->mode, ev->mic_len);
 
@@ -5705,9 +5735,16 @@ static void hci_key_refresh_complete_v2_evt(struct hci_dev *hdev, void *data,
 	if (!conn)
 		goto unlock;
 
-	/* The key refresh may change the MIC length */
-	if (!ev->status)
+	if (!ev->status) {
+		/* The key refresh may change the MIC length */
 		conn->mic_len = ev->mic_len;
+
+		/* The key from pairing replaces the opportunistic one, which
+		 * makes the link encrypted as with Encryption Change.
+		 */
+		if (test_and_clear_bit(HCI_CONN_OPP_ENCRYPT, conn->flags))
+			set_bit(HCI_CONN_AUTH, conn->flags);
+	}
 
 	hci_conn_refresh_key(conn, ev->status);
 
@@ -7934,6 +7971,8 @@ static void hci_le_read_all_remote_features_evt(struct hci_dev *hdev,
 			conn->le_tx_def_phys &= ~HCI_LE_SET_PHY_HDT;
 			conn->le_rx_def_phys &= ~HCI_LE_SET_PHY_HDT;
 		}
+
+		hci_le_eks_oppt_encrypt(conn);
 	}
 
 	if (conn->state == BT_CONFIG) {
