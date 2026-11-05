@@ -210,6 +210,77 @@ int btbcm_write_pcm_int_params(struct hci_dev *hdev,
 }
 EXPORT_SYMBOL_GPL(btbcm_write_pcm_int_params);
 
+#define BCM_SET_ACL_PRIORITY	0xfc57
+#define BCM_ACL_PRIORITY_HIGH	0x01
+
+struct bcm_set_acl_priority {
+	__le16	handle;
+	u8	priority;
+} __packed;
+
+struct btbcm_acl_priority_work {
+	struct work_struct	work;
+	struct hci_dev		*hdev;
+	u16			handle;
+};
+
+static int btbcm_set_acl_priority_sync(struct hci_dev *hdev, void *data)
+{
+	struct bcm_set_acl_priority cp;
+	int err;
+
+	cp.handle = cpu_to_le16(PTR_UINT(data));
+	cp.priority = BCM_ACL_PRIORITY_HIGH;
+
+	err = __hci_cmd_sync_status(hdev, BCM_SET_ACL_PRIORITY, sizeof(cp),
+				    &cp, HCI_CMD_TIMEOUT);
+	if (err)
+		bt_dev_warn(hdev, "BCM: setting ACL priority for handle 0x%4.4x failed (%d)",
+			    le16_to_cpu(cp.handle), err);
+	return err;
+}
+
+static void btbcm_acl_priority_work(struct work_struct *work)
+{
+	struct btbcm_acl_priority_work *w =
+		container_of(work, struct btbcm_acl_priority_work, work);
+
+	hci_cmd_sync_queue(w->hdev, btbcm_set_acl_priority_sync,
+			   UINT_PTR(w->handle), NULL);
+	hci_dev_put(w->hdev);
+	kfree(w);
+}
+
+/* Give every BR/EDR ACL link high priority in the controller as soon as it
+ * is connected. Without it the BCM4364 coexistence arbitration lets 2.4 GHz
+ * WLAN traffic delay ACL packets by up to 200 ms, which drops A2DP audio.
+ */
+void btbcm_set_acl_priority_on_connect(struct hci_dev *hdev, struct sk_buff *skb)
+{
+	struct hci_event_hdr *hdr = (void *)skb->data;
+	struct hci_ev_conn_complete *ev;
+	struct btbcm_acl_priority_work *w;
+
+	if (hci_skb_pkt_type(skb) != HCI_EVENT_PKT ||
+	    skb->len < sizeof(*hdr) + sizeof(*ev) ||
+	    hdr->evt != HCI_EV_CONN_COMPLETE)
+		return;
+
+	ev = (void *)(skb->data + sizeof(*hdr));
+	if (ev->status || ev->link_type != ACL_LINK)
+		return;
+
+	w = kzalloc_obj(*w, GFP_ATOMIC);
+	if (!w)
+		return;
+
+	INIT_WORK(&w->work, btbcm_acl_priority_work);
+	w->hdev = hci_dev_hold(hdev);
+	w->handle = __le16_to_cpu(ev->handle);
+	queue_work(system_dfl_wq, &w->work);
+}
+EXPORT_SYMBOL_GPL(btbcm_set_acl_priority_on_connect);
+
 int btbcm_patchram(struct hci_dev *hdev, const struct firmware *fw)
 {
 	const struct hci_command_hdr *cmd;
