@@ -59,6 +59,7 @@ static void l2cap_tx(struct l2cap_chan *chan, struct l2cap_ctrl *control,
 static void l2cap_retrans_timeout(struct work_struct *work);
 static void l2cap_monitor_timeout(struct work_struct *work);
 static void l2cap_ack_timeout(struct work_struct *work);
+static void l2cap_security_work(struct work_struct *work);
 static void __l2cap_chan_close(struct l2cap_chan *chan, int reason)
 	__must_hold(&chan->lock) __must_hold(&chan->conn->lock);
 
@@ -704,6 +705,9 @@ void l2cap_chan_del(struct l2cap_chan *chan, int err)
 	lockdep_assert(!chan->conn || lockdep_is_held(&chan->conn->lock));
 
 	__clear_chan_timer(chan);
+	clear_bit(FLAG_PENDING_SECURITY, &chan->flags);
+	clear_bit(FLAG_SECURITY_CFM, &chan->flags);
+	clear_bit(FLAG_SECURITY_FAILED, &chan->flags);
 
 	BT_DBG("chan %p, err %d, state %s", chan, err,
 	       state_to_string(chan->state));
@@ -2647,6 +2651,9 @@ static void l2cap_le_flowctl_send(struct l2cap_chan *chan)
 
 	BT_DBG("chan %p", chan);
 
+	if (test_bit(FLAG_PENDING_SECURITY, &chan->flags))
+		return;
+
 	while (chan->tx_credits && !skb_queue_empty(&chan->tx_q)) {
 		l2cap_do_send(chan, skb_dequeue(&chan->tx_q));
 		chan->tx_credits--;
@@ -3979,8 +3986,13 @@ static void l2cap_ecred_list_defer(struct l2cap_chan *chan, void *data)
 {
 	int *result = data;
 
-	if (*result || test_bit(FLAG_ECRED_CONN_REQ_SENT, &chan->flags))
+	if (*result < 0 || test_bit(FLAG_ECRED_CONN_REQ_SENT, &chan->flags))
 		return;
+
+	if (test_bit(FLAG_SECURITY_FAILED, &chan->flags)) {
+		*result = -ECONNREFUSED;
+		return;
+	}
 
 	switch (chan->state) {
 	case BT_CONNECT2:
@@ -3988,6 +4000,8 @@ static void l2cap_ecred_list_defer(struct l2cap_chan *chan, void *data)
 		(*result)++;
 		return;
 	case BT_CONNECTED:
+		if (test_bit(FLAG_PENDING_SECURITY, &chan->flags))
+			(*result)++;
 		return;
 	default:
 		/* If not connected or pending accept it has been refused */
@@ -4079,7 +4093,9 @@ static void l2cap_ecred_rsp_defer(struct l2cap_chan *chan, void *data)
 	if (!rsp->pdu.rsp.result)
 		rsp_flex->dcid[rsp->count++] = cpu_to_le16(chan->scid);
 	else
-		l2cap_chan_del(chan, ECONNRESET);
+		l2cap_chan_del(chan, rsp->pdu.rsp.result ==
+			      cpu_to_le16(L2CAP_CR_LE_AUTHORIZATION) ?
+			      ECONNREFUSED : ECONNRESET);
 
 done:
 	if (locked)
@@ -5380,6 +5396,11 @@ static inline int l2cap_le_credits(struct l2cap_conn *conn,
 
 	l2cap_chan_lock(chan);
 
+	if (chan->state != BT_CONNECTED ||
+	    (chan->mode != L2CAP_MODE_LE_FLOWCTL &&
+	     chan->mode != L2CAP_MODE_EXT_FLOWCTL))
+		goto unlock;
+
 	max_credits = LE_FLOWCTL_MAX_CREDITS - chan->tx_credits;
 	if (credits > max_credits) {
 		BT_ERR("LE credits overflow");
@@ -5392,6 +5413,9 @@ static inline int l2cap_le_credits(struct l2cap_conn *conn,
 	}
 
 	chan->tx_credits += credits;
+
+	if (test_bit(FLAG_PENDING_SECURITY, &chan->flags))
+		goto unlock;
 
 	/* Resume sending */
 	l2cap_le_flowctl_send(chan);
@@ -7510,6 +7534,8 @@ static struct l2cap_conn *l2cap_conn_add(struct hci_conn *hcon)
 
 	skb_queue_head_init(&conn->pending_rx);
 	INIT_WORK(&conn->pending_rx_work, process_pending_rx);
+	INIT_WORK(&conn->security_work, l2cap_security_work);
+	atomic_set(&conn->security_failed, 0);
 	INIT_DELAYED_WORK(&conn->id_addr_timer, l2cap_conn_update_id_addr);
 
 	conn->disc_reason = HCI_ERROR_REMOTE_USER_TERM;
@@ -7962,6 +7988,109 @@ static inline void l2cap_check_encryption(struct l2cap_chan *chan, u8 encrypt)
 	}
 }
 
+static void l2cap_queue_security(struct l2cap_conn *conn)
+{
+	l2cap_conn_get(conn);
+	if (!queue_work(conn->hcon->hdev->workqueue, &conn->security_work))
+		l2cap_conn_put(conn);
+}
+
+void l2cap_security_failed(struct l2cap_conn *conn)
+{
+	if (conn->hcon->type != LE_LINK)
+		return;
+
+	atomic_set(&conn->security_failed, 1);
+	l2cap_queue_security(conn);
+}
+
+static void l2cap_security_work(struct work_struct *work)
+{
+	struct l2cap_conn *conn = container_of(work, struct l2cap_conn,
+					    security_work);
+	struct hci_conn *hcon = conn->hcon;
+	struct l2cap_chan *chan, *next;
+
+	hci_dev_lock(hcon->hdev);
+	if (hcon->l2cap_data != conn)
+		goto done;
+
+	mutex_lock(&conn->lock);
+
+	if (atomic_xchg(&conn->security_failed, 0)) {
+		list_for_each_entry(chan, &conn->chan_l, list) {
+			l2cap_chan_lock(chan);
+			if ((chan->mode == L2CAP_MODE_LE_FLOWCTL ||
+			     chan->mode == L2CAP_MODE_EXT_FLOWCTL) &&
+			    test_bit(FLAG_PENDING_SECURITY, &chan->flags)) {
+				set_bit(FLAG_SECURITY_FAILED, &chan->flags);
+				set_bit(FLAG_SECURITY_CFM, &chan->flags);
+			}
+			l2cap_chan_unlock(chan);
+		}
+	}
+
+	for (;;) {
+		chan = NULL;
+		list_for_each_entry(next, &conn->chan_l, list) {
+			if (test_and_clear_bit(FLAG_SECURITY_CFM, &next->flags)) {
+				chan = next;
+				break;
+			}
+		}
+		if (!chan)
+			break;
+
+		/* Batch rejection may delete siblings, so restart the walk. */
+		l2cap_chan_hold(chan);
+		l2cap_chan_lock(chan);
+		lockdep_assert_held(&chan->conn->lock);
+		if (!test_bit(FLAG_PENDING_SECURITY, &chan->flags) ||
+		    (chan->state != BT_CONNECTED && chan->state != BT_CONFIG &&
+		     chan->state != BT_CONNECT2))
+			goto next;
+
+		if (test_bit(FLAG_SECURITY_FAILED, &chan->flags) ||
+		    !test_bit(HCI_CONN_ENCRYPT, hcon->flags) ||
+		    !smp_sufficient_security(hcon, chan->sec_level, SMP_ALLOW_STK) ||
+		    !l2cap_check_enc_key_size(hcon, chan)) {
+			set_bit(FLAG_SECURITY_FAILED, &chan->flags);
+			__l2cap_chan_close(chan, ECONNREFUSED);
+			chan->ops->close(chan);
+			goto next;
+		}
+
+		clear_bit(FLAG_PENDING_SECURITY, &chan->flags);
+		chan->sec_level = hcon->sec_level;
+
+		if (chan->state == BT_CONNECT2) {
+			chan->ops->resume(chan);
+			goto next;
+		}
+
+		if (chan->state == BT_CONNECTED &&
+		    chan->mode == L2CAP_MODE_EXT_FLOWCTL &&
+		    test_bit(FLAG_DEFER_SETUP, &chan->flags)) {
+			__l2cap_ecred_conn_rsp_defer(chan);
+			if (test_bit(FLAG_DEL, &chan->flags))
+				goto next;
+		}
+
+		l2cap_le_flowctl_send(chan);
+		if (chan->tx_credits)
+			chan->ops->resume(chan);
+		l2cap_check_encryption(chan, 1);
+next:
+		l2cap_chan_unlock(chan);
+		l2cap_chan_put(chan);
+	}
+
+	mutex_unlock(&conn->lock);
+done:
+	hci_dev_unlock(hcon->hdev);
+	l2cap_conn_put(conn);
+}
+
 static void l2cap_security_cfm(struct hci_conn *hcon, u8 status, u8 encrypt)
 	__must_hold(&hcon->hdev->lock)
 {
@@ -7976,6 +8105,8 @@ static void l2cap_security_cfm(struct hci_conn *hcon, u8 status, u8 encrypt)
 	mutex_lock(&conn->lock);
 
 	list_for_each_entry(chan, &conn->chan_l, list) {
+		bool le_flowctl, pending_le;
+
 		l2cap_chan_lock(chan);
 
 		lockdep_assert_held(&chan->conn->lock);
@@ -7983,7 +8114,13 @@ static void l2cap_security_cfm(struct hci_conn *hcon, u8 status, u8 encrypt)
 		BT_DBG("chan %p scid 0x%4.4x state %s", chan, chan->scid,
 		       state_to_string(chan->state));
 
-		if (!status && encrypt)
+		le_flowctl = hcon->type == LE_LINK &&
+			     (chan->mode == L2CAP_MODE_LE_FLOWCTL ||
+			      chan->mode == L2CAP_MODE_EXT_FLOWCTL);
+		pending_le = le_flowctl &&
+			     test_bit(FLAG_PENDING_SECURITY, &chan->flags);
+
+		if (!status && encrypt && !pending_le)
 			chan->sec_level = hcon->sec_level;
 
 		if (!__l2cap_no_conn_pending(chan)) {
@@ -7991,9 +8128,25 @@ static void l2cap_security_cfm(struct hci_conn *hcon, u8 status, u8 encrypt)
 			continue;
 		}
 
+		if (pending_le && (chan->state == BT_CONNECTED ||
+				   chan->state == BT_CONFIG ||
+				   chan->state == BT_CONNECT2)) {
+			if (status || !encrypt ||
+			    !smp_sufficient_security(hcon, chan->sec_level,
+						    SMP_ALLOW_STK) ||
+			    !l2cap_check_enc_key_size(hcon, chan)) {
+				set_bit(FLAG_SECURITY_FAILED, &chan->flags);
+			}
+			set_bit(FLAG_SECURITY_CFM, &chan->flags);
+			l2cap_queue_security(conn);
+			l2cap_chan_unlock(chan);
+			continue;
+		}
+
 		if (!status && (chan->state == BT_CONNECTED ||
 				chan->state == BT_CONFIG)) {
-			chan->ops->resume(chan);
+			if (!le_flowctl || chan->tx_credits)
+				chan->ops->resume(chan);
 			l2cap_check_encryption(chan, encrypt);
 			l2cap_chan_unlock(chan);
 			continue;
