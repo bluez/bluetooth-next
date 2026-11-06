@@ -443,6 +443,15 @@ static int qca_tlv_check_data(struct hci_dev *hdev,
 				 */
 				tlv_nvm->data[0] |= 0x01;
 
+				/* The byte 5 in tag 27 (Deep Sleep) doesn't work with QCA driver.
+				 * If a value is set to anything other than 0, then module can
+				 * enter is some "endless" sleep and stops responding to our
+				 * commands, and the QCA driver enters into endless "SoC crash"
+				 * loop. Setting this byte to 0 resolves all problems.
+				 */
+				if (tag_len >= 5 && soc_type == QCA_WCN3950)
+					tlv_nvm->data[4] = 0x00;
+
 				break;
 			}
 
