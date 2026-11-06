@@ -318,6 +318,7 @@ config BT_HCIBCM4377
 	tristate "HCI BCM4377/4378/4387/4388 PCIe driver"
 	depends on PCI
 	select FW_LOADER
+	select BT_BCM
 	help
 	  Support for Broadcom BCM4377/4378/4387/4388 Bluetooth chipsets
 	  attached via PCIe. These are usually found in Apple machines.

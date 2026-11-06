@@ -147,6 +147,7 @@ struct bcm_device {
 	bool			drive_rts_on_open;
 	bool			no_uart_clock_set;
 	bool			use_autobaud_mode;
+	bool			acl_priority;
 	u8			pcm_int_params[5];
 	u32			max_autobaud_speed;
 };
@@ -595,8 +596,11 @@ static int bcm_setup(struct hci_uart *hu)
 	if (err)
 		return err;
 
-	if (!fw_load_done)
+	if (!fw_load_done) {
+		/* btbcm_finalize() sets this after loading a patch file */
+		hci_set_quirk(hu->hdev, HCI_QUIRK_STRICT_DUPLICATE_FILTER);
 		return 0;
+	}
 
 	/* Init speed if any */
 	if (bcm->dev && bcm->dev->init_speed)
@@ -680,10 +684,21 @@ static int bcm_setup(struct hci_uart *hu)
 	.lsize = 0, \
 	.maxlen = BCM_TYPE52_SIZE
 
+static int bcm_recv_event(struct hci_dev *hdev, struct sk_buff *skb)
+{
+	struct hci_uart *hu = hci_get_drvdata(hdev);
+	struct bcm_data *bcm = hu->priv;
+
+	if (bcm->dev && bcm->dev->acl_priority)
+		btbcm_set_acl_priority_on_connect(hdev, skb);
+
+	return hci_recv_frame(hdev, skb);
+}
+
 static const struct h4_recv_pkt bcm_recv_pkts[] = {
 	{ H4_RECV_ACL,      .recv = hci_recv_frame },
 	{ H4_RECV_SCO,      .recv = hci_recv_frame },
-	{ H4_RECV_EVENT,    .recv = hci_recv_frame },
+	{ H4_RECV_EVENT,    .recv = bcm_recv_event },
 	{ H4_RECV_ISO,      .recv = hci_recv_frame },
 	{ BCM_RECV_LM_DIAG, .recv = hci_recv_diag  },
 	{ BCM_RECV_NULL,    .recv = hci_recv_diag  },
@@ -1086,8 +1101,10 @@ static int bcm_get_resources(struct bcm_device *dev)
 
 	dev->name = dev_name(dev->dev);
 
-	if (x86_apple_machine && !bcm_apple_get_resources(dev))
+	if (x86_apple_machine && !bcm_apple_get_resources(dev)) {
+		dev->acl_priority = true;
 		return 0;
+	}
 
 	dev->txco_clk = bcm_get_txco(dev->dev);
 	if (IS_ERR(dev->txco_clk))
