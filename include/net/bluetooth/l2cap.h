@@ -612,6 +612,7 @@ struct l2cap_chan {
 	void			*data;
 	const struct l2cap_ops	*ops;
 	struct mutex		lock;
+	unsigned int		security_generation;
 };
 
 struct l2cap_conn {
@@ -636,6 +637,9 @@ struct l2cap_conn {
 
 	struct sk_buff_head	pending_rx;
 	struct work_struct	pending_rx_work;
+	struct work_struct	security_work;
+	atomic_t		security_failed;
+	atomic_t		security_generation;
 
 	struct delayed_work	id_addr_timer;
 
@@ -758,6 +762,8 @@ enum {
 	FLAG_ECRED_CONN_REQ_SENT,
 	FLAG_ECRED_RECONF_REQ_SENT,
 	FLAG_PENDING_SECURITY,
+	FLAG_SECURITY_CFM,
+	FLAG_SECURITY_FAILED,
 	FLAG_HOLD_HCI_CONN,
 	FLAG_DEL,
 };
@@ -983,6 +989,7 @@ int l2cap_chan_send(struct l2cap_chan *chan, struct msghdr *msg, size_t len,
 void l2cap_chan_busy(struct l2cap_chan *chan, int busy);
 void l2cap_chan_rx_avail(struct l2cap_chan *chan, ssize_t rx_avail);
 int l2cap_chan_check_security(struct l2cap_chan *chan, bool initiator);
+void l2cap_security_failed(struct l2cap_conn *conn);
 void l2cap_chan_set_defaults(struct l2cap_chan *chan, struct l2cap_chan *pchan);
 int l2cap_ertm_init(struct l2cap_chan *chan);
 void l2cap_chan_add(struct l2cap_conn *conn, struct l2cap_chan *chan);
