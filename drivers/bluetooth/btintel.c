@@ -29,6 +29,21 @@
 #define ECDSA_HEADER_LEN	320
 
 #define BTINTEL_EFI_DSBR	L"UefiCnvCommonDSBR"
+#define BTINTEL_EFI_BRDS	L"UefiCnvBtBRDS"
+#define BTINTEL_EFI_BSSS	L"UefiCnvBtBSSS"
+
+static efi_guid_t btintel_efi_sar_guid =
+	EFI_GUID(0x42780dd5, 0x9a7d, 0x404c,
+		 0x80, 0xe4, 0x7f, 0x70, 0x94, 0x36, 0x03, 0x94);
+
+/* BRDS and BSSS revision 2 use the same 19-byte UEFI layout. */
+struct btintel_uefi_sar {
+	u8 revision;
+	__le32 mode;
+	__le32 inc_power_mode;
+	u8 chain_a[5];
+	u8 chain_b[5];
+} __packed;
 
 enum {
 	DSM_SET_WDISABLE2_DELAY = 1,
@@ -3093,6 +3108,8 @@ static union acpi_object *btintel_acpi_get_bt_pkg(union acpi_object *buffer)
 	return ERR_PTR(-ENOENT);
 }
 
+#endif /* CONFIG_ACPI */
+
 static int btintel_send_sar_ddc(struct hci_dev *hdev, struct btintel_cp_ddc_write *data, u8 len)
 {
 	struct sk_buff *skb;
@@ -3107,6 +3124,24 @@ static int btintel_send_sar_ddc(struct hci_dev *hdev, struct btintel_cp_ddc_writ
 	return 0;
 }
 
+/* btintel_send_sar_rev2_band - send DDC command for one Rev2 sub-band
+ *
+ * Each DDC 0x0311-0x0316 carries 2 bytes: [ChainA_value, ChainB_value].
+ * cmd->len = 4  (2 id + 2 data)
+ * HCI total  = 5 bytes (1 len + 4)
+ */
+static int btintel_send_sar_rev2_band(struct hci_dev *hdev,
+				      struct btintel_cp_ddc_write *cmd,
+				      u16 id, u8 chain_a, u8 chain_b)
+{
+	cmd->len = 4;
+	cmd->id = cpu_to_le16(id);
+	cmd->data[0] = chain_a;
+	cmd->data[1] = chain_b;
+	return btintel_send_sar_ddc(hdev, cmd, 5);
+}
+
+#ifdef CONFIG_ACPI
 static int btintel_send_edr(struct hci_dev *hdev, struct btintel_cp_ddc_write *cmd,
 			    int id, struct btintel_sar_inc_pwr *sar)
 {
@@ -3258,23 +3293,6 @@ static int btintel_set_mutual_sar(struct hci_dev *hdev, struct btintel_sar_inc_p
 
 	kfree_skb(skb);
 	return 0;
-}
-
-/* btintel_send_sar_rev2_band - send DDC command for one Rev2 sub-band
- *
- * Each DDC 0x0311-0x0316 carries 2 bytes: [ChainA_value, ChainB_value].
- * cmd->len = 4  (2 id + 2 data)
- * HCI total  = 5 bytes (1 len + 4)
- */
-static int btintel_send_sar_rev2_band(struct hci_dev *hdev,
-				      struct btintel_cp_ddc_write *cmd,
-				      u16 id, u8 chain_a, u8 chain_b)
-{
-	cmd->len = 4;
-	cmd->id = cpu_to_le16(id);
-	cmd->data[0] = chain_a;
-	cmd->data[1] = chain_b;
-	return btintel_send_sar_ddc(hdev, cmd, 5);
 }
 
 static int btintel_set_sar_rev2(struct hci_dev *hdev,
@@ -3544,9 +3562,130 @@ error:
 }
 #endif /* CONFIG_ACPI */
 
+static int btintel_uefi_read_sar(struct hci_dev *hdev, efi_char16_t *name,
+				 struct btintel_uefi_sar *sar)
+{
+	unsigned long size = sizeof(*sar);
+	efi_status_t status;
+
+	if (!IS_ENABLED(CONFIG_EFI) ||
+	    !efi_rt_services_supported(EFI_RT_SUPPORTED_GET_VARIABLE))
+		return -EOPNOTSUPP;
+
+	status = efi.get_variable(name, &btintel_efi_sar_guid, NULL, &size, sar);
+	if (status == EFI_NOT_FOUND)
+		return -ENOENT;
+	if (status == EFI_BUFFER_TOO_SMALL)
+		return -EOPNOTSUPP;
+	if (status != EFI_SUCCESS) {
+		bt_dev_warn(hdev, "Failed to read UEFI SAR variable: 0x%lx",
+			    status);
+		return -EIO;
+	}
+
+	if (size != sizeof(*sar))
+		return -EINVAL;
+	if (sar->revision != BTINTEL_SAR_REV2)
+		return -EOPNOTSUPP;
+	if (!(le32_to_cpu(sar->mode) & BIT(0)))
+		return -EOPNOTSUPP;
+
+	return 0;
+}
+
+static int btintel_set_uefi_sar(struct hci_dev *hdev)
+{
+	/* 5G8 and 5G9 share a limit but have separate DDC identifiers. */
+	static const struct {
+		u16 id;
+		u8 band;
+	} bands[] = {
+		{ 0x0311, 0 },
+		{ 0x0312, 1 },
+		{ 0x0313, 2 },
+		{ 0x0314, 2 },
+		{ 0x0315, 3 },
+		{ 0x0316, 4 },
+	};
+	u8 buffer[sizeof(struct btintel_cp_ddc_write) + 2];
+	struct btintel_cp_ddc_write *cmd = (void *)buffer;
+	struct btintel_uefi_sar sar;
+	struct sk_buff *skb;
+	u8 enable = 1;
+	int ret, i;
+
+	ret = btintel_uefi_read_sar(hdev, BTINTEL_EFI_BRDS, &sar);
+	if (ret)
+		return ret;
+
+	/*
+	 * UEFI BRDS uses only the 2.4 GHz limits; BSSS supplies sub-band limits.
+	 * Firmware accepts this BRDS write regardless of the existing 0x019e
+	 * value, including a value previously set by the DDC configuration.
+	 */
+	ret = btintel_send_sar_rev2_band(hdev, cmd, 0x0311,
+					 sar.chain_a[0], sar.chain_b[0]);
+	if (ret)
+		goto complete;
+
+	/* Standalone limits require both BRDS and BSSS to be enabled. */
+	ret = btintel_uefi_read_sar(hdev, BTINTEL_EFI_BSSS, &sar);
+	if (!ret) {
+		cmd->len = 3;
+		/* UEFI BSSS requires 0x019e = 1; inc_power_mode is not used here. */
+		cmd->id = cpu_to_le16(0x019e);
+		cmd->data[0] = enable;
+		ret = btintel_send_sar_ddc(hdev, cmd, sizeof(*cmd) + 1);
+		if (ret)
+			goto complete;
+
+		/* In this UEFI sequence, firmware interprets these writes as BSSS limits. */
+		for (i = 0; i < ARRAY_SIZE(bands); i++) {
+			ret = btintel_send_sar_rev2_band(hdev, cmd, bands[i].id,
+							 sar.chain_a[bands[i].band],
+							 sar.chain_b[bands[i].band]);
+			if (ret)
+				goto complete;
+		}
+	} else if (ret != -ENOENT && ret != -EOPNOTSUPP) {
+		goto complete;
+	} else {
+		ret = 0;
+	}
+
+complete:
+	skb = __hci_cmd_sync(hdev, 0xfe25, sizeof(enable), &enable,
+			     HCI_CMD_TIMEOUT);
+	if (IS_ERR(skb)) {
+		bt_dev_warn(hdev, "Failed to complete UEFI SAR setup (%ld)",
+			    PTR_ERR(skb));
+		return ret ? ret : PTR_ERR(skb);
+	}
+
+	kfree_skb(skb);
+	return ret;
+}
+
 static int btintel_set_specific_absorption_rate(struct hci_dev *hdev,
 						struct intel_version_tlv *ver)
 {
+	u8 hw_variant = INTEL_HW_VARIANT(ver->cnvi_bt);
+	int ret;
+
+	/* Supported SCP2+ platforms use this UEFI DDC map regardless of CNVr. */
+	if (hw_variant >= BTINTEL_HWID_SCP2 &&
+	    hw_variant != BTINTEL_HWID_BZRI &&
+	    hw_variant != BTINTEL_HWID_BZRIW) {
+		ret = btintel_set_uefi_sar(hdev);
+		if (ret && ret != -ENOENT && ret != -EOPNOTSUPP)
+			bt_dev_warn(hdev, "Failed to configure UEFI SAR (%d)", ret);
+	}
+
+	/*
+	 * Firmware preserves BSSS configuration across subsequent ACPI BRDS
+	 * programming, including writes to the shared DDC IDs and 0x019e.
+	 * Keep ACPI BRDS handling independent of the UEFI result.
+	 */
 #ifdef CONFIG_ACPI
 	return btintel_acpi_set_sar(hdev, ver);
 #endif
