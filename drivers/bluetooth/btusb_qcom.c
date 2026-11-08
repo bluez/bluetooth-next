@@ -2623,7 +2623,13 @@ out_free_skb:
 /* Implements hdev->recv_vendor_pkt(). */
 static void btqcom_recv_vendor_pkt(struct hci_dev *hdev, struct sk_buff *skb)
 {
-	hci_skb_pkt_type(skb) = *(const u8 *)skb_pull_data(skb, 1);
+	const u8 *pkt = skb_pull_data(skb, 1);
+
+	if (!pkt) {
+		kfree_skb(skb);
+		return;
+	}
+	hci_skb_pkt_type(skb) = *pkt;
 
 	switch (hci_skb_pkt_type(skb)) {
 	case QPERI_EVENT_PKT:
@@ -4257,8 +4263,13 @@ int btusb_qcom_send_frame(struct hci_dev *hdev, struct sk_buff *skb)
 	pkt_type = hci_skb_pkt_type(skb);
 	is_vendor = pkt_type == HCI_VENDOR_PKT;
 	/* an empty vendor packet has no path to reach here */
-	if (is_vendor)
-		hci_skb_pkt_type(skb) = *(const u8 *)skb_pull_data(skb, 1);
+	if (is_vendor) {
+		const u8 *pkt = skb_pull_data(skb, 1);
+
+		if (!pkt)
+			return -EILSEQ;
+		hci_skb_pkt_type(skb) = *pkt;
+	}
 
 	pkt_type = hci_skb_pkt_type(skb);
 	need_lock = pkt_type == HCI_COMMAND_PKT ||
@@ -4437,6 +4448,14 @@ struct sk_buff *btusb_qcom_recv_intr(struct hci_dev *hdev, struct sk_buff *skb,
 			hci_skb_expect(skb) = qperi_event_header(skb)->plen;
 		else if (pkt_type == HCI_EVENT_PKT)
 			hci_skb_expect(skb) = hci_event_hdr(skb)->plen;
+
+		if (hci_skb_expect(skb) >
+		    QPERI_MAX_EVENT_SIZE - skb->len) {
+			dev_kfree_skb_irq(skb);
+			skb = NULL;
+			*err = -EILSEQ;
+			break;
+		}
 
 		if (hci_skb_expect(skb))
 			continue;
