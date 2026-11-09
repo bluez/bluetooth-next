@@ -2285,11 +2285,37 @@ int hci_bdaddr_list_del_with_irk(struct list_head *list, bdaddr_t *bdaddr,
 	return 0;
 }
 
+/* A peer's connection parameters are kept under its identity address, so
+ * point *addr and *addr_type at the identity behind an RPA we can resolve.
+ * SMP can free the IRK without hdev->lock, so the identity is copied to
+ * @id_addr before leaving the RCU read-side section.
+ */
+static void conn_params_resolve(struct hci_dev *hdev, bdaddr_t **addr,
+				u8 *addr_type, bdaddr_t *id_addr)
+{
+	struct smp_irk *irk;
+
+	if (!hci_bdaddr_is_rpa(*addr, *addr_type))
+		return;
+
+	rcu_read_lock();
+	irk = hci_find_irk_by_rpa(hdev, *addr);
+	if (irk) {
+		bacpy(id_addr, &irk->bdaddr);
+		*addr = id_addr;
+		*addr_type = irk->addr_type;
+	}
+	rcu_read_unlock();
+}
+
 /* This function requires the caller holds hdev->lock */
 struct hci_conn_params *hci_conn_params_lookup(struct hci_dev *hdev,
 					       bdaddr_t *addr, u8 addr_type)
 {
 	struct hci_conn_params *params;
+	bdaddr_t id_addr;
+
+	conn_params_resolve(hdev, &addr, &addr_type, &id_addr);
 
 	list_for_each_entry(params, &hdev->le_conn_params, list) {
 		if (bacmp(&params->addr, addr) == 0 &&
@@ -2345,6 +2371,12 @@ struct hci_conn_params *hci_conn_params_add(struct hci_dev *hdev,
 					    bdaddr_t *addr, u8 addr_type)
 {
 	struct hci_conn_params *params;
+	bdaddr_t id_addr;
+
+	/* Store a new entry under the identity too, or lookups by the
+	 * identity or a later RPA would miss it.
+	 */
+	conn_params_resolve(hdev, &addr, &addr_type, &id_addr);
 
 	params = hci_conn_params_lookup(hdev, addr, addr_type);
 	if (params)
