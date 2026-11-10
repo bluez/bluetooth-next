@@ -300,6 +300,16 @@ u8 eir_create_adv_data(struct hci_dev *hdev, u8 instance, u8 *ptr, u8 size)
 
 skip_flags:
 	if (adv) {
+		/* The instance's length was validated against max_adv_len()
+		 * when it was set, and max_adv_len() depends on a controller
+		 * capability that is re-read on every bring-up - so by now it
+		 * can be larger than the caller's buffer. Refuse rather than
+		 * overflow; a truncated AD structure would not be parseable
+		 * by a peer anyway.
+		 */
+		if (ad_len + adv->adv_data_len > size)
+			return 0;
+
 		memcpy(ptr, adv->adv_data, adv->adv_data_len);
 		ad_len += adv->adv_data_len;
 		ptr += adv->adv_data_len;
@@ -342,7 +352,7 @@ static u8 create_default_scan_rsp(struct hci_dev *hdev, u8 *ptr)
 	return eir_append_local_name(hdev, ptr, scan_rsp_len);
 }
 
-u8 eir_create_scan_rsp(struct hci_dev *hdev, u8 instance, u8 *ptr)
+u8 eir_create_scan_rsp(struct hci_dev *hdev, u8 instance, u8 *ptr, u8 size)
 {
 	struct adv_info *adv;
 	u8 scan_rsp_len = 0;
@@ -356,6 +366,10 @@ u8 eir_create_scan_rsp(struct hci_dev *hdev, u8 instance, u8 *ptr)
 
 	if ((adv->flags & MGMT_ADV_FLAG_APPEARANCE) && hdev->appearance)
 		scan_rsp_len = eir_append_appearance(hdev, ptr, scan_rsp_len);
+
+	/* See the matching check in eir_create_adv_data(). */
+	if (scan_rsp_len + adv->scan_rsp_len > size)
+		return 0;
 
 	memcpy(&ptr[scan_rsp_len], adv->scan_rsp_data, adv->scan_rsp_len);
 
