@@ -3608,6 +3608,34 @@ static int hci_powered_update_adv_sync(struct hci_dev *hdev)
 	if (!hci_dev_test_flag(hdev, HCI_LE_ENABLED))
 		return 0;
 
+	/* An instance's data was accepted against max_adv_len() as it was
+	 * when the instance was added, and that is a branch on a controller
+	 * feature which has just been re-read. Anything too large for the
+	 * current capability can no longer be rendered: drop it and tell
+	 * userspace, so it can add the instance again at a size this
+	 * controller will take.
+	 *
+	 * This is safe as long as there is no command send while the lock is
+	 * held.
+	 */
+	hci_dev_lock(hdev);
+
+	list_for_each_entry_safe(adv, tmp, &hdev->adv_instances, list) {
+		u8 instance = adv->instance;
+
+		if (adv->adv_data_len <= max_adv_len(hdev) &&
+		    adv->scan_rsp_len <= max_adv_len(hdev))
+			continue;
+
+		bt_dev_warn(hdev, "instance %u too large for this controller",
+			    instance);
+
+		if (!hci_remove_adv_instance(hdev, instance))
+			mgmt_advertising_removed(NULL, hdev, instance);
+	}
+
+	hci_dev_unlock(hdev);
+
 	/* If RPA Resolution has not been enable yet it means the
 	 * resolving list is empty and we should attempt to program the
 	 * local IRK in order to support using own_addr_type
