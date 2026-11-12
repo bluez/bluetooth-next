@@ -929,12 +929,59 @@ static int l2cap_set_mode(struct l2cap_chan *chan, u8 mode)
 	return 0;
 }
 
+static int l2cap_sock_set_security(struct sock *sk, struct l2cap_chan *chan,
+				   const struct bt_security *sec)
+	__must_hold(&chan->lock)
+{
+	struct l2cap_conn *conn;
+
+	conn = l2cap_chan_conn(chan);
+	if ((chan->mode == L2CAP_MODE_LE_FLOWCTL ||
+	     chan->mode == L2CAP_MODE_EXT_FLOWCTL) &&
+	    test_bit(FLAG_PENDING_SECURITY, &chan->flags))
+		return -EBUSY;
+
+	chan->sec_level = sec->level;
+	chan->mic_len = sec->mic_len;
+	if (!conn)
+		return 0;
+
+	lockdep_assert_held(&conn->lock);
+	lockdep_assert_held(&conn->hcon->hdev->lock);
+	chan->security_generation = atomic_read(&conn->security_generation);
+
+	if (chan->scid == L2CAP_CID_ATT) {
+		l2cap_chan_req_mic_len(chan, conn->hcon);
+		if (smp_conn_security(conn->hcon, sec->level))
+			return -EINVAL;
+
+		set_bit(FLAG_PENDING_SECURITY, &chan->flags);
+		sk->sk_state = BT_CONFIG;
+		chan->state = BT_CONFIG;
+	} else if ((sk->sk_state == BT_CONNECT2 &&
+		    test_bit(BT_SK_DEFER_SETUP, &bt_sk(sk)->flags)) ||
+		   sk->sk_state == BT_CONNECTED) {
+		if (!l2cap_chan_check_security(chan, true)) {
+			if (conn->hcon->type == LE_LINK &&
+			    (chan->mode == L2CAP_MODE_LE_FLOWCTL ||
+			     chan->mode == L2CAP_MODE_EXT_FLOWCTL))
+				set_bit(FLAG_PENDING_SECURITY, &chan->flags);
+			set_bit(BT_SK_SUSPEND, &bt_sk(sk)->flags);
+		} else {
+			sk->sk_state_change(sk);
+		}
+	} else {
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
 static int l2cap_sock_setsockopt(struct socket *sock, int level, int optname,
 				 sockptr_t optval, unsigned int optlen)
 {
 	struct sock *sk = sock->sk;
 	struct l2cap_chan *chan = l2cap_pi(sk)->chan;
-	struct bt_security sec;
 	struct bt_power pwr;
 	struct l2cap_conn *conn;
 	int err = 0;
@@ -950,79 +997,62 @@ static int l2cap_sock_setsockopt(struct socket *sock, int level, int optname,
 	if (level != SOL_BLUETOOTH)
 		return -ENOPROTOOPT;
 
+	if (optname == BT_SECURITY) {
+		struct bt_security sec = { .level = BT_SECURITY_LOW };
+		bool have_conn;
+
+		if (chan->chan_type != L2CAP_CHAN_CONN_ORIENTED &&
+		    chan->chan_type != L2CAP_CHAN_FIXED &&
+		    chan->chan_type != L2CAP_CHAN_RAW)
+			return -EINVAL;
+
+		/* Keep accepting the struct size used before mic_len was added. */
+		if (optlen < offsetofend(struct bt_security, key_size))
+			return -EINVAL;
+
+		err = copy_struct_from_sockptr(&sec, sizeof(sec), optval, optlen);
+		if (err)
+			return err;
+
+		if (sec.level < BT_SECURITY_LOW || sec.level > BT_SECURITY_FIPS)
+			return -EINVAL;
+
+		/* MIC length encodings 0, 1 and 2 mean 32, 64 and 128 bits. */
+		if (sec.mic_len > 0x02)
+			return -EINVAL;
+
+		l2cap_chan_lock(chan);
+		conn = l2cap_chan_conn(chan);
+		if (!conn) {
+			lock_sock(sk);
+			err = l2cap_sock_set_security(sk, chan, &sec);
+			release_sock(sk);
+			l2cap_chan_unlock(chan);
+			return err;
+		}
+		l2cap_conn_get(conn);
+		l2cap_chan_unlock(chan);
+
+		/* SMP receive holds conn->lock; management holds hdev->lock. */
+		hci_dev_lock(conn->hcon->hdev);
+		have_conn = l2cap_chan_lock_conn(chan);
+
+		lock_sock(sk);
+		if (l2cap_chan_conn(chan) != conn)
+			err = -ENOTCONN;
+		else
+			err = l2cap_sock_set_security(sk, chan, &sec);
+		release_sock(sk);
+		l2cap_chan_unlock_conn(chan, have_conn);
+		hci_dev_unlock(conn->hcon->hdev);
+		l2cap_conn_put(conn);
+		return err;
+	}
+
 	l2cap_chan_lock(chan);
 	lock_sock(sk);
 
 	switch (optname) {
-	case BT_SECURITY:
-		if (chan->chan_type != L2CAP_CHAN_CONN_ORIENTED &&
-		    chan->chan_type != L2CAP_CHAN_FIXED &&
-		    chan->chan_type != L2CAP_CHAN_RAW) {
-			err = -EINVAL;
-			break;
-		}
-
-		/* mic_len was added at the end of struct bt_security, so
-		 * accept the shorter struct as well, leaving mic_len unset.
-		 */
-		if (optlen < offsetofend(struct bt_security, key_size)) {
-			err = -EINVAL;
-			break;
-		}
-
-		err = copy_struct_from_sockptr(&sec, sizeof(sec), optval,
-					       optlen);
-		if (err)
-			break;
-
-		if (sec.level < BT_SECURITY_LOW ||
-		    sec.level > BT_SECURITY_FIPS) {
-			err = -EINVAL;
-			break;
-		}
-
-		/* BLUETOOTH CORE SPECIFICATION Version 7.0 | Vol 4,
-		 * Part E, Section 7.7.8: MIC_Length 0x00 is 32 bits,
-		 * 0x01 is 64 bits and 0x02 is 128 bits; all other
-		 * values are reserved for future use.
-		 */
-		if (sec.mic_len > 0x02) {
-			err = -EINVAL;
-			break;
-		}
-
-		chan->sec_level = sec.level;
-		chan->mic_len = sec.mic_len;
-
-		conn = l2cap_chan_conn(chan);
-		if (!conn)
-			break;
-
-		/* change security for LE channels */
-		if (chan->scid == L2CAP_CID_ATT) {
-			l2cap_chan_req_mic_len(chan, conn->hcon);
-			if (smp_conn_security(conn->hcon, sec.level)) {
-				err = -EINVAL;
-				break;
-			}
-
-			set_bit(FLAG_PENDING_SECURITY, &chan->flags);
-			sk->sk_state = BT_CONFIG;
-			chan->state = BT_CONFIG;
-
-		/* or for ACL link */
-		} else if ((sk->sk_state == BT_CONNECT2 &&
-			    test_bit(BT_SK_DEFER_SETUP, &bt_sk(sk)->flags)) ||
-			   sk->sk_state == BT_CONNECTED) {
-			if (!l2cap_chan_check_security(chan, true))
-				set_bit(BT_SK_SUSPEND, &bt_sk(sk)->flags);
-			else
-				sk->sk_state_change(sk);
-		} else {
-			err = -EINVAL;
-		}
-		break;
-
 	case BT_DEFER_SETUP:
 		if (sk->sk_state != BT_BOUND && sk->sk_state != BT_LISTEN) {
 			err = -EINVAL;
@@ -1284,11 +1314,23 @@ static int l2cap_sock_defer(struct sock *sk)
 		if (!have_conn) {
 			release_sock(sk);
 			err = -ENOTCONN;
+		} else if ((chan->mode == L2CAP_MODE_LE_FLOWCTL ||
+			    chan->mode == L2CAP_MODE_EXT_FLOWCTL) &&
+			   test_bit(FLAG_PENDING_SECURITY, &chan->flags)) {
+			release_sock(sk);
+			err = -EAGAIN;
 		} else if (chan->mode == L2CAP_MODE_EXT_FLOWCTL) {
 			sk->sk_state = BT_CONNECTED;
 			chan->state = BT_CONNECTED;
 			release_sock(sk);
 			__l2cap_ecred_conn_rsp_defer(chan);
+			lock_sock(sk);
+			if (sk->sk_state == BT_CLOSED) {
+				err = sock_error(sk);
+				if (!err)
+					err = -ECONNRESET;
+			}
+			release_sock(sk);
 		} else if (bdaddr_type_is_le(chan->src_type)) {
 			sk->sk_state = BT_CONNECTED;
 			chan->state = BT_CONNECTED;
@@ -1393,7 +1435,7 @@ static void l2cap_sock_kill(struct sock *sk)
 	/* Take lock to synchronize against access without owning sk->sk_socket,
 	 * eg. in l2cap_sock_cleanup_listen(). proto_ops etc. don't need lock.
 	 */
-	lock_sock(sk);
+	lock_sock_nested(sk, L2CAP_NESTING_NORMAL);
 	l2cap_sock_put_chan(sk);
 	release_sock(sk);
 
@@ -1758,6 +1800,7 @@ static void l2cap_sock_teardown_cb(struct l2cap_chan *chan, int err)
 	lock_sock_nested(sk, atomic_read(&chan->nesting));
 
 	parent = bt_sk(sk)->parent;
+	clear_bit(BT_SK_SUSPEND, &bt_sk(sk)->flags);
 
 	switch (chan->state) {
 	case BT_OPEN:
@@ -1774,7 +1817,9 @@ static void l2cap_sock_teardown_cb(struct l2cap_chan *chan, int err)
 		sk->sk_state = BT_CLOSED;
 		chan->state = BT_CLOSED;
 
-		sk->sk_err = err;
+		if (!test_bit(FLAG_SECURITY_FAILED, &chan->flags) ||
+		    READ_ONCE(sk->sk_err) != ECONNREFUSED)
+			WRITE_ONCE(sk->sk_err, err);
 
 		if (parent) {
 			/*
@@ -1810,8 +1855,11 @@ static void l2cap_sock_state_change_cb(struct l2cap_chan *chan, int state,
 
 	sk->sk_state = state;
 
-	if (err)
-		sk->sk_err = err;
+	if (err) {
+		WRITE_ONCE(sk->sk_err, err);
+		clear_bit(BT_SK_SUSPEND, &bt_sk(sk)->flags);
+		sk->sk_state_change(sk);
+	}
 
 	release_sock(sk);
 }
