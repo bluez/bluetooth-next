@@ -8939,6 +8939,55 @@ static u8 tlv_data_max_len(struct hci_dev *hdev, u32 adv_flags,
 	return max_len;
 }
 
+/* Drop stored advertising instances that the controller can no longer carry.
+ *
+ * An instance's data was accepted against tlv_data_max_len() as it was when
+ * the instance was added, and that depends on max_adv_len(), which branches on
+ * ext_adv_capable() - a controller capability re-read from the device on every
+ * bring-up.  A controller that stops reporting LE Extended Advertising
+ * therefore leaves instances behind that can no longer be rendered:
+ * eir_create_adv_data() and eir_create_scan_rsp() would write past the 31-byte
+ * buffers of hci_set_adv_data_sync() and __hci_set_scan_rsp_data_sync().
+ *
+ * Re-using tlv_data_max_len() is deliberate.  It is the same test the add path
+ * applies, so the per-flag adjustments - 4 bytes for MGMT_ADV_FLAG_APPEARANCE,
+ * calculate_name_len() for MGMT_ADV_FLAG_LOCAL_NAME, and the flags and TX
+ * power fields on the advertising data side - cannot drift out of agreement
+ * with it.  Comparing the stored lengths against a bare max_adv_len() misses
+ * exactly those bytes.
+ *
+ * hci_adv_instance_flags() returns adv->flags for any non-zero instance, so
+ * adv->flags is the flag set the render will actually use.
+ */
+void mgmt_remove_oversized_adv_instances(struct hci_dev *hdev)
+{
+	struct adv_info *adv, *n;
+
+	/* This is safe as long as there is no command send while the lock is
+	 * held.
+	 */
+	hci_dev_lock(hdev);
+
+	list_for_each_entry_safe(adv, n, &hdev->adv_instances, list) {
+		u8 instance = adv->instance;
+
+		if (adv->adv_data_len <= tlv_data_max_len(hdev, adv->flags,
+							  true) &&
+		    adv->scan_rsp_len <= tlv_data_max_len(hdev, adv->flags,
+							  false))
+			continue;
+
+		bt_dev_warn(hdev,
+			    "advertising instance %u no longer fits, removing",
+			    instance);
+
+		if (!hci_remove_adv_instance(hdev, instance))
+			mgmt_advertising_removed(NULL, hdev, instance);
+	}
+
+	hci_dev_unlock(hdev);
+}
+
 static bool flags_managed(u32 adv_flags)
 {
 	return adv_flags & (MGMT_ADV_FLAG_DISCOV |

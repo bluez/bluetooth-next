@@ -3681,6 +3681,14 @@ static int hci_powered_update_adv_sync(struct hci_dev *hdev)
 	struct adv_info *adv, *tmp;
 	int err;
 
+	/* The controller's advertising capability has just been re-read, so
+	 * this is the first point at which stored instances can be measured
+	 * against it.  Do it before the HCI_LE_ENABLED test below: set_le() on
+	 * an unpowered device clears that flag without clearing the instances,
+	 * and one left behind must not survive to be rendered later.
+	 */
+	mgmt_remove_oversized_adv_instances(hdev);
+
 	if (!hci_dev_test_flag(hdev, HCI_LE_ENABLED))
 		return 0;
 

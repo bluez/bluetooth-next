@@ -2633,6 +2633,7 @@ bool mgmt_get_connectable(struct hci_dev *hdev);
 u8 mgmt_get_adv_discov_flags(struct hci_dev *hdev);
 void mgmt_advertising_added(struct sock *sk, struct hci_dev *hdev,
 			    u8 instance);
+void mgmt_remove_oversized_adv_instances(struct hci_dev *hdev);
 void mgmt_advertising_removed(struct sock *sk, struct hci_dev *hdev,
 			      u8 instance);
 int mgmt_phy_configuration_changed(struct hci_dev *hdev, struct sock *skip);
