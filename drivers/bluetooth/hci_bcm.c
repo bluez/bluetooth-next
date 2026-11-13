@@ -139,10 +139,8 @@ struct bcm_device {
 	bool			irq_active_low;
 	bool			irq_acquired;
 
-#ifdef CONFIG_PM
 	struct hci_uart		*hu;
 	bool			is_suspended;
-#endif
 	bool			no_early_set_baudrate;
 	bool			drive_rts_on_open;
 	bool			no_uart_clock_set;
@@ -230,11 +228,9 @@ static bool bcm_device_exists(struct bcm_device *device)
 {
 	struct list_head *p;
 
-#ifdef CONFIG_PM
 	/* Devices using serdev always exist */
-	if (device && device->hu && device->hu->serdev)
+	if (IS_ENABLED(CONFIG_PM) && device && device->hu && device->hu->serdev)
 		return true;
-#endif
 
 	list_for_each(p, &bcm_device_list) {
 		struct bcm_device *dev = list_entry(p, struct bcm_device, list);
@@ -318,7 +314,6 @@ err_regulator_disable:
 	return err;
 }
 
-#ifdef CONFIG_PM
 static irqreturn_t bcm_host_wake(int irq, void *data)
 {
 	struct bcm_device *bdev = data;
@@ -409,10 +404,6 @@ static int bcm_setup_sleep(struct hci_uart *hu)
 
 	return 0;
 }
-#else
-static inline int bcm_request_irq(struct bcm_data *bcm) { return 0; }
-static inline int bcm_setup_sleep(struct hci_uart *hu) { return 0; }
-#endif
 
 static int bcm_set_diag(struct hci_dev *hdev, bool enable)
 {
@@ -475,9 +466,8 @@ static int bcm_open(struct hci_uart *hu)
 		 */
 		if (hu->tty->dev->parent == dev->dev->parent) {
 			bcm->dev = dev;
-#ifdef CONFIG_PM
-			dev->hu = hu;
-#endif
+			if (IS_ENABLED(CONFIG_PM))
+				dev->hu = hu;
 			break;
 		}
 	}
@@ -513,10 +503,8 @@ out:
 	return 0;
 
 err_unset_hu:
-#ifdef CONFIG_PM
-	if (!hu->serdev)
+	if (IS_ENABLED(CONFIG_PM) && !hu->serdev)
 		bcm->dev->hu = NULL;
-#endif
 	mutex_unlock(&bcm_device_lock);
 	hu->priv = NULL;
 	kfree(bcm);
@@ -538,9 +526,8 @@ static int bcm_close(struct hci_uart *hu)
 		bdev = serdev_device_get_drvdata(hu->serdev);
 	} else if (bcm_device_exists(bcm->dev)) {
 		bdev = bcm->dev;
-#ifdef CONFIG_PM
-		bdev->hu = NULL;
-#endif
+		if (IS_ENABLED(CONFIG_PM))
+			bdev->hu = NULL;
 	}
 
 	if (bdev) {
@@ -654,7 +641,7 @@ static int bcm_setup(struct hci_uart *hu)
 	if (hci_test_quirk(hu->hdev, HCI_QUIRK_INVALID_BDADDR))
 		hci_set_quirk(hu->hdev, HCI_QUIRK_USE_BDADDR_PROPERTY);
 
-	if (!bcm_request_irq(bcm))
+	if (IS_ENABLED(CONFIG_PM) && !bcm_request_irq(bcm))
 		err = bcm_setup_sleep(hu);
 
 	return err;
@@ -763,7 +750,6 @@ static struct sk_buff *bcm_dequeue(struct hci_uart *hu)
 	return skb;
 }
 
-#ifdef CONFIG_PM
 static int bcm_suspend_device(struct device *dev)
 {
 	struct bcm_device *bdev = dev_get_drvdata(dev);
@@ -819,9 +805,7 @@ static int bcm_resume_device(struct device *dev)
 
 	return 0;
 }
-#endif
 
-#ifdef CONFIG_PM_SLEEP
 /* suspend callback */
 static int bcm_suspend(struct device *dev)
 {
@@ -893,7 +877,6 @@ unlock:
 
 	return 0;
 }
-#endif
 
 /* Some firmware reports an IRQ which does not work (wrong pin in fw table?) */
 static struct gpiod_lookup_table irq_on_int33fc02_pin17_gpios = {
@@ -1497,8 +1480,8 @@ MODULE_DEVICE_TABLE(acpi, bcm_acpi_match);
 
 /* suspend and resume callbacks */
 static const struct dev_pm_ops bcm_pm_ops = {
-	SET_SYSTEM_SLEEP_PM_OPS(bcm_suspend, bcm_resume)
-	SET_RUNTIME_PM_OPS(bcm_suspend_device, bcm_resume_device, NULL)
+	SYSTEM_SLEEP_PM_OPS(bcm_suspend, bcm_resume)
+	RUNTIME_PM_OPS(bcm_suspend_device, bcm_resume_device, NULL)
 };
 
 static struct platform_driver bcm_driver = {
@@ -1507,7 +1490,7 @@ static struct platform_driver bcm_driver = {
 	.driver = {
 		.name = "hci_bcm",
 		.acpi_match_table = ACPI_PTR(bcm_acpi_match),
-		.pm = &bcm_pm_ops,
+		.pm = pm_ptr(&bcm_pm_ops),
 	},
 };
 
@@ -1522,9 +1505,8 @@ static int bcm_serdev_probe(struct serdev_device *serdev)
 		return -ENOMEM;
 
 	bcmdev->dev = &serdev->dev;
-#ifdef CONFIG_PM
-	bcmdev->hu = &bcmdev->serdev_hu;
-#endif
+	if (IS_ENABLED(CONFIG_PM))
+		bcmdev->hu = &bcmdev->serdev_hu;
 	bcmdev->serdev_hu.serdev = serdev;
 	serdev_device_set_drvdata(serdev, bcmdev);
 
@@ -1616,7 +1598,7 @@ static struct serdev_device_driver bcm_serdev_driver = {
 		.name = "hci_uart_bcm",
 		.of_match_table = of_match_ptr(bcm_bluetooth_of_match),
 		.acpi_match_table = ACPI_PTR(bcm_acpi_match),
-		.pm = &bcm_pm_ops,
+		.pm = pm_ptr(&bcm_pm_ops),
 	},
 };
 
