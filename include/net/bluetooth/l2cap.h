@@ -604,6 +604,7 @@ struct l2cap_chan {
 	__u32		remote_flush_to;
 
 	struct delayed_work	chan_timer;
+	struct list_head	security_list;
 	struct delayed_work	retrans_timer;
 	struct delayed_work	monitor_timer;
 	struct delayed_work	ack_timer;
@@ -644,6 +645,8 @@ struct l2cap_conn {
 
 	struct sk_buff_head	pending_rx;
 	struct work_struct	pending_rx_work;
+	struct work_struct	security_work;
+	atomic_t		security_failure;
 	bool			pending_rx_blocked __guarded_by(&lock);
 
 	struct delayed_work	id_addr_timer;
@@ -767,6 +770,8 @@ enum {
 	FLAG_ECRED_CONN_REQ_SENT,
 	FLAG_ECRED_RECONF_REQ_SENT,
 	FLAG_PENDING_SECURITY,
+	FLAG_SECURITY_CFM,
+	FLAG_SECURITY_FAILED,
 	FLAG_HOLD_HCI_CONN,
 	FLAG_DEL,
 };
@@ -974,7 +979,7 @@ void l2cap_cleanup_sockets(void);
 bool l2cap_is_socket(struct socket *sock);
 
 void __l2cap_le_connect_rsp_defer(struct l2cap_chan *chan);
-void __l2cap_ecred_conn_rsp_defer(struct l2cap_chan *chan)
+int __l2cap_ecred_conn_rsp_defer(struct l2cap_chan *chan)
 	__must_hold(&chan->lock) __must_hold(&chan->conn->lock);
 void __l2cap_connect_rsp_defer(struct l2cap_chan *chan);
 
@@ -993,6 +998,8 @@ void l2cap_chan_busy(struct l2cap_chan *chan, int busy);
 void l2cap_chan_rx_avail(struct l2cap_chan *chan, ssize_t rx_avail);
 void l2cap_chan_req_mic_len(struct l2cap_chan *chan, struct hci_conn *hcon);
 int l2cap_chan_check_security(struct l2cap_chan *chan, bool initiator);
+int l2cap_chan_set_security(struct l2cap_chan *chan, u8 level, u8 mic_len);
+void l2cap_security_failure(struct l2cap_conn *conn);
 void l2cap_chan_set_defaults(struct l2cap_chan *chan, struct l2cap_chan *pchan);
 int l2cap_ertm_init(struct l2cap_chan *chan);
 void l2cap_chan_add(struct l2cap_conn *conn, struct l2cap_chan *chan);
