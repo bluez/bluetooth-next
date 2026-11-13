@@ -5464,6 +5464,11 @@ static inline int l2cap_le_credits(struct l2cap_conn *conn,
 
 	l2cap_chan_lock(chan);
 
+	if (chan->state != BT_CONNECTED ||
+	    (chan->mode != L2CAP_MODE_LE_FLOWCTL &&
+	     chan->mode != L2CAP_MODE_EXT_FLOWCTL))
+		goto unlock;
+
 	max_credits = LE_FLOWCTL_MAX_CREDITS - chan->tx_credits;
 	if (credits > max_credits) {
 		BT_ERR("LE credits overflow");
