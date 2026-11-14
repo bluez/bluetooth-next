@@ -3085,6 +3085,10 @@ static union acpi_object *btintel_acpi_get_bt_pkg(union acpi_object *buffer)
 
 	for (i = 1; i < buffer->package.count; i++) {
 		bt_pkg = &buffer->package.elements[i];
+		if (bt_pkg->type != ACPI_TYPE_PACKAGE ||
+		    bt_pkg->package.count < 1)
+			continue;
+
 		domain = &bt_pkg->package.elements[0];
 		if (domain->type == ACPI_TYPE_INTEGER &&
 		    domain->integer.value == BTINTEL_BT_DOMAIN)
