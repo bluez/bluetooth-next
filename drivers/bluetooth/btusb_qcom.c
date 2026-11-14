@@ -533,7 +533,7 @@ struct qhci_vse_memdump {
 	__le16 seqno;
 	u8     subsys;
 	union {
-		u8 segdata[0];
+		DECLARE_FLEX_ARRAY(u8, segdata);
 		struct {
 			__le32 dump_size;
 			u8 first_segdata[];
