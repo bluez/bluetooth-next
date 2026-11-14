@@ -1635,7 +1635,8 @@ static int hci_set_ext_scan_rsp_data_sync(struct hci_dev *hdev, u8 instance)
 		}
 	}
 
-	len = eir_create_scan_rsp(hdev, instance, pdu->data);
+	len = eir_create_scan_rsp(hdev, instance, pdu->data,
+				  HCI_MAX_EXT_AD_LENGTH);
 
 	pdu->handle = adv ? adv->handle : instance;
 	pdu->length = len;
@@ -1681,7 +1682,7 @@ static int __hci_set_scan_rsp_data_sync(struct hci_dev *hdev, u8 instance)
 	if (instance)
 		hci_dev_lock(hdev);
 
-	len = eir_create_scan_rsp(hdev, instance, cp.data);
+	len = eir_create_scan_rsp(hdev, instance, cp.data, sizeof(cp.data));
 
 	if (instance)
 		hci_dev_unlock(hdev);
