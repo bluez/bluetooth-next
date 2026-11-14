@@ -16,6 +16,9 @@
 #include <linux/of.h>
 #include <linux/pci.h>
 #include <linux/printk.h>
+#include <linux/slab.h>
+#include <linux/suspend.h>
+#include <linux/workqueue.h>
 
 #include <linux/unaligned.h>
 
@@ -494,7 +497,8 @@ struct bcm4377_data;
  * clear_pciecfg_subsystem_ctrl_bit19: Set to true if bit 19 in the
  *                                     vendor-specific subsystem control
  *                                     register has to be cleared
- * disable_aspm: Set to true if ASPM must be disabled due to hardware errata
+ * disable_aspm: Set to true if ASPM must be disabled while the firmware is
+ *               loaded and booted due to hardware errata
  * broken_ext_scan: Set to true if the chip erroneously claims to support
  *                  extended scanning
  * broken_mws_transport_config: Set to true if the chip erroneously claims to
@@ -565,6 +569,12 @@ static const struct dmi_system_id bcm4377_dmi_board_table[];
 struct bcm4377_data {
 	struct pci_dev *pdev;
 	struct hci_dev *hdev;
+
+	/* set when the controller lost its firmware during system sleep */
+	bool fw_lost;
+
+	/* Link Control value saved while ASPM is disabled for the boot */
+	u16 link_ctl;
 
 	void __iomem *bar0;
 	void __iomem *bar2;
@@ -1017,6 +1027,11 @@ static int bcm4377_destroy_completion_ring(struct bcm4377_data *bcm4377,
 	struct bcm4377_destroy_completion_ring_msg msg;
 	int ret;
 
+	if (bcm4377->fw_lost) {
+		ring->enabled = false;
+		return 0;
+	}
+
 	memset(&msg, 0, sizeof(msg));
 	msg.msg_type = BCM4377_CONTROL_MSG_DESTROY_COMPLETION_RING;
 	msg.ring_id = cpu_to_le16(ring->ring_id);
@@ -1106,6 +1121,11 @@ static int bcm4377_destroy_transfer_ring(struct bcm4377_data *bcm4377,
 {
 	struct bcm4377_destroy_transfer_ring_msg msg;
 	int ret;
+
+	if (bcm4377->fw_lost) {
+		ring->enabled = false;
+		return 0;
+	}
 
 	memset(&msg, 0, sizeof(msg));
 	msg.msg_type = BCM4377_CONTROL_MSG_DESTROY_XFER_RING;
@@ -2244,18 +2264,25 @@ static int bcm4377_probe_of(struct bcm4377_data *bcm4377)
 	return 0;
 }
 
+/*
+ * ASPM is disabled in this function's Link Control register only. A
+ * non-ARI Multi-Function Device enables only the ASPM states enabled in
+ * all of its functions, so the link stays in L0 until it is restored.
+ */
 static void bcm4377_disable_aspm(struct bcm4377_data *bcm4377)
 {
-	pci_disable_link_state(bcm4377->pdev,
-			       PCIE_LINK_STATE_L0S | PCIE_LINK_STATE_L1);
-
-	/*
-	 * pci_disable_link_state can fail if either CONFIG_PCIEASPM is disabled
-	 * or if the BIOS hasn't handed over control to us. We must *always*
-	 * disable ASPM for this device due to hardware errata though.
-	 */
+	pcie_capability_read_word(bcm4377->pdev, PCI_EXP_LNKCTL,
+				  &bcm4377->link_ctl);
 	pcie_capability_clear_word(bcm4377->pdev, PCI_EXP_LNKCTL,
 				   PCI_EXP_LNKCTL_ASPMC);
+}
+
+static void bcm4377_restore_aspm(struct bcm4377_data *bcm4377)
+{
+	pcie_capability_clear_and_set_word(bcm4377->pdev, PCI_EXP_LNKCTL,
+					   PCI_EXP_LNKCTL_ASPMC,
+					   bcm4377->link_ctl &
+					   PCI_EXP_LNKCTL_ASPMC);
 }
 
 static void bcm4377_pci_free_irq_vectors(void *data)
@@ -2409,8 +2436,11 @@ static int bcm4377_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	if (ret)
 		return ret;
 
+	if (bcm4377->hw->disable_aspm)
+		bcm4377_restore_aspm(bcm4377);
+
 	ret = hci_register_dev(hdev);
-	if (ret)
+	if (ret < 0)
 		return ret;
 	return devm_add_action_or_reset(&pdev->dev, bcm4377_hci_unregister_dev,
 					hdev);
@@ -2432,10 +2462,53 @@ static int bcm4377_suspend(struct device *dev)
 	return 0;
 }
 
+struct bcm4377_reprobe {
+	struct work_struct work;
+	struct pci_dev *pdev;
+};
+
+static void bcm4377_reprobe_work(struct work_struct *work)
+{
+	struct bcm4377_reprobe *reprobe =
+		container_of(work, struct bcm4377_reprobe, work);
+	int ret;
+
+	/*
+	 * Probing stays blocked until the system resume completes, the driver
+	 * core then retries the deferred probe.
+	 */
+	ret = device_reprobe(&reprobe->pdev->dev);
+	if (ret && ret != -EPROBE_DEFER)
+		dev_err(&reprobe->pdev->dev, "re-probe after resume failed (%d)\n",
+			ret);
+
+	pci_dev_put(reprobe->pdev);
+	kfree(reprobe);
+}
+
 static int bcm4377_resume(struct device *dev)
 {
 	struct pci_dev *pdev = to_pci_dev(dev);
 	struct bcm4377_data *bcm4377 = pci_get_drvdata(pdev);
+
+	/*
+	 * The controller is powered off when the platform firmware handles
+	 * the system sleep, as with ACPI S3 on x86 Macs, and comes back
+	 * without its firmware. Probe it again.
+	 */
+	if (pm_resume_via_firmware()) {
+		struct bcm4377_reprobe *reprobe;
+
+		reprobe = kzalloc_obj(*reprobe);
+		if (!reprobe)
+			return -ENOMEM;
+
+		bcm4377->fw_lost = true;
+		reprobe->pdev = pci_dev_get(pdev);
+		INIT_WORK(&reprobe->work, bcm4377_reprobe_work);
+		schedule_work(&reprobe->work);
+		return 0;
+	}
 
 	iowrite32(BCM4377_BAR0_SLEEP_CONTROL_UNQUIESCE,
 		  bcm4377->bar0 + BCM4377_BAR0_SLEEP_CONTROL);
