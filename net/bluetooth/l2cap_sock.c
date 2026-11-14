@@ -2068,6 +2068,7 @@ static struct sock *l2cap_sock_alloc(struct net *net, struct socket *sock,
 
 	sk->sk_destruct = l2cap_sock_destruct;
 	sk->sk_sndtimeo = L2CAP_CONN_TIMEOUT;
+	sk->sk_sndbuf   = L2CAP_DEFAULT_SNDBUF;
 
 	INIT_LIST_HEAD(&l2cap_pi(sk)->rx_busy);
 
