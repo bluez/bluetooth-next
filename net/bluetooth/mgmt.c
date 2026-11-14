@@ -8271,7 +8271,7 @@ static int load_conn_param(struct sock *sk, struct hci_dev *hdev, void *data,
 			 * a connection update.
 			 */
 			conn = hci_conn_hash_lookup_le(hdev, &hci_param->addr,
-						       addr_type);
+						       hci_param->addr_type);
 			if (conn && conn->role == HCI_ROLE_MASTER &&
 			    (conn->le_conn_min_interval != min ||
 			     conn->le_conn_max_interval != max ||
@@ -8386,7 +8386,7 @@ static int load_conn_subrate(struct sock *sk, struct hci_dev *hdev, void *data,
 
 			conn = hci_conn_hash_lookup_le(hdev,
 						       &hci_param->addr,
-						       addr_type);
+						       hci_param->addr_type);
 			if (conn && conn->state == BT_CONNECTED &&
 			    (conn->le_rate_interval < min ||
 			     conn->le_rate_interval > max ||

@@ -1494,12 +1494,42 @@ u8 hci_conn_set_handle(struct hci_conn *conn, u16 handle)
 	return 0;
 }
 
+/* A connect made to one of the peer's RPAs leaves its scanning object under
+ * that RPA when the controller cannot resolve it, and the peer may have
+ * moved to a new RPA since. Match it by the peer's IRK instead of by address.
+ *
+ * This function requires the caller holds hdev->lock.
+ */
+static struct hci_conn *le_scanning_conn_by_irk(struct hci_dev *hdev,
+						const u8 irk_val[16])
+{
+	struct hci_conn_hash *h = &hdev->conn_hash;
+	struct hci_conn *c;
+
+	rcu_read_lock();
+	list_for_each_entry_rcu(c, &h->list, list) {
+		if (c->type != LE_LINK ||
+		    !test_bit(HCI_CONN_SCANNING, c->flags) ||
+		    !hci_bdaddr_is_rpa(&c->dst, c->dst_type))
+			continue;
+
+		if (smp_irk_matches(hdev, irk_val, &c->dst)) {
+			rcu_read_unlock();
+			return c;
+		}
+	}
+	rcu_read_unlock();
+
+	return NULL;
+}
+
 struct hci_conn *hci_connect_le(struct hci_dev *hdev, bdaddr_t *dst,
 				u8 dst_type, bool dst_resolved, u8 sec_level,
 				u16 conn_timeout, u8 role, u8 phy, u8 sec_phy)
 {
 	struct hci_conn *conn;
 	struct smp_irk *irk;
+	bdaddr_t rpa;
 	int err;
 
 	/* Let's make sure that le is enabled.*/
@@ -1525,25 +1555,35 @@ struct hci_conn *hci_connect_le(struct hci_dev *hdev, bdaddr_t *dst,
 	if (conn && !test_bit(HCI_CONN_SCANNING, conn->flags))
 		return ERR_PTR(-EBUSY);
 
-	/* Check if the destination address has been resolved by the controller
-	 * since if it did then the identity address shall be used.
-	 */
-	if (!dst_resolved) {
-		/* When given an identity address with existing identity
-		 * resolving key, the connection needs to be established
-		 * to a resolvable random address.
+	rcu_read_lock();
+	irk = hci_find_irk_by_addr(hdev, dst, dst_type);
+	if (irk) {
+		/* A connect made to one of the peer's RPAs is still scanning
+		 * under that RPA, whatever address the peer is seen on now.
+		 */
+		if (!conn)
+			conn = le_scanning_conn_by_irk(hdev, irk->val);
+
+		/* Check if the destination address has been resolved by the
+		 * controller since if it did then the identity address shall
+		 * be used.
+		 *
+		 * Otherwise, when given an identity address with existing
+		 * identity resolving key, the connection needs to be
+		 * established to a resolvable random address.
 		 *
 		 * Storing the resolvable random address is required here
 		 * to handle connection failures. The address will later
 		 * be resolved back into the original identity address
 		 * from the connect request.
 		 */
-		irk = hci_find_irk_by_addr(hdev, dst, dst_type);
-		if (irk && bacmp(&irk->rpa, BDADDR_ANY)) {
-			dst = &irk->rpa;
+		if (!dst_resolved && bacmp(&irk->rpa, BDADDR_ANY)) {
+			bacpy(&rpa, &irk->rpa);
+			dst = &rpa;
 			dst_type = ADDR_LE_DEV_RANDOM;
 		}
 	}
+	rcu_read_unlock();
 
 	if (conn) {
 		/* dst may just have been swapped for the peer's RPA above, and
