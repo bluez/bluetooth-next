@@ -214,30 +214,31 @@ static int __init test_ecdh(void)
 			       dhkey_1);
 	if (err) {
 		BT_ERR("ECDH sample 1 failed");
-		goto done;
+		goto free_tfm;
 	}
 
 	err = test_ecdh_sample(tfm, priv_a_2, priv_b_2, pub_a_2, pub_b_2,
 			       dhkey_2);
 	if (err) {
 		BT_ERR("ECDH sample 2 failed");
-		goto done;
+		goto free_tfm;
 	}
 
 	err = test_ecdh_sample(tfm, priv_a_3, priv_a_3, pub_a_3, pub_a_3,
 			       dhkey_3);
 	if (err) {
 		BT_ERR("ECDH sample 3 failed");
-		goto done;
+		goto free_tfm;
 	}
-
-	crypto_free_kpp(tfm);
 
 	rettime = ktime_get();
 	delta = ktime_sub(rettime, calltime);
 	duration = (unsigned long long) ktime_to_ns(delta) >> 10;
 
 	BT_INFO("ECDH test passed in %llu usecs", duration);
+
+free_tfm:
+	crypto_free_kpp(tfm);
 
 done:
 	if (!err)
