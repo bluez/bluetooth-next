@@ -350,7 +350,7 @@ static void btsdio_remove(struct sdio_func *func)
 	if (!data)
 		return;
 
-	cancel_work_sync(&data->work);
+	disable_work_sync(&data->work);
 	hdev = data->hdev;
 
 	sdio_set_drvdata(func, NULL);
