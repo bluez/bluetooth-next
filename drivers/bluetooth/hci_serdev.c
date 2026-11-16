@@ -21,6 +21,29 @@
 
 #include "hci_uart.h"
 
+int hci_uart_serdev_open(struct hci_uart *hu)
+{
+	int err;
+
+	if (hu->serdev_open)
+		return 0;
+
+	err = serdev_device_open(hu->serdev);
+	if (!err)
+		hu->serdev_open = true;
+
+	return err;
+}
+
+void hci_uart_serdev_close(struct hci_uart *hu)
+{
+	if (!hu->serdev_open)
+		return;
+
+	hu->serdev_open = false;
+	serdev_device_close(hu->serdev);
+}
+
 static inline void hci_uart_tx_complete(struct hci_uart *hu, int pkt_type)
 {
 	struct hci_dev *hdev = hu->hdev;
@@ -97,6 +120,9 @@ static int hci_uart_flush(struct hci_dev *hdev)
 
 	BT_DBG("hdev %p serdev %p", hdev, hu->serdev);
 
+	if (hci_dev_test_flag(hdev, HCI_UNREGISTER))
+		return 0;
+
 	if (hu->tx_skb) {
 		kfree_skb(hu->tx_skb); hu->tx_skb = NULL;
 	}
@@ -125,7 +151,7 @@ static int hci_uart_open(struct hci_dev *hdev)
 	 * BT OFF. Upon next BT ON UART port should be opened.
 	 */
 	if (!test_bit(HCI_UART_PROTO_READY, &hu->flags)) {
-		err = serdev_device_open(hu->serdev);
+		err = hci_uart_serdev_open(hu);
 		if (err)
 			return err;
 		set_bit(HCI_UART_PROTO_READY, &hu->flags);
@@ -144,6 +170,9 @@ static int hci_uart_close(struct hci_dev *hdev)
 
 	BT_DBG("hdev %p", hdev);
 
+	if (hci_dev_test_flag(hdev, HCI_UNREGISTER))
+		return 0;
+
 	if (!test_bit(HCI_UART_PROTO_READY, &hu->flags))
 		return 0;
 
@@ -156,7 +185,7 @@ static int hci_uart_close(struct hci_dev *hdev)
 	 */
 	if (hci_test_quirk(hdev, HCI_QUIRK_NON_PERSISTENT_SETUP)) {
 		clear_bit(HCI_UART_PROTO_READY, &hu->flags);
-		serdev_device_close(hu->serdev);
+		hci_uart_serdev_close(hu);
 	}
 
 	return 0;
@@ -316,7 +345,7 @@ int hci_uart_register_device_priv(struct hci_uart *hu,
 	if (percpu_init_rwsem(&hu->proto_lock))
 		return -ENOMEM;
 
-	err = serdev_device_open(hu->serdev);
+	err = hci_uart_serdev_open(hu);
 	if (err)
 		goto err_rwsem;
 
@@ -387,7 +416,7 @@ err_alloc:
 	clear_bit(HCI_UART_PROTO_READY, &hu->flags);
 	p->close(hu);
 err_open:
-	serdev_device_close(hu->serdev);
+	hci_uart_serdev_close(hu);
 err_rwsem:
 	percpu_free_rwsem(&hu->proto_lock);
 	return err;
@@ -401,6 +430,10 @@ void hci_uart_unregister_device(struct hci_uart *hu)
 
 	/* Wait for init_ready to finish to prevent registration races */
 	cancel_work_sync(&hu->init_ready);
+
+	/* Drain HCI setup before clearing protocol readiness. */
+	if (test_bit(HCI_UART_REGISTERED, &hu->flags))
+		hci_unregister_dev(hdev);
 
 	proto_ready = test_bit(HCI_UART_PROTO_READY, &hu->flags);
 	if (proto_ready) {
@@ -423,16 +456,16 @@ void hci_uart_unregister_device(struct hci_uart *hu)
 	cancel_work_sync(&hu->write_work);
 
 	/* Free any partially transmitted frame left over by write_work now
-	 * that the transmit path is fully quiesced. hci_uart_close() would
-	 * skip hci_uart_flush() because HCI_UART_PROTO_READY is cleared.
+	 * that the transmit path is fully quiesced. The HCI close and flush
+	 * callbacks leave transport teardown to us during unregister.
 	 */
 	if (hu->tx_skb) {
 		kfree_skb(hu->tx_skb);
 		hu->tx_skb = NULL;
 	}
 
-	if (test_bit(HCI_UART_REGISTERED, &hu->flags))
-		hci_unregister_dev(hdev);
+	if (hu->serdev_open)
+		serdev_device_write_flush(hu->serdev);
 
 	/* Close the protocol before freeing hdev (intrinsically purges queues).
 	 * Some protocol close handlers (e.g. qca_close) may still access the
@@ -440,8 +473,7 @@ void hci_uart_unregister_device(struct hci_uart *hu)
 	 */
 	hu->proto->close(hu);
 
-	if (proto_ready)
-		serdev_device_close(hu->serdev);
+	hci_uart_serdev_close(hu);
 
 	hci_free_dev(hdev);
 
