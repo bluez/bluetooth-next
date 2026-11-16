@@ -1762,14 +1762,14 @@ static void qca_port_close(struct hci_uart *hu)
 	 * hci_uart_close() or hci_uart_unregister_device().
 	 */
 	if (test_and_clear_bit(HCI_UART_PROTO_READY, &hu->flags))
-		serdev_device_close(hu->serdev);
+		hci_uart_serdev_close(hu);
 }
 
 static int qca_port_open(struct hci_uart *hu)
 {
 	int ret;
 
-	ret = serdev_device_open(hu->serdev);
+	ret = hci_uart_serdev_open(hu);
 	if (!ret)
 		set_bit(HCI_UART_PROTO_READY, &hu->flags);
 
