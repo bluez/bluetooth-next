@@ -464,6 +464,9 @@ void hci_uart_unregister_device(struct hci_uart *hu)
 		hu->tx_skb = NULL;
 	}
 
+	if (hu->serdev_open)
+		serdev_device_write_flush(hu->serdev);
+
 	/* Close the protocol before freeing hdev (intrinsically purges queues).
 	 * Some protocol close handlers (e.g. qca_close) may still access the
 	 * serdev device, so keep the serdev port open until this completes.
