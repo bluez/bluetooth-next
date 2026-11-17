@@ -438,23 +438,30 @@ static int msft_remove_monitor_sync(struct hci_dev *hdev,
 	struct msft_cp_le_cancel_monitor_advertisement cp;
 	struct msft_monitor_advertisement_handle_data *handle_data;
 	struct sk_buff *skb;
+	int err;
 
+	hci_dev_lock(hdev);
 	handle_data = msft_find_handle_data(hdev, monitor->handle, true);
+	if (handle_data)
+		cp.handle = handle_data->msft_handle;
+	hci_dev_unlock(hdev);
 
 	/* If no matched handle, just remove without telling controller */
 	if (!handle_data)
 		return -ENOENT;
 
 	cp.sub_opcode = MSFT_OP_LE_CANCEL_MONITOR_ADVERTISEMENT;
-	cp.handle = handle_data->msft_handle;
 
 	skb = __hci_cmd_sync(hdev, hdev->msft_opcode, sizeof(cp), &cp,
 			     HCI_CMD_TIMEOUT);
 	if (IS_ERR(skb))
 		return PTR_ERR(skb);
 
-	return msft_le_cancel_monitor_advertisement_cb(hdev, hdev->msft_opcode,
-						       monitor, skb);
+	err = msft_le_cancel_monitor_advertisement_cb(hdev, hdev->msft_opcode,
+						      monitor, skb);
+	kfree_skb(skb);
+
+	return err;
 }
 
 /* This function requires the caller holds hci_req_sync_lock */
@@ -571,11 +578,15 @@ static int msft_add_monitor_sync(struct hci_dev *hdev,
 
 	err = msft_le_monitor_advertisement_cb(hdev, hdev->msft_opcode,
 					       monitor, skb);
+	kfree_skb(skb);
 	if (err)
 		goto out_free;
 
+	hci_dev_lock(hdev);
+
 	handle_data = msft_find_handle_data(hdev, monitor->handle, true);
 	if (!handle_data) {
+		hci_dev_unlock(hdev);
 		err = -ENODATA;
 		goto out_free;
 	}
@@ -584,6 +595,8 @@ static int msft_add_monitor_sync(struct hci_dev *hdev,
 	handle_data->rssi_low	= cp->rssi_low;
 	handle_data->rssi_low_interval	  = cp->rssi_low_interval;
 	handle_data->rssi_sampling_period = cp->rssi_sampling_period;
+
+	hci_dev_unlock(hdev);
 
 out_free:
 	kfree(cp);
