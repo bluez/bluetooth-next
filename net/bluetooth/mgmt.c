@@ -1087,6 +1087,7 @@ static void discov_off(struct work_struct *work)
 
 static int send_settings_rsp(struct sock *sk, u16 opcode, struct hci_dev *hdev);
 
+/* This function requires the caller holds hdev->lock */
 static void mesh_send_complete(struct hci_dev *hdev,
 			       struct mgmt_mesh_tx *mesh_tx, bool silent)
 {
@@ -1102,34 +1103,65 @@ static void mesh_send_complete(struct hci_dev *hdev,
 static int mesh_send_done_sync(struct hci_dev *hdev, void *data)
 {
 	struct mgmt_mesh_tx *mesh_tx;
+	bool disable;
 
 	hci_dev_clear_flag(hdev, HCI_MESH_SENDING);
-	if (list_empty(&hdev->adv_instances))
+
+	hci_dev_lock(hdev);
+	disable = list_empty(&hdev->adv_instances);
+	hci_dev_unlock(hdev);
+
+	if (disable)
 		hci_disable_advertising_sync(hdev);
+
+	hci_dev_lock(hdev);
 	mesh_tx = mgmt_mesh_next(hdev, NULL);
 
 	if (mesh_tx)
 		mesh_send_complete(hdev, mesh_tx, false);
+	hci_dev_unlock(hdev);
 
 	return 0;
 }
+
+/* The cmd_sync entries identify the transmission by handle rather than by
+ * pointer since the mesh_tx can be removed while the entry is queued or
+ * running.
+ */
+#define MESH_TX_DATA(_handle)	((void *)(unsigned long)(_handle))
+#define MESH_TX_HANDLE(_data)	((u8)(unsigned long)(_data))
 
 static int mesh_send_sync(struct hci_dev *hdev, void *data);
 static void mesh_send_start_complete(struct hci_dev *hdev, void *data, int err);
 static void mesh_next(struct hci_dev *hdev, void *data, int err)
 {
-	struct mgmt_mesh_tx *mesh_tx = mgmt_mesh_next(hdev, NULL);
+	struct mgmt_mesh_tx *mesh_tx;
 
-	if (!mesh_tx)
+	/* The entry is being cancelled with the cmd_sync lock held, which
+	 * can't be taken before hdev->lock.
+	 */
+	if (err == -ECANCELED)
 		return;
 
-	err = hci_cmd_sync_queue(hdev, mesh_send_sync, mesh_tx,
+	hci_dev_lock(hdev);
+
+	/* Only start the next transmission if there is none in progress */
+	mesh_tx = mgmt_mesh_next(hdev, NULL);
+	if (!mesh_tx || hci_dev_test_flag(hdev, HCI_MESH_SENDING)) {
+		hci_dev_unlock(hdev);
+		return;
+	}
+
+	err = hci_cmd_sync_queue(hdev, mesh_send_sync,
+				 MESH_TX_DATA(mesh_tx->handle),
 				 mesh_send_start_complete);
 
 	if (err < 0)
 		mesh_send_complete(hdev, mesh_tx, false);
 	else
 		hci_dev_set_flag(hdev, HCI_MESH_SENDING);
+
+	hci_dev_unlock(hdev);
 }
 
 static void mesh_send_done(struct work_struct *work)
@@ -2310,10 +2342,30 @@ static int set_mesh(struct sock *sk, struct hci_dev *hdev, void *data, u16 len)
 
 static void mesh_send_start_complete(struct hci_dev *hdev, void *data, int err)
 {
-	struct mgmt_mesh_tx *mesh_tx = data;
-	struct mgmt_cp_mesh_send *send = (void *)mesh_tx->param;
+	struct mgmt_mesh_tx *mesh_tx;
+	struct mgmt_cp_mesh_send *send;
 	unsigned long mesh_send_interval;
 	u8 mgmt_err = mgmt_status(err);
+
+	/* The entry is being cancelled with the cmd_sync lock held, which
+	 * can't be taken before hdev->lock, so leave the removal of the
+	 * transmission to whoever cancelled it.
+	 */
+	if (err == -ECANCELED) {
+		hci_dev_clear_flag(hdev, HCI_MESH_SENDING);
+		return;
+	}
+
+	hci_dev_lock(hdev);
+
+	mesh_tx = mgmt_mesh_find(hdev, MESH_TX_HANDLE(data));
+	if (!mesh_tx) {
+		/* Removed while being sent (e.g. its socket was closed) */
+		hci_dev_unlock(hdev);
+		hci_dev_clear_flag(hdev, HCI_MESH_SENDING);
+		mesh_next(hdev, NULL, 0);
+		return;
+	}
 
 	/* Report any errors here, but don't report completion */
 
@@ -2321,27 +2373,42 @@ static void mesh_send_start_complete(struct hci_dev *hdev, void *data, int err)
 		hci_dev_clear_flag(hdev, HCI_MESH_SENDING);
 		/* Send Complete Error Code for handle */
 		mesh_send_complete(hdev, mesh_tx, false);
-		if (err != -ECANCELED)
-			mesh_next(hdev, NULL, 0);
+		hci_dev_unlock(hdev);
+		mesh_next(hdev, NULL, 0);
 		return;
 	}
 
+	send = (void *)mesh_tx->param;
 	mesh_send_interval = msecs_to_jiffies((send->cnt) * 25);
+	hci_dev_unlock(hdev);
+
 	queue_delayed_work(hdev->req_workqueue, &hdev->mesh_send_done,
 			   mesh_send_interval);
 }
 
 static int mesh_send_sync(struct hci_dev *hdev, void *data)
 {
-	struct mgmt_mesh_tx *mesh_tx = data;
-	struct mgmt_cp_mesh_send *send = (void *)mesh_tx->param;
+	struct mgmt_mesh_tx *mesh_tx;
+	struct mgmt_cp_mesh_send *send;
 	struct adv_info *adv, *next_instance;
 	u8 instance = hdev->le_num_of_adv_sets + 1;
 	u16 timeout, duration;
 	int err = 0;
 
-	if (hdev->le_num_of_adv_sets <= hdev->adv_instance_cnt)
+	hci_dev_lock(hdev);
+
+	mesh_tx = mgmt_mesh_find(hdev, MESH_TX_HANDLE(data));
+	if (!mesh_tx) {
+		hci_dev_unlock(hdev);
+		return -ENOENT;
+	}
+
+	send = (void *)mesh_tx->param;
+
+	if (hdev->le_num_of_adv_sets <= hdev->adv_instance_cnt) {
+		hci_dev_unlock(hdev);
 		return MGMT_STATUS_BUSY;
+	}
 
 	timeout = 1000;
 	duration = send->cnt * INTERVAL_TO_MS(hdev->le_adv_max_interval);
@@ -2378,6 +2445,8 @@ static int mesh_send_sync(struct hci_dev *hdev, void *data)
 		 */
 		instance = 0;
 	}
+
+	hci_dev_unlock(hdev);
 
 	if (instance)
 		return hci_schedule_adv_instance_sync(hdev, instance, true);
@@ -2422,37 +2491,67 @@ static int mesh_features(struct sock *sk, struct hci_dev *hdev,
 	return 0;
 }
 
+/* Cancel a single transmission, the handle is looked up again after the
+ * entry has been dequeued since it may be gone or have completed meanwhile.
+ */
+static void mesh_cancel_tx(struct hci_dev *hdev, u8 handle, bool silent)
+{
+	struct mgmt_mesh_tx *mesh_tx;
+
+	hci_cmd_sync_dequeue(hdev, mesh_send_sync, MESH_TX_DATA(handle), NULL);
+
+	hci_dev_lock(hdev);
+
+	mesh_tx = mgmt_mesh_find(hdev, handle);
+	if (mesh_tx) {
+		/* If it is the transmission in progress make sure the timer
+		 * doesn't complete the next one in its place.
+		 */
+		if (hci_dev_test_flag(hdev, HCI_MESH_SENDING) &&
+		    mesh_tx == mgmt_mesh_next(hdev, NULL)) {
+			cancel_delayed_work(&hdev->mesh_send_done);
+			hci_dev_clear_flag(hdev, HCI_MESH_SENDING);
+		}
+
+		mesh_send_complete(hdev, mesh_tx, silent);
+	}
+
+	hci_dev_unlock(hdev);
+}
+
 static int send_cancel(struct hci_dev *hdev, void *data)
 {
 	struct mgmt_pending_cmd *cmd = data;
 	struct mgmt_cp_mesh_send_cancel *cancel = (void *)cmd->param;
 	struct mgmt_mesh_tx *mesh_tx;
+	u8 handle;
 
 	if (!cancel->handle) {
-		do {
+		for (;;) {
+			hci_dev_lock(hdev);
 			mesh_tx = mgmt_mesh_next(hdev, cmd->sk);
+			handle = mesh_tx ? mesh_tx->handle : 0;
+			hci_dev_unlock(hdev);
 
-			if (mesh_tx) {
-				if (!hci_cmd_sync_dequeue(hdev, mesh_send_sync,
-							  mesh_tx, NULL))
-					mesh_send_complete(hdev, mesh_tx, false);
-			}
-		} while (mesh_tx);
-	} else {
-		mesh_tx = mgmt_mesh_find(hdev, cancel->handle);
+			if (!mesh_tx)
+				break;
 
-		if (mesh_tx && mesh_tx->sk == cmd->sk) {
-			if (!hci_cmd_sync_dequeue(hdev, mesh_send_sync,
-						  mesh_tx, NULL))
-				mesh_send_complete(hdev, mesh_tx, false);
+			mesh_cancel_tx(hdev, handle, false);
 		}
+	} else {
+		hci_dev_lock(hdev);
+		mesh_tx = mgmt_mesh_find(hdev, cancel->handle);
+		handle = mesh_tx && mesh_tx->sk == cmd->sk ? mesh_tx->handle : 0;
+		hci_dev_unlock(hdev);
+
+		if (handle)
+			mesh_cancel_tx(hdev, handle, false);
 	}
 
 	mgmt_cmd_complete(cmd->sk, hdev->id, MGMT_OP_MESH_SEND_CANCEL,
 			  0, NULL, 0);
 
-	if (!hci_dev_test_flag(hdev, HCI_MESH_SENDING))
-		mesh_next(hdev, NULL, 0);
+	mesh_next(hdev, NULL, 0);
 
 	return 0;
 }
@@ -2542,7 +2641,8 @@ static int mesh_send(struct sock *sk, struct hci_dev *hdev, void *data, u16 len)
 	if (!mesh_tx)
 		err = -ENOMEM;
 	else if (!sending)
-		err = hci_cmd_sync_queue(hdev, mesh_send_sync, mesh_tx,
+		err = hci_cmd_sync_queue(hdev, mesh_send_sync,
+					 MESH_TX_DATA(mesh_tx->handle),
 					 mesh_send_start_complete);
 
 	if (err < 0) {
@@ -2550,10 +2650,8 @@ static int mesh_send(struct sock *sk, struct hci_dev *hdev, void *data, u16 len)
 		err = mgmt_cmd_status(sk, hdev->id, MGMT_OP_MESH_SEND,
 				      MGMT_STATUS_FAILED);
 
-		if (mesh_tx) {
-			if (sending)
-				mgmt_mesh_remove(mesh_tx);
-		}
+		if (mesh_tx)
+			mgmt_mesh_remove(mesh_tx);
 	} else {
 		hci_dev_set_flag(hdev, HCI_MESH_SENDING);
 
@@ -9892,6 +9990,7 @@ void mgmt_index_added(struct hci_dev *hdev)
 void mgmt_index_removed(struct hci_dev *hdev)
 {
 	struct mgmt_ev_ext_index ev;
+	struct mgmt_mesh_tx *mesh_tx;
 	struct cmd_lookup match = { NULL, hdev, MGMT_STATUS_INVALID_INDEX };
 
 	if (hci_test_quirk(hdev, HCI_QUIRK_RAW_DEVICE))
@@ -9921,6 +10020,10 @@ void mgmt_index_removed(struct hci_dev *hdev)
 	cancel_delayed_work_sync(&hdev->service_cache);
 	cancel_delayed_work_sync(&hdev->rpa_expired);
 	cancel_delayed_work_sync(&hdev->mesh_send_done);
+
+	/* Nothing is going to send or complete the transmissions left */
+	while ((mesh_tx = mgmt_mesh_next(hdev, NULL)))
+		mesh_send_complete(hdev, mesh_tx, true);
 }
 
 void mgmt_power_on(struct hci_dev *hdev, int err)
@@ -11103,19 +11206,74 @@ void mgmt_exit(void)
 
 void mgmt_cleanup(struct sock *sk)
 {
-	struct mgmt_mesh_tx *mesh_tx;
+	struct hci_dev **hdevs;
 	struct hci_dev *hdev;
+	int i, n, count;
 
-	read_lock(&hci_dev_list_lock);
+	/* hci_dev_list_lock can't be held while taking hdev->lock so take
+	 * references on the controllers first.
+	 */
+	for (;;) {
+		bool more = false;
 
-	list_for_each_entry(hdev, &hci_dev_list, list) {
-		do {
-			mesh_tx = mgmt_mesh_next(hdev, sk);
+		read_lock(&hci_dev_list_lock);
+		count = 0;
+		list_for_each_entry(hdev, &hci_dev_list, list)
+			count++;
+		read_unlock(&hci_dev_list_lock);
 
-			if (mesh_tx)
-				mesh_send_complete(hdev, mesh_tx, true);
-		} while (mesh_tx);
+		if (!count)
+			return;
+
+		hdevs = kcalloc(count, sizeof(*hdevs), GFP_KERNEL);
+		if (!hdevs)
+			return;
+
+		n = 0;
+		read_lock(&hci_dev_list_lock);
+		list_for_each_entry(hdev, &hci_dev_list, list) {
+			if (n == count) {
+				more = true;
+				break;
+			}
+			hdevs[n++] = hci_dev_hold(hdev);
+		}
+		read_unlock(&hci_dev_list_lock);
+
+		if (!more)
+			break;
+
+		/* The list grew meanwhile, retry */
+		for (i = 0; i < n; i++)
+			hci_dev_put(hdevs[i]);
+		kfree(hdevs);
 	}
 
-	read_unlock(&hci_dev_list_lock);
+	for (i = 0; i < n; i++) {
+		struct mgmt_mesh_tx *mesh_tx;
+		u8 handle;
+
+		hdev = hdevs[i];
+
+		for (;;) {
+			hci_dev_lock(hdev);
+			mesh_tx = mgmt_mesh_next(hdev, sk);
+			handle = mesh_tx ? mesh_tx->handle : 0;
+			hci_dev_unlock(hdev);
+
+			if (!mesh_tx)
+				break;
+
+			mesh_cancel_tx(hdev, handle, true);
+		}
+
+		/* Resume the transmissions of the other sockets in case the
+		 * one in progress was removed.
+		 */
+		mesh_next(hdev, NULL, 0);
+
+		hci_dev_put(hdev);
+	}
+
+	kfree(hdevs);
 }
