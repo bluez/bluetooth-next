@@ -123,13 +123,22 @@ static bool rfcomm_dev_carrier_raised(struct tty_port *port)
 	return (dev->dlc->state == BT_CONNECTED);
 }
 
+/* Serializes reparenting of the tty devices, device_move() doesn't protect
+ * the parent from concurrent moves of the same device.
+ */
+static DEFINE_MUTEX(rfcomm_move_lock);
+
 /* device-specific cleanup: close the dlc */
 static void rfcomm_dev_shutdown(struct tty_port *port)
 {
 	struct rfcomm_dev *dev = container_of(port, struct rfcomm_dev, port);
 
-	if (dev->tty_dev && dev->tty_dev->parent)
-		device_move(dev->tty_dev, NULL, DPM_ORDER_DEV_LAST);
+	if (dev->tty_dev) {
+		mutex_lock(&rfcomm_move_lock);
+		if (dev->tty_dev->parent)
+			device_move(dev->tty_dev, NULL, DPM_ORDER_DEV_LAST);
+		mutex_unlock(&rfcomm_move_lock);
+	}
 
 	/* close the dlc */
 	rfcomm_dlc_close(dev->dlc, 0);
@@ -187,8 +196,12 @@ static void rfcomm_reparent_device(struct rfcomm_dev *dev)
 	/* Just because the acl link is in the hash table is no
 	 * guarantee the sysfs device has been added ...
 	 */
-	if (conn && device_is_registered(&conn->dev))
-		device_move(dev->tty_dev, &conn->dev, DPM_ORDER_DEV_AFTER_PARENT);
+	if (conn && device_is_registered(&conn->dev)) {
+		mutex_lock(&rfcomm_move_lock);
+		device_move(dev->tty_dev, &conn->dev,
+			    DPM_ORDER_DEV_AFTER_PARENT);
+		mutex_unlock(&rfcomm_move_lock);
+	}
 
 	hci_dev_unlock(hdev);
 	hci_dev_put(hdev);
