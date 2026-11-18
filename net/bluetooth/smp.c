@@ -3433,6 +3433,10 @@ int smp_force_bredr(struct hci_dev *hdev, bool enable)
 	if (enable == hci_dev_test_flag(hdev, HCI_FORCE_BREDR_SMP))
 		return -EALREADY;
 
+	/* A powered-off controller has no registered SMP roots. */
+	if (!test_bit(HCI_UP, &hdev->flags))
+		goto done;
+
 	if (enable) {
 		struct l2cap_chan *chan;
 
@@ -3441,7 +3445,7 @@ int smp_force_bredr(struct hci_dev *hdev, bool enable)
 			return PTR_ERR(chan);
 
 		hdev->smp_bredr_data = chan;
-	} else {
+	} else if (hdev->smp_bredr_data) {
 		struct l2cap_chan *chan;
 
 		chan = hdev->smp_bredr_data;
@@ -3449,6 +3453,7 @@ int smp_force_bredr(struct hci_dev *hdev, bool enable)
 		smp_del_chan(chan);
 	}
 
+done:
 	hci_dev_change_flag(hdev, HCI_FORCE_BREDR_SMP);
 
 	return 0;
