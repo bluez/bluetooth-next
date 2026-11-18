@@ -8141,7 +8141,15 @@ static void l2cap_security_cfm(struct hci_conn *hcon, u8 status, u8 encrypt)
 			__u16 res, stat;
 
 			if (!status && l2cap_check_enc_key_size(hcon, chan)) {
-				if (test_bit(FLAG_DEFER_SETUP, &chan->flags)) {
+				bool deferred = test_bit(FLAG_DEFER_SETUP, &chan->flags);
+				struct sock *sk = chan->data;
+
+				/* Complete inline if the daemon accepted early. */
+				if (deferred && sk &&
+				    test_and_clear_bit(BT_SK_ACCEPTED, &bt_sk(sk)->flags))
+					deferred = false;
+
+				if (deferred) {
 					res = L2CAP_CR_PEND;
 					stat = L2CAP_CS_AUTHOR_PEND;
 					chan->ops->defer(chan);

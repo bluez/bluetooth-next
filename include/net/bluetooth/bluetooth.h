@@ -509,6 +509,7 @@ enum {
 	BT_SK_SUSPEND,
 	BT_SK_PKT_STATUS,
 	BT_SK_PKT_SEQNUM,
+	BT_SK_ACCEPTED,
 };
 
 struct bt_sock_list {

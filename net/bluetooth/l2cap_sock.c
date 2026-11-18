@@ -1295,6 +1295,13 @@ static int l2cap_sock_defer(struct sock *sk)
 			release_sock(sk);
 			__l2cap_le_connect_rsp_defer(chan);
 		} else {
+			/* Defer completion until security resolves. */
+			if (!l2cap_chan_check_security(chan, false)) {
+				set_bit(BT_SK_ACCEPTED, &bt_sk(sk)->flags);
+				release_sock(sk);
+				l2cap_chan_unlock_conn(chan, have_conn);
+				return err;
+			}
 			sk->sk_state = BT_CONFIG;
 			chan->state = BT_CONFIG;
 			release_sock(sk);
