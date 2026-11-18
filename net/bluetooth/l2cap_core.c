@@ -456,6 +456,14 @@ unlock:
 	l2cap_chan_put(chan);
 }
 
+/* Publish a fully initialized listener to global channel lookups. */
+void l2cap_chan_listen(struct l2cap_chan *chan)
+{
+	write_lock(&chan_list_lock);
+	chan->state = BT_LISTEN;
+	write_unlock(&chan_list_lock);
+}
+
 struct l2cap_chan *l2cap_chan_create(void)
 {
 	struct l2cap_chan *chan;
