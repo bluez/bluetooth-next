@@ -3400,13 +3400,14 @@ create_chan:
 		chan->src_type = BDADDR_BREDR;
 	}
 
-	chan->state = BT_LISTEN;
 	chan->mode = L2CAP_MODE_BASIC;
 	chan->imtu = L2CAP_DEFAULT_MTU;
 	chan->ops = &smp_root_chan_ops;
 
 	/* Set correct nesting level for a parent/listening channel */
 	atomic_set(&chan->nesting, L2CAP_NESTING_PARENT);
+
+	l2cap_chan_listen(chan);
 
 	return chan;
 }
