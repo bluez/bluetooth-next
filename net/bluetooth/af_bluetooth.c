@@ -330,8 +330,12 @@ restart:
 			continue;
 		}
 
+		/* With deferred setup a child still in BT_OPEN has not been
+		 * offered to the listener yet.
+		 */
 		if (sk->sk_state == BT_CONNECTED || !newsock ||
-		    test_bit(BT_SK_DEFER_SETUP, &bt_sk(parent)->flags)) {
+		    (test_bit(BT_SK_DEFER_SETUP, &bt_sk(parent)->flags) &&
+		     sk->sk_state != BT_OPEN)) {
 			bt_accept_unlink(sk);
 			if (newsock)
 				sock_graft(sk, newsock);
