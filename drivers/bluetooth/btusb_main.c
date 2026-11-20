@@ -1090,6 +1090,8 @@ struct btusb_data {
 	int oob_wake_irq;   /* irq for out-of-band wake-on-bt */
 
 	struct dentry *force_poll_sync_dentry;
+
+	struct notifier_block pm_notifier;
 };
 
 static void btusb_reset(struct hci_dev *hdev)
@@ -4382,6 +4384,29 @@ static int btusb_send_vendor_frame_qcom(struct hci_dev *hdev, struct sk_buff *sk
  * ============================================================================
  */
 
+/* The vendor setup (firmware download) runs in hdev->power_on before the
+ * device is powered, so hci_suspend_dev() does not wait for it and
+ * btusb_suspend() kills its URBs. A Realtek controller interrupted in the
+ * download stays half-patched until it is power cycled. Let the setup finish
+ * before the system goes to sleep.
+ */
+static int btusb_pm_notifier(struct notifier_block *nb, unsigned long action,
+			     void *unused)
+{
+	struct btusb_data *data = container_of(nb, struct btusb_data,
+					       pm_notifier);
+
+	switch (action) {
+	case PM_SUSPEND_PREPARE:
+	case PM_HIBERNATION_PREPARE:
+	case PM_RESTORE_PREPARE:
+		flush_work(&data->hdev->power_on);
+		break;
+	}
+
+	return NOTIFY_DONE;
+}
+
 static int btusb_probe(struct usb_interface *intf,
 		       const struct usb_device_id *id)
 {
@@ -4816,9 +4841,16 @@ static int btusb_probe(struct usb_interface *intf,
 	if (data->proto == BTUSB_PROTO_LEGACY)
 		data->poll_sync = enable_poll_sync;
 
-	err = hci_register_dev(hdev);
+	data->pm_notifier.notifier_call = btusb_pm_notifier;
+	err = register_pm_notifier(&data->pm_notifier);
 	if (err < 0)
 		goto err_release_siblings;
+
+	err = hci_register_dev(hdev);
+	if (err < 0) {
+		unregister_pm_notifier(&data->pm_notifier);
+		goto err_release_siblings;
+	}
 
 	usb_set_intfdata(intf, data);
 
@@ -4880,6 +4912,7 @@ static void btusb_disconnect(struct usb_interface *intf)
 	if (data->disconnect)
 		data->disconnect(hdev);
 
+	unregister_pm_notifier(&data->pm_notifier);
 	hci_unregister_dev(hdev);
 
 	if (data->oob_wake_irq) {
