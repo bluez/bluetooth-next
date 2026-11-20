@@ -26,6 +26,7 @@
 
 #include <linux/unaligned.h>
 #include <linux/atomic.h>
+#include <linux/skbuff.h>
 
 /* L2CAP defaults */
 #define L2CAP_DEFAULT_MTU		672
@@ -41,6 +42,9 @@
 #define L2CAP_DEFAULT_MAX_PDU_SIZE	1492    /* Sized for AMP packet */
 #define L2CAP_DEFAULT_ACK_TO		200
 #define L2CAP_DEFAULT_MAX_SDU_SIZE	0xFFFF
+#define L2CAP_MAX_SDU_FRAGS		5461    /* Sized for worst-case CoC fragmentation */
+#define L2CAP_DEFAULT_SNDBUF \
+	(4 * L2CAP_MAX_SDU_FRAGS * SKB_TRUESIZE(SKB_DATA_ALIGN(HCI_MIN_LE_MTU + BT_SKB_RESERVE)))
 #define L2CAP_DEFAULT_SDU_ITIME		0xFFFFFFFF
 #define L2CAP_DEFAULT_ACC_LAT		0xFFFFFFFF
 #define L2CAP_BREDR_MAX_PAYLOAD		1019    /* 3-DH5 packet */
