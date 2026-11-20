@@ -148,6 +148,10 @@ struct rfcomm_msc {
 
 /* ---- Core structures, flags etc ---- */
 
+extern struct mutex rfcomm_mutex;
+#define rfcomm_lock()	mutex_lock(&rfcomm_mutex)
+#define rfcomm_unlock()	mutex_unlock(&rfcomm_mutex)
+
 struct rfcomm_session {
 	struct list_head list;
 	struct socket   *sock;

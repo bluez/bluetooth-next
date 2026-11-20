@@ -754,10 +754,19 @@ static int rfcomm_sock_getsockopt_old(struct socket *sock, int optname,
 	int err = 0;
 	size_t len;
 	u32 opt;
+	bool copy_conninfo = false;
 
 	BT_DBG("sk %p", sk);
 
 	len = sopt->optlen;
+
+	/* The RFCOMM_CONNINFO branch follows dlc->session, which
+	 * rfcomm_session_close() unlinks and frees under rfcomm_mutex.
+	 * Take the mutex first, like every other path that walks
+	 * dlc->session: it must be held before lock_sock().
+	 */
+	if (optname == RFCOMM_CONNINFO)
+		rfcomm_lock();
 
 	lock_sock(sk);
 
@@ -809,8 +818,7 @@ static int rfcomm_sock_getsockopt_old(struct socket *sock, int optname,
 		memcpy(cinfo.dev_class, conn->hcon->dev_class, 3);
 
 		len = min(len, sizeof(cinfo));
-		if (copy_to_iter(&cinfo, len, &sopt->iter_out) != len)
-			err = -EFAULT;
+		copy_conninfo = true;
 
 		break;
 
@@ -820,6 +828,17 @@ static int rfcomm_sock_getsockopt_old(struct socket *sock, int optname,
 	}
 
 	release_sock(sk);
+
+	if (optname == RFCOMM_CONNINFO)
+		rfcomm_unlock();
+
+	/* Copy out after dropping the locks: a faulting user buffer must
+	 * not stall the session thread.
+	 */
+	if (copy_conninfo &&
+	    copy_to_iter(&cinfo, len, &sopt->iter_out) != len)
+		err = -EFAULT;
+
 	return err;
 }
 
