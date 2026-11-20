@@ -42,9 +42,8 @@ static int channel_mtu = -1;
 
 static struct task_struct *rfcomm_thread;
 
-static DEFINE_MUTEX(rfcomm_mutex);
-#define rfcomm_lock()	mutex_lock(&rfcomm_mutex)
-#define rfcomm_unlock()	mutex_unlock(&rfcomm_mutex)
+/* Serializes session_list walks and dlc/session teardown. */
+DEFINE_MUTEX(rfcomm_mutex);
 
 
 static LIST_HEAD(session_list);
