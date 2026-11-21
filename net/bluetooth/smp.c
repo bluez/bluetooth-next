@@ -745,7 +745,8 @@ static void smp_chan_destroy(struct l2cap_conn *conn)
 	/* Ensure that we don't leave any debug key around if debug key
 	 * support hasn't been explicitly enabled.
 	 */
-	if (smp->ltk && smp->ltk->type == SMP_LTK_P256_DEBUG &&
+	if (smp->ltk && test_bit(SMP_FLAG_SC, &smp->flags) &&
+	    test_bit(SMP_FLAG_DEBUG_KEY, &smp->flags) &&
 	    !hci_dev_test_flag(hcon->hdev, HCI_KEEP_DEBUG_KEYS)) {
 		list_del_rcu(&smp->ltk->list);
 		kfree_rcu(smp->ltk, rcu);
@@ -1044,15 +1045,27 @@ static void smp_notify_keys(struct l2cap_conn *conn)
 	}
 
 	if (smp->remote_irk) {
-		mgmt_new_irk(hdev, smp->remote_irk, persistent);
+		struct smp_irk irk = {
+			.addr_type = smp->id_addr_type,
+		};
+
+		/* The IRK list may have been replaced during pairing.
+		 * Report the pairing data instead of the saved list entry.
+		 */
+		bacpy(&irk.bdaddr, &smp->id_addr);
+		memcpy(irk.val, smp->irk, sizeof(irk.val));
+		if (hci_bdaddr_is_rpa(&hcon->dst, hcon->dst_type))
+			bacpy(&irk.rpa, &hcon->dst);
+
+		mgmt_new_irk(hdev, &irk, persistent);
 
 		/* Now that user space can be considered to know the
 		 * identity address track the connection based on it
 		 * from now on (assuming this is an LE link).
 		 */
 		if (hcon->type == LE_LINK) {
-			bacpy(&hcon->dst, &smp->remote_irk->bdaddr);
-			hcon->dst_type = smp->remote_irk->addr_type;
+			bacpy(&hcon->dst, &smp->id_addr);
+			hcon->dst_type = smp->id_addr_type;
 			/* Use a short delay to make sure the new address is
 			 * propagated _before_ the channels.
 			 */
