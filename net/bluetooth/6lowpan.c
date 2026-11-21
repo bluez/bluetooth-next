@@ -597,11 +597,11 @@ static void ifup(struct net_device *netdev)
 {
 	int err;
 
-	rtnl_lock();
+	ASSERT_RTNL();
+
 	err = dev_open(netdev, NULL);
 	if (err < 0)
 		BT_INFO("iface %s cannot be opened (%d)", netdev->name, err);
-	rtnl_unlock();
 }
 
 static void ifdown(struct net_device *netdev)
@@ -706,7 +706,7 @@ static int setup_netdev(struct l2cap_chan *chan, struct lowpan_btle_dev **dev)
 	list_add_rcu(&(*dev)->list, &bt_6lowpan_devices);
 	spin_unlock(&devices_lock);
 
-	err = lowpan_register_netdev(netdev, LOWPAN_LLTYPE_BTLE);
+	err = lowpan_register_netdevice(netdev, LOWPAN_LLTYPE_BTLE);
 	if (err < 0) {
 		BT_INFO("register_netdev failed %d", err);
 		spin_lock(&devices_lock);
@@ -735,12 +735,16 @@ static inline void chan_ready_cb(struct l2cap_chan *chan)
 	struct lowpan_btle_dev *dev;
 	bool new_netdev = false;
 
+	/* Protect the device lookup and use against unregister. */
+	rtnl_lock();
+
 	dev = lookup_dev(chan->conn);
 
 	BT_DBG("chan %p conn %p dev %p", chan, chan->conn, dev);
 
 	if (!dev) {
 		if (setup_netdev(chan, &dev) < 0) {
+			rtnl_unlock();
 			l2cap_chan_del(chan, -ENOENT);
 			return;
 		}
@@ -748,10 +752,13 @@ static inline void chan_ready_cb(struct l2cap_chan *chan)
 	}
 
 	if (!try_module_get(THIS_MODULE))
-		return;
+		goto out;
 
 	add_peer_chan(chan, dev, new_netdev);
 	ifup(dev->netdev);
+
+out:
+	rtnl_unlock();
 }
 
 static void unregister_dev(struct lowpan_btle_dev *dev)
@@ -763,7 +770,7 @@ static void unregister_dev(struct lowpan_btle_dev *dev)
 	 *
 	 * rtnl_lock -> put_device(parent) -> hci_release_dev ->
 	 * destroy_workqueue -> hci_rx_work -> l2cap_recv_acldata ->
-	 * chan_ready_cb -> ifup -> rtnl_lock
+	 * chan_ready_cb -> rtnl_lock
 	 *
 	 * However, hci_rx_work is disabled in hci_unregister_dev, so this
 	 * should not occur. Make lockdep happy by postponing hdev release after
