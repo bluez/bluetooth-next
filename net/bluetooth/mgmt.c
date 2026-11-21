@@ -2225,6 +2225,7 @@ static int set_le_sync(struct hci_dev *hdev, void *data)
 {
 	struct mgmt_pending_cmd *cmd = data;
 	struct mgmt_mode cp;
+	struct sock *sk;
 	u8 val;
 	int err;
 
@@ -2238,6 +2239,10 @@ static int set_le_sync(struct hci_dev *hdev, void *data)
 	memcpy(&cp, cmd->param, sizeof(cp));
 	val = !!cp.val;
 
+	/* Keep the socket alive if the pending command is removed. */
+	sk = cmd->sk;
+	sock_hold(sk);
+
 	mutex_unlock(&hdev->mgmt_pending_lock);
 
 	if (!val) {
@@ -2247,7 +2252,7 @@ static int set_le_sync(struct hci_dev *hdev, void *data)
 			hci_disable_advertising_sync(hdev);
 
 		if (ext_adv_capable(hdev))
-			hci_remove_ext_adv_instance_sync(hdev, 0, cmd->sk);
+			hci_remove_ext_adv_instance_sync(hdev, 0, sk);
 	} else {
 		hci_dev_set_flag(hdev, HCI_LE_ENABLED);
 	}
@@ -2273,6 +2278,8 @@ static int set_le_sync(struct hci_dev *hdev, void *data)
 
 		hci_update_passive_scan(hdev);
 	}
+
+	sock_put(sk);
 
 	return err;
 }
