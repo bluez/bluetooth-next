@@ -9441,7 +9441,7 @@ static void add_ext_adv_params_complete(struct hci_dev *hdev, void *data,
 					int err)
 {
 	struct mgmt_pending_cmd *cmd = data;
-	struct mgmt_cp_add_ext_adv_params *cp = cmd->param;
+	struct mgmt_cp_add_ext_adv_params *cp;
 	struct mgmt_rp_add_ext_adv_params rp;
 	struct adv_info *adv;
 	u32 flags;
@@ -9450,6 +9450,12 @@ static void add_ext_adv_params_complete(struct hci_dev *hdev, void *data,
 
 	hci_dev_lock(hdev);
 
+	if (err == -ECANCELED || !mgmt_pending_valid(hdev, cmd)) {
+		hci_dev_unlock(hdev);
+		return;
+	}
+
+	cp = cmd->param;
 	adv = hci_find_adv_instance(hdev, cp->instance);
 	if (!adv)
 		goto unlock;
@@ -9490,9 +9496,22 @@ unlock:
 static int add_ext_adv_params_sync(struct hci_dev *hdev, void *data)
 {
 	struct mgmt_pending_cmd *cmd = data;
-	struct mgmt_cp_add_ext_adv_params *cp = cmd->param;
+	struct mgmt_cp_add_ext_adv_params *cp;
+	u8 instance;
 
-	return hci_setup_ext_adv_instance_sync(hdev, cp->instance);
+	mutex_lock(&hdev->mgmt_pending_lock);
+
+	if (!__mgmt_pending_listed(hdev, cmd)) {
+		mutex_unlock(&hdev->mgmt_pending_lock);
+		return -ECANCELED;
+	}
+
+	cp = cmd->param;
+	instance = cp->instance;
+
+	mutex_unlock(&hdev->mgmt_pending_lock);
+
+	return hci_setup_ext_adv_instance_sync(hdev, instance);
 }
 
 static int add_ext_adv_params(struct sock *sk, struct hci_dev *hdev,
@@ -9586,8 +9605,8 @@ static int add_ext_adv_params(struct sock *sk, struct hci_dev *hdev,
 	 * will be programmed once the instance is scheduled.
 	 */
 	if (ext_adv_capable(hdev) && !adv_overridden_by_global(hdev, adv)) {
-		cmd = mgmt_pending_new(sk, MGMT_OP_ADD_EXT_ADV_PARAMS, hdev,
-				       data, data_len);
+		cmd = mgmt_pending_add(sk, MGMT_OP_ADD_EXT_ADV_PARAMS,
+				       hdev, data, data_len);
 		if (!cmd) {
 			err = -ENOMEM;
 			goto remove;
@@ -9596,7 +9615,7 @@ static int add_ext_adv_params(struct sock *sk, struct hci_dev *hdev,
 		err = hci_cmd_sync_queue(hdev, add_ext_adv_params_sync, cmd,
 					 add_ext_adv_params_complete);
 		if (err < 0) {
-			mgmt_pending_free(cmd);
+			mgmt_pending_remove(cmd);
 			goto remove;
 		}
 	} else {
@@ -9698,6 +9717,14 @@ static int add_ext_adv_data(struct sock *sk, struct hci_dev *hdev, void *data,
 	if (!adv_instance) {
 		err = mgmt_cmd_status(sk, hdev->id, MGMT_OP_ADD_EXT_ADV_DATA,
 				      MGMT_STATUS_INVALID_PARAMS);
+		goto unlock;
+	}
+
+	/* Preserve the instance until its parameters complete. */
+	if (pending_find(MGMT_OP_ADD_EXT_ADV_PARAMS, hdev)) {
+		err = mgmt_cmd_status(sk, hdev->id,
+				      MGMT_OP_ADD_EXT_ADV_DATA,
+				      MGMT_STATUS_BUSY);
 		goto unlock;
 	}
 
