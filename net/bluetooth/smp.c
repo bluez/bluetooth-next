@@ -745,7 +745,8 @@ static void smp_chan_destroy(struct l2cap_conn *conn)
 	/* Ensure that we don't leave any debug key around if debug key
 	 * support hasn't been explicitly enabled.
 	 */
-	if (smp->ltk && smp->ltk->type == SMP_LTK_P256_DEBUG &&
+	if (smp->ltk && test_bit(SMP_FLAG_SC, &smp->flags) &&
+	    test_bit(SMP_FLAG_DEBUG_KEY, &smp->flags) &&
 	    !hci_dev_test_flag(hcon->hdev, HCI_KEEP_DEBUG_KEYS)) {
 		list_del_rcu(&smp->ltk->list);
 		kfree_rcu(smp->ltk, rcu);
