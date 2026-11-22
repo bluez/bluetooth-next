@@ -1751,9 +1751,8 @@ static u8 smp_cmd_pairing_req(struct l2cap_conn *conn, struct sk_buff *skb)
 	/* We didn't start the pairing, so match remote */
 	auth = req->auth_req & AUTH_REQ_MASK(hdev);
 
-	if (!hci_dev_test_flag(hdev, HCI_BONDABLE) &&
-	    (auth & SMP_AUTH_BONDING))
-		return SMP_PAIRING_NOTSUPP;
+	if (!hci_dev_test_flag(hdev, HCI_BONDABLE))
+		auth &= ~SMP_AUTH_BONDING;
 
 	if (hci_dev_test_flag(hdev, HCI_SC_ONLY) && !(auth & SMP_AUTH_SC))
 		return SMP_AUTH_REQUIREMENTS;
@@ -2378,9 +2377,8 @@ static u8 smp_cmd_security_req(struct l2cap_conn *conn, struct sk_buff *skb)
 	if (!smp)
 		return SMP_UNSPECIFIED;
 
-	if (!hci_dev_test_flag(hdev, HCI_BONDABLE) &&
-	    (auth & SMP_AUTH_BONDING))
-		return SMP_PAIRING_NOTSUPP;
+	if (!hci_dev_test_flag(hdev, HCI_BONDABLE))
+		auth &= ~SMP_AUTH_BONDING;
 
 	skb_pull(skb, sizeof(*rp));
 
