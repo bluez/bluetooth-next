@@ -608,11 +608,27 @@ static int ll_set_bdaddr(struct hci_dev *hdev, const bdaddr_t *bdaddr)
 	return PTR_ERR_OR_ZERO(skb);
 }
 
+/* Ask the controller to move to @speed, then follow it on the host side. */
+static int ll_set_oper_speed(struct hci_uart *hu, u32 speed)
+{
+	__le32 speed_le = cpu_to_le32(speed);
+	struct sk_buff *skb;
+
+	skb = __hci_cmd_sync(hu->hdev, HCI_VS_UPDATE_UART_HCI_BAUDRATE,
+			     sizeof(speed_le), &speed_le, HCI_INIT_TIMEOUT);
+	if (IS_ERR(skb))
+		return PTR_ERR(skb);
+	kfree_skb(skb);
+	serdev_device_set_baudrate(hu->serdev, speed);
+	return 0;
+}
+
 static int ll_setup(struct hci_uart *hu)
 {
 	int err, retry = 3;
 	struct ll_device *lldev;
 	struct serdev_device *serdev = hu->serdev;
+	bool at_speed;
 	u32 speed;
 
 	if (!serdev)
@@ -623,6 +639,23 @@ static int ll_setup(struct hci_uart *hu)
 	hu->hdev->set_bdaddr = ll_set_bdaddr;
 
 	serdev_device_set_flow_control(serdev, true);
+
+	/* Operational speed if any */
+	if (hu->oper_speed)
+		speed = hu->oper_speed;
+	else if (hu->proto->oper_speed)
+		speed = hu->proto->oper_speed;
+	else
+		speed = 0;
+
+	/*
+	 * Download the init script at the operating speed, as TI's own
+	 * user-mode init manager does. At the init speed a WL18xx script
+	 * takes ~6 s, long enough to overlap the WLAN core's bring-up on the
+	 * same chip. If anything fails at speed, the remaining attempts use
+	 * the init speed.
+	 */
+	at_speed = speed && speed != hu->init_speed;
 
 	do {
 		/* Reset the Bluetooth device */
@@ -636,12 +669,26 @@ static int ll_setup(struct hci_uart *hu)
 			return err;
 		}
 
+		/* BT_EN just reset the controller to its ROM default speed */
+		serdev_device_set_baudrate(serdev, hu->init_speed);
+		if (at_speed) {
+			err = ll_set_oper_speed(hu, speed);
+			if (err) {
+				bt_dev_warn(hu->hdev, "speed change before download failed (%d)",
+					    err);
+				at_speed = false;
+				serdev_device_set_baudrate(serdev, hu->init_speed);
+			}
+		}
+
 		err = download_firmware(lldev);
 		if (!err)
 			break;
 
 		/* Toggle BT_EN and retry */
-		bt_dev_err(hu->hdev, "download firmware failed, retrying...");
+		bt_dev_err(hu->hdev, "download firmware failed%s, retrying...",
+			   at_speed ? " at operating speed" : "");
+		at_speed = false;
 	} while (retry--);
 
 	if (err)
@@ -663,26 +710,8 @@ static int ll_setup(struct hci_uart *hu)
 		hci_set_quirk(hu->hdev,
 			      HCI_QUIRK_BROKEN_ENHANCED_SETUP_SYNC_CONN);
 
-	/* Operational speed if any */
-	if (hu->oper_speed)
-		speed = hu->oper_speed;
-	else if (hu->proto->oper_speed)
-		speed = hu->proto->oper_speed;
-	else
-		speed = 0;
-
-	if (speed) {
-		__le32 speed_le = cpu_to_le32(speed);
-		struct sk_buff *skb;
-
-		skb = __hci_cmd_sync(hu->hdev, HCI_VS_UPDATE_UART_HCI_BAUDRATE,
-				     sizeof(speed_le), &speed_le,
-				     HCI_INIT_TIMEOUT);
-		if (!IS_ERR(skb)) {
-			kfree_skb(skb);
-			serdev_device_set_baudrate(serdev, speed);
-		}
-	}
+	if (speed && !at_speed)
+		ll_set_oper_speed(hu, speed);
 
 	return 0;
 }
