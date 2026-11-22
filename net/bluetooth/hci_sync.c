@@ -6888,11 +6888,9 @@ int hci_update_connectable_sync(struct hci_dev *hdev)
 		err = hci_update_adv_data_sync(hdev, hdev->cur_adv_instance);
 
 	/* Update the advertising parameters if necessary */
-	if (hci_dev_test_flag(hdev, HCI_ADVERTISING) ||
-	    !list_empty(&hdev->adv_instances)) {
+	if (hci_dev_test_flag(hdev, HCI_ADVERTISING)) {
 		if (ext_adv_capable(hdev))
-			err = hci_start_ext_adv_sync(hdev,
-						     hdev->cur_adv_instance);
+			err = hci_start_ext_adv_sync(hdev, 0x00);
 		else
 			err = hci_enable_advertising_sync(hdev);
 
