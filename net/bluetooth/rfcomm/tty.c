@@ -127,9 +127,10 @@ static bool rfcomm_dev_carrier_raised(struct tty_port *port)
 static void rfcomm_dev_shutdown(struct tty_port *port)
 {
 	struct rfcomm_dev *dev = container_of(port, struct rfcomm_dev, port);
+	struct device *tty_dev = READ_ONCE(dev->tty_dev);
 
-	if (dev->tty_dev && dev->tty_dev->parent)
-		device_move(dev->tty_dev, NULL, DPM_ORDER_DEV_LAST);
+	if (tty_dev && tty_dev->parent)
+		device_move(tty_dev, NULL, DPM_ORDER_DEV_LAST);
 
 	/* close the dlc */
 	rfcomm_dlc_close(dev->dlc, 0);
@@ -173,6 +174,11 @@ static void rfcomm_reparent_device(struct rfcomm_dev *dev)
 {
 	struct hci_dev *hdev;
 	struct hci_conn *conn;
+	struct device *tty_dev = READ_ONCE(dev->tty_dev);
+
+	/* The connection can become active before TTY registration completes. */
+	if (!tty_dev)
+		return;
 
 	hdev = hci_get_route(&dev->dst, &dev->src, BDADDR_BREDR);
 	if (!hdev)
@@ -188,7 +194,7 @@ static void rfcomm_reparent_device(struct rfcomm_dev *dev)
 	 * guarantee the sysfs device has been added ...
 	 */
 	if (conn && device_is_registered(&conn->dev))
-		device_move(dev->tty_dev, &conn->dev, DPM_ORDER_DEV_AFTER_PARENT);
+		device_move(tty_dev, &conn->dev, DPM_ORDER_DEV_AFTER_PARENT);
 
 	hci_dev_unlock(hdev);
 	hci_dev_put(hdev);
@@ -267,6 +273,8 @@ static struct rfcomm_dev *__rfcomm_dev_add(struct rfcomm_dev_req *req,
 		((1 << RFCOMM_RELEASE_ONHUP) | (1 << RFCOMM_REUSE_DLC));
 
 	tty_port_init(&dev->port);
+	/* Keep a reference until rfcomm_dev_add() completes TTY registration. */
+	tty_port_get(&dev->port);
 	dev->port.ops = &rfcomm_port_ops;
 
 	skb_queue_head_init(&dev->pending);
@@ -316,6 +324,7 @@ static int rfcomm_dev_add(struct rfcomm_dev_req *req, struct rfcomm_dlc *dlc)
 {
 	struct rfcomm_dev *dev;
 	struct device *tty;
+	int err, id;
 
 	BT_DBG("id %d channel %d", req->dev_id, req->channel);
 
@@ -325,24 +334,29 @@ static int rfcomm_dev_add(struct rfcomm_dev_req *req, struct rfcomm_dlc *dlc)
 		return PTR_ERR(dev);
 	}
 
+	id = dev->id;
 	tty = tty_port_register_device(&dev->port, rfcomm_tty_driver,
 			dev->id, NULL);
 	if (IS_ERR(tty)) {
-		tty_port_put(&dev->port);
-		return PTR_ERR(tty);
+		err = PTR_ERR(tty);
+		if (!test_and_set_bit(RFCOMM_TTY_OWNED, &dev->status))
+			tty_port_put(&dev->port); /* Drop the initial reference. */
+		tty_port_put(&dev->port); /* Drop the registration reference. */
+		return err;
 	}
 
-	dev->tty_dev = tty;
+	WRITE_ONCE(dev->tty_dev, tty);
 	rfcomm_reparent_device(dev);
-	dev_set_drvdata(dev->tty_dev, dev);
+	dev_set_drvdata(tty, dev);
 
-	if (device_create_file(dev->tty_dev, &dev_attr_address) < 0)
+	if (device_create_file(tty, &dev_attr_address) < 0)
 		BT_ERR("Failed to create address attribute");
 
-	if (device_create_file(dev->tty_dev, &dev_attr_channel) < 0)
+	if (device_create_file(tty, &dev_attr_channel) < 0)
 		BT_ERR("Failed to create channel attribute");
 
-	return dev->id;
+	tty_port_put(&dev->port); /* Drop the registration reference. */
+	return id;
 }
 
 /* ---- Send buffer ---- */
