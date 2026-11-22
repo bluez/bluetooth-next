@@ -2908,7 +2908,14 @@ static void iso_connect_cfm(struct hci_conn *hcon, __u8 status)
 	    test_bit(HCI_CONN_PA_SYNC_FAILED, hcon->flags)) {
 		struct iso_conn *conn;
 
-		conn = iso_conn_add(hcon);
+		if (hcon->type == BIS_LINK && hcon->role == HCI_ROLE_MASTER) {
+			spin_lock(&hcon->proto_lock);
+			conn = iso_conn_hold_unless_zero(hcon->iso_data);
+			spin_unlock(&hcon->proto_lock);
+		} else {
+			conn = iso_conn_add(hcon);
+		}
+
 		if (conn) {
 			iso_conn_ready(conn);
 			iso_conn_put(conn);
