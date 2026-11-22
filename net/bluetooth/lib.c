@@ -89,6 +89,7 @@ int bt_to_errno(__u16 code)
 		return ENOMEM;
 
 	case 0x08:
+	case 0x3e:
 		return ETIMEDOUT;
 
 	case 0x09:
