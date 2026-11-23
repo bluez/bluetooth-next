@@ -7,6 +7,7 @@
  */
 
 #include <linux/kernel.h>
+#include <linux/bitfield.h>
 #include <linux/module.h>
 #include <linux/firmware.h>
 #include <linux/overflow.h>
@@ -3558,6 +3559,72 @@ static int btintel_pcie_config_pcie(struct pci_dev *pdev,
 	return 0;
 }
 
+/* Set up the extended context info with the paging TLV and the DRAM pages
+ * the controller can use for paging. All memory is device managed and is
+ * released when the driver is unbound.
+ */
+static int btintel_pcie_alloc_ext_ctxt_info(struct btintel_pcie_data *data)
+{
+	struct device *dev = &data->pdev->dev;
+	struct btintel_pcie_page_table *page_table;
+	struct btintel_pcie_paging_tlv *paging;
+	struct btintel_pcie_ext_ctxt *ext_ci;
+	u32 ext_ci_size;
+	size_t info_size, total_size;
+	dma_addr_t p_addr, page_p_addr;
+	void *v_addr;
+	int i;
+
+	info_size = ALIGN(sizeof(*ext_ci), BTINTEL_PCIE_DMA_ALIGN_128B);
+	total_size = info_size + ALIGN(sizeof(*page_table),
+				       BTINTEL_PCIE_DMA_ALIGN_128B);
+
+	v_addr = dmam_alloc_coherent(dev, total_size, &p_addr,
+				     GFP_KERNEL | __GFP_NOWARN);
+	if (!v_addr)
+		return -ENOMEM;
+
+	ext_ci = v_addr;
+	page_table = v_addr + info_size;
+
+	ext_ci->version = cpu_to_le16(BTINTEL_PCIE_EXTCTXT_INFO_VER);
+	ext_ci->size_dw = cpu_to_le16(sizeof(*paging) / sizeof(u32));
+
+	paging = &ext_ci->paging;
+	paging->type = cpu_to_le16(BTINTEL_PCIE_PAGING_TYPE);
+	paging->len_dw = cpu_to_le16((sizeof(*paging) -
+				      offsetof(struct btintel_pcie_paging_tlv,
+					       high)) / sizeof(u32));
+	paging->high = cpu_to_le32(upper_32_bits(p_addr + info_size));
+	paging->low = cpu_to_le32(lower_32_bits(p_addr + info_size));
+	paging->size = cpu_to_le32(sizeof(*page_table));
+
+	page_table->num_of_pages = cpu_to_le32(BTINTEL_PCIE_PAGING_NUM_PAGES);
+	page_table->bytes_per_page = cpu_to_le32(BTINTEL_PCIE_PAGING_PAGE_SIZE);
+
+	for (i = 0; i < BTINTEL_PCIE_PAGING_NUM_PAGES; i++) {
+		if (!dmam_alloc_coherent(dev, BTINTEL_PCIE_PAGING_PAGE_SIZE,
+					 &page_p_addr,
+					 GFP_KERNEL | __GFP_NOWARN))
+			return -ENOMEM;
+
+		page_table->pages[i].addr_high =
+			cpu_to_le32(upper_32_bits(page_p_addr));
+		page_table->pages[i].addr_low =
+			cpu_to_le32(lower_32_bits(page_p_addr));
+	}
+
+	ext_ci_size = FIELD_PREP(BTINTEL_PCIE_EXT_CI_SIZE_MASK,
+				 sizeof(*ext_ci)) |
+		      BTINTEL_PCIE_EXT_CI_BLOCKING_MODE |
+		      BTINTEL_PCIE_EXT_CI_VALID;
+
+	data->ci->ext_addr = p_addr;
+	data->ci->ext_size = ext_ci_size;
+
+	return 0;
+}
+
 static void btintel_pcie_init_ci(struct btintel_pcie_data *data,
 				 struct ctx_info *ci)
 {
@@ -3843,6 +3910,10 @@ static int btintel_pcie_alloc(struct btintel_pcie_data *data)
 	/* Setup Context Information */
 	data->ci = v_addr;
 	data->ci_p_addr = p_addr;
+
+	err = btintel_pcie_alloc_ext_ctxt_info(data);
+	if (err)
+		goto exit_error_rxq;
 
 	/* Initialize the CI */
 	btintel_pcie_init_ci(data, data->ci);

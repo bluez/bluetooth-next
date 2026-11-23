@@ -137,6 +137,12 @@
 #define BTINTEL_PCIE_DEVICE_ID_NVL_Hx_SCP2	0xD346
 #define BTINTEL_PCIE_DEVICE_ID_PTL_FMP2		0xE476
 
+/* Extended context information */
+#define BTINTEL_PCIE_EXTCTXT_INFO_VER		0xA00A
+#define BTINTEL_PCIE_PAGING_TYPE		0x0081
+#define BTINTEL_PCIE_PAGING_NUM_PAGES		256
+#define BTINTEL_PCIE_PAGING_PAGE_SIZE		(4 * 1024)
+
 /* Causes for the FH register interrupts */
 enum msix_fh_int_causes {
 	BTINTEL_PCIE_MSIX_FH_INT_CAUSES_0	= BIT(0),	/* cause 0 */
@@ -283,6 +289,17 @@ enum {
 #define BTINTEL_PCIE_TLV_TYPE_SMEM_ADDRESS	      0x08
 
 /*
+ * Extended context info size, written to ctx_info.ext_size
+ * bits[0:15] - extended context info size in bytes
+ * bits[16:29] - reserved
+ * bit[30] - blocking_mode
+ * bit[31] - valid
+ */
+#define BTINTEL_PCIE_EXT_CI_SIZE_MASK		GENMASK(15, 0)
+#define BTINTEL_PCIE_EXT_CI_BLOCKING_MODE	BIT(30)
+#define BTINTEL_PCIE_EXT_CI_VALID		BIT(31)
+
+/*
  * Struct for Context Information (v2)
  *
  * All members are write-only for host and read-only for device.
@@ -322,7 +339,8 @@ enum {
  *	 0=BT DBGC, 1=WiFi DBGC, 2=NPK }
  * @dbg_preset: Debug preset
  * @ext_addr: Address of context information extension
- * @ext_size: Size of context information part
+ * @ext_size: Size of context information extension, with the blocking
+ *	mode and valid bits (see BTINTEL_PCIE_EXT_CI_*)
  *
  * Total 38 DWords
  */
@@ -710,6 +728,46 @@ struct btintel_pcie_ini_dump_info {
 	u8	build_tag[64];
 	__le32	num_of_cfg_names;
 	/* no cfg_names for BT - keep zero-length */
+} __packed;
+
+/* TLV describing the paged DRAM table
+ * @type: The TLV id
+ * @len_dw: The TLV payload length in dwords
+ * @high: The MSB of the paged DRAM table address
+ * @low: The LSB of the paged DRAM table address
+ * @size: The size of the paged DRAM table in bytes
+ */
+struct btintel_pcie_paging_tlv {
+	__le16	type;
+	__le16	len_dw;
+	__le32	high;
+	__le32	low;
+	__le32	size;
+} __packed;
+
+/* Extended context info, pointed to by ctx_info.ext_addr
+ * @version: The extended context info version
+ * @size_dw: The size of all the TLVs that follow in dwords
+ * @paging: The paging TLV
+ */
+struct btintel_pcie_ext_ctxt {
+	__le16	version;
+	__le16	size_dw;
+	struct btintel_pcie_paging_tlv paging;
+} __packed;
+
+/* Paged DRAM table
+ * @num_of_pages: Total number of pages allocated in host DRAM
+ * @bytes_per_page: Size of each page in bytes
+ * @pages: DMA address of each page
+ */
+struct btintel_pcie_page_table {
+	__le32 num_of_pages;
+	__le32 bytes_per_page;
+	struct {
+		__le32 addr_high;
+		__le32 addr_low;
+	} pages[BTINTEL_PCIE_PAGING_NUM_PAGES];
 } __packed;
 
 /* struct btintel_pcie_data
