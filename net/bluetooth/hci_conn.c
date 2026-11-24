@@ -1520,6 +1520,54 @@ u8 hci_conn_set_handle(struct hci_conn *conn, u16 handle)
 	return 0;
 }
 
+/* A connection to a peer the controller cannot resolve is kept under the
+ * peer's RPA until it completes, and the peer may have moved to a new RPA
+ * since. Match it by the peer's IRK instead of by address.
+ *
+ * This function requires the caller holds hdev->lock.
+ */
+static struct hci_conn *le_conn_by_irk(struct hci_dev *hdev,
+				       const u8 irk_val[16])
+{
+	struct hci_conn_hash *h = &hdev->conn_hash;
+	struct hci_conn *c;
+
+	rcu_read_lock();
+	list_for_each_entry_rcu(c, &h->list, list) {
+		if (c->type != LE_LINK ||
+		    !hci_bdaddr_is_rpa(&c->dst, c->dst_type))
+			continue;
+
+		if (smp_irk_matches(hdev, irk_val, &c->dst)) {
+			rcu_read_unlock();
+			return c;
+		}
+	}
+	rcu_read_unlock();
+
+	return NULL;
+}
+
+/* Find the LE connection of the peer at addr by the peer's IRK, for when it
+ * is kept under one of the peer's RPAs instead of addr.
+ *
+ * This function requires the caller holds hdev->lock.
+ */
+static struct hci_conn *le_conn_lookup_irk(struct hci_dev *hdev,
+					   bdaddr_t *addr, u8 addr_type)
+{
+	struct hci_conn *conn = NULL;
+	struct smp_irk *irk;
+
+	rcu_read_lock();
+	irk = hci_find_irk_by_addr(hdev, addr, addr_type);
+	if (irk)
+		conn = le_conn_by_irk(hdev, irk->val);
+	rcu_read_unlock();
+
+	return conn;
+}
+
 struct hci_conn *hci_connect_le(struct hci_dev *hdev, bdaddr_t *dst,
 				u8 dst_type, bool dst_resolved, u8 sec_level,
 				u16 conn_timeout, u8 role, u8 phy, u8 sec_phy)
@@ -1787,6 +1835,7 @@ struct hci_conn *hci_connect_le_scan(struct hci_dev *hdev, bdaddr_t *dst,
 				     enum conn_reasons conn_reason)
 {
 	struct hci_conn *conn;
+	bdaddr_t id_addr;
 
 	/* Let's make sure that le is enabled.*/
 	if (!hci_dev_test_flag(hdev, HCI_LE_ENABLED)) {
@@ -1795,6 +1844,12 @@ struct hci_conn *hci_connect_le_scan(struct hci_dev *hdev, bdaddr_t *dst,
 
 		return ERR_PTR(-EOPNOTSUPP);
 	}
+
+	/* Connect to the peer as if by its identity, under which its
+	 * connection and parameters are kept. hci_connect_le() puts its RPA
+	 * on air when the controller cannot resolve it.
+	 */
+	hci_rpa_to_identity(hdev, &dst, &dst_type, &id_addr);
 
 	/* Some devices send ATT messages as soon as the physical link is
 	 * established. To be able to handle these ATT messages, the user-
@@ -1806,6 +1861,8 @@ struct hci_conn *hci_connect_le_scan(struct hci_dev *hdev, bdaddr_t *dst,
 	 * and return the object found.
 	 */
 	conn = hci_conn_hash_lookup_le(hdev, dst, dst_type);
+	if (!conn)
+		conn = le_conn_lookup_irk(hdev, dst, dst_type);
 	if (conn) {
 		if (conn->pending_sec_level < sec_level)
 			conn->pending_sec_level = sec_level;
