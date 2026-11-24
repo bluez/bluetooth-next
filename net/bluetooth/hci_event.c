@@ -6551,8 +6551,8 @@ static void le_conn_complete_evt(struct hci_dev *hdev, u8 status,
 
 			switch (params->auto_connect) {
 			case HCI_AUTO_CONN_EXPLICIT:
-				hci_conn_params_del(hdev, &conn->dst,
-						    conn->dst_type);
+				hci_conn_params_free(params);
+				hci_update_passive_scan(hdev);
 				break;
 			case HCI_AUTO_CONN_REPORT:
 				hci_pend_le_list_add(params,

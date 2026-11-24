@@ -117,7 +117,8 @@ void hci_connect_le_scan_cleanup(struct hci_conn *conn, u8 status)
 
 	switch (params->auto_connect) {
 	case HCI_AUTO_CONN_EXPLICIT:
-		hci_conn_params_del(hdev, bdaddr, bdaddr_type);
+		hci_conn_params_free(params);
+		hci_update_passive_scan(hdev);
 		/* return instead of break to avoid duplicate scan update */
 		return;
 	case HCI_AUTO_CONN_DIRECT:
