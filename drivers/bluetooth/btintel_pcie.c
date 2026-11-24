@@ -2533,7 +2533,15 @@ static int btintel_pcie_recv_frame(struct btintel_pcie_data *data,
 	u32 plen;
 	u32 pcie_pkt_type;
 	void *pdata;
-	struct hci_dev *hdev = data->hdev;
+	struct hci_dev *hdev = READ_ONCE(data->hdev);
+
+	/* RX can start before hdev is published (see btintel_pcie_setup()).
+	 * No command can be pending yet, so drop the frame.
+	 */
+	if (!hdev) {
+		kfree_skb(skb);
+		return -ENODEV;
+	}
 
 	spin_lock(&data->hci_rx_lock);
 
@@ -2953,10 +2961,11 @@ static void btintel_pcie_coredump_worker(struct work_struct *work)
 	struct btintel_pcie_data *data = container_of(work,
 					struct btintel_pcie_data, coredump_work);
 
-	/* hdev is NULL until setup_hdev() succeeds, and is cleared on
+	/* hdev is NULL until it is registered and published by
+	 * btintel_pcie_setup() or btintel_pcie_setup_hdev(), and is cleared on
 	 * teardown after disable_work_sync() drains us; bail in that case.
 	 */
-	if (!data->hdev)
+	if (!READ_ONCE(data->hdev))
 		goto out;
 
 	/* When firmware routes debug traces to the WiFi DBGC, no host
@@ -4273,6 +4282,12 @@ static int btintel_pcie_setup(struct hci_dev *hdev)
 	struct btintel_pcie_data *data = hci_get_drvdata(hdev);
 	bool fips_crc_failed;
 
+	/* hci_register_dev() only queues setup(), so it can run before
+	 * setup_hdev() returns. hdev is registered by now; publish it so RX
+	 * and the dump workers can use it.
+	 */
+	WRITE_ONCE(data->hdev, hdev);
+
 	btintel_pcie_fatal_err_load(data);
 
 	while ((err = btintel_pcie_setup_internal(hdev, &fips_crc_failed)) &&
@@ -4846,11 +4861,8 @@ static int btintel_pcie_setup_hdev(struct btintel_pcie_data *data)
 		return err;
 	}
 
-	/* Publish hdev only after successful registration; the coredump
-	 * worker bails on !data->hdev, so it never observes a half-set-up
-	 * device.
-	 */
-	data->hdev = hdev;
+	/* Idempotent: setup() may already have published hdev. */
+	WRITE_ONCE(data->hdev, hdev);
 	data->dmp_hdr.driver_name = KBUILD_MODNAME;
 	return 0;
 }
