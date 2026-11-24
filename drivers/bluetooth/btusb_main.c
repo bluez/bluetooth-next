@@ -3205,6 +3205,12 @@ static int btusb_mtk_setup(struct hci_dev *hdev)
 		if (platform_is_ryzen() && is_direct_child_of_root_hub(data->udev))
 			set_bit(BTUSB_WAKEUP_BROKEN, &data->flags);
 		break;
+	case 0x7663:
+	case 0x7668:
+	case 0x7961:
+		/* SCO does not work with HCI_OP_ENHANCED_SETUP_SYNC_CONN */
+		hci_set_quirk(hdev, HCI_QUIRK_BROKEN_ENHANCED_SETUP_SYNC_CONN);
+		break;
 	}
 
 	return 0;
@@ -4621,7 +4627,6 @@ static int btusb_probe(struct usb_interface *intf,
 		hdev->reset = btmtk_reset_sync;
 		hdev->set_bdaddr = btmtk_set_bdaddr;
 		hdev->send = btusb_send_frame_mtk;
-		hci_set_quirk(hdev, HCI_QUIRK_BROKEN_ENHANCED_SETUP_SYNC_CONN);
 		hci_set_quirk(hdev, HCI_QUIRK_NON_PERSISTENT_SETUP);
 		data->recv_acl = btmtk_usb_recv_acl;
 		data->recv_event = btmtk_recv_event;
