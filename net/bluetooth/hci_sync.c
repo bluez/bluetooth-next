@@ -1487,7 +1487,7 @@ int hci_setup_ext_adv_instance_sync(struct hci_dev *hdev, u8 instance)
 {
 	struct hci_cp_le_set_ext_adv_params cp;
 	struct hci_rp_le_set_ext_adv_params rp;
-	bool connectable, require_privacy;
+	bool connectable, periodic, require_privacy;
 	u32 flags;
 	bdaddr_t random_addr;
 	u8 own_addr_type;
@@ -1522,6 +1522,14 @@ int hci_setup_ext_adv_instance_sync(struct hci_dev *hdev, u8 instance)
 
 	flags = hci_adv_instance_flags(hdev, instance);
 
+	/* A set with a Broadcast Audio Announcement is a broadcast source even
+	 * before its PA starts.
+	 */
+	periodic = adv && (adv->periodic ||
+			   eir_get_service_data(adv->adv_data,
+						adv->adv_data_len, 0x1852,
+						NULL));
+
 	/* If the "connectable" instance flag was not set, then choose between
 	 * ADV_IND and ADV_NONCONN_IND based on the global connectable setting,
 	 * unless the instance carries periodic advertising, which can only be
@@ -1540,7 +1548,7 @@ int hci_setup_ext_adv_instance_sync(struct hci_dev *hdev, u8 instance)
 	 * advertising is used and it is not periodic.
 	 * In that case it is fine to use a non-resolvable private address.
 	 */
-	require_privacy = !connectable && !(adv && adv->periodic);
+	require_privacy = !connectable && !periodic;
 
 	err = hci_get_random_address(hdev, require_privacy,
 				     adv_use_rpa(hdev, flags), adv,
