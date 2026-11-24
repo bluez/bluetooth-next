@@ -5798,11 +5798,7 @@ static void hci_conn_refresh_key(struct hci_conn *conn, u8 status)
 	}
 
 	if (conn->state == BT_CONFIG) {
-		if (!status)
-			conn->state = BT_CONNECTED;
-
-		hci_connect_cfm(conn, status);
-		hci_conn_drop(conn);
+		hci_encrypt_cfm(conn, status);
 	} else {
 		hci_auth_cfm(conn, status);
 
@@ -7470,7 +7466,7 @@ static void hci_le_remote_feat_complete_evt(struct hci_dev *hdev, void *data,
 			conn->le_rx_def_phys &= ~HCI_LE_SET_PHY_HDT;
 		}
 
-		if (conn->state == BT_CONFIG) {
+		if (conn->state == BT_CONFIG && !conn->abort_reason) {
 			__u8 status;
 
 			/* If the local controller supports peripheral-initiated
@@ -8171,7 +8167,7 @@ static void hci_le_read_all_remote_features_evt(struct hci_dev *hdev,
 		hci_le_eks_oppt_encrypt(conn);
 	}
 
-	if (conn->state == BT_CONFIG) {
+	if (conn->state == BT_CONFIG && !conn->abort_reason) {
 		__u8 status;
 
 		/* If the local controller supports peripheral-initiated
