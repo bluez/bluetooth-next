@@ -1600,6 +1600,15 @@ struct hci_conn *hci_connect_le(struct hci_dev *hdev, bdaddr_t *dst,
 	if (conn && !test_bit(HCI_CONN_SCANNING, conn->flags))
 		return ERR_PTR(-EBUSY);
 
+	/* A connection found by the peer's IRK instead is under one of its
+	 * RPAs. It is refused even while scanning: it has then either been
+	 * started by an earlier advertising report already, or it belongs
+	 * to an explicit connect made before the IRK was known, and so to
+	 * other params.
+	 */
+	if (!conn && le_conn_lookup_irk(hdev, dst, dst_type))
+		return ERR_PTR(-EBUSY);
+
 	/* Check if the destination address has been resolved by the controller
 	 * since if it did then the identity address shall be used.
 	 */
