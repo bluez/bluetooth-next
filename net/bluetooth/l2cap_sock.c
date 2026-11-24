@@ -1812,7 +1812,13 @@ static void l2cap_sock_state_change_cb(struct l2cap_chan *chan, int state,
 
 	lock_sock(sk);
 
-	sk->sk_state = state;
+	/* BT_CONNECT2 also covers a channel still waiting for the information
+	 * exchange or link security. Only l2cap_sock_defer_cb() moves the
+	 * socket to BT_CONNECT2, once the channel can be offered to the
+	 * listener.
+	 */
+	if (state != BT_CONNECT2)
+		sk->sk_state = state;
 
 	if (err)
 		sk->sk_err = err;
@@ -1879,6 +1885,8 @@ static void l2cap_sock_defer_cb(struct l2cap_chan *chan)
 	struct sock *parent, *sk = chan->data;
 
 	lock_sock(sk);
+
+	sk->sk_state = BT_CONNECT2;
 
 	parent = bt_sk(sk)->parent;
 	if (parent)
