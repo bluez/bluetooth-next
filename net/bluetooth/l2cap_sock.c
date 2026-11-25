@@ -929,12 +929,96 @@ static int l2cap_set_mode(struct l2cap_chan *chan, u8 mode)
 	return 0;
 }
 
+static int l2cap_sock_set_security(struct sock *sk, sockptr_t optval,
+				   unsigned int optlen)
+{
+	struct l2cap_chan *chan = l2cap_pi(sk)->chan;
+	struct l2cap_conn *conn;
+	struct bt_security sec;
+	bool have_conn;
+	int err = 0;
+
+	have_conn = l2cap_chan_lock_conn(chan);
+	lock_sock(sk);
+
+	if (chan->chan_type != L2CAP_CHAN_CONN_ORIENTED &&
+	    chan->chan_type != L2CAP_CHAN_FIXED &&
+	    chan->chan_type != L2CAP_CHAN_RAW) {
+		err = -EINVAL;
+		goto unlock;
+	}
+
+	/* mic_len was added at the end of struct bt_security, so
+	 * accept the shorter struct as well, leaving mic_len unset.
+	 */
+	if (optlen < offsetofend(struct bt_security, key_size)) {
+		err = -EINVAL;
+		goto unlock;
+	}
+
+	err = copy_struct_from_sockptr(&sec, sizeof(sec), optval,
+				       optlen);
+	if (err)
+		goto unlock;
+
+	if (sec.level < BT_SECURITY_LOW ||
+	    sec.level > BT_SECURITY_FIPS) {
+		err = -EINVAL;
+		goto unlock;
+	}
+
+	/* BLUETOOTH CORE SPECIFICATION Version 7.0 | Vol 4,
+	 * Part E, Section 7.7.8: MIC_Length 0x00 is 32 bits,
+	 * 0x01 is 64 bits and 0x02 is 128 bits; all other
+	 * values are reserved for future use.
+	 */
+	if (sec.mic_len > 0x02) {
+		err = -EINVAL;
+		goto unlock;
+	}
+
+	chan->sec_level = sec.level;
+	chan->mic_len = sec.mic_len;
+
+	conn = l2cap_chan_conn(chan);
+	if (!conn)
+		goto unlock;
+
+	/* change security for LE channels */
+	if (chan->scid == L2CAP_CID_ATT) {
+		l2cap_chan_req_mic_len(chan, conn->hcon);
+		if (smp_conn_security(conn->hcon, sec.level)) {
+			err = -EINVAL;
+			goto unlock;
+		}
+
+		set_bit(FLAG_PENDING_SECURITY, &chan->flags);
+		sk->sk_state = BT_CONFIG;
+		chan->state = BT_CONFIG;
+
+	/* or for ACL link */
+	} else if ((sk->sk_state == BT_CONNECT2 &&
+		    test_bit(BT_SK_DEFER_SETUP, &bt_sk(sk)->flags)) ||
+		   sk->sk_state == BT_CONNECTED) {
+		if (!l2cap_chan_check_security(chan, true))
+			set_bit(BT_SK_SUSPEND, &bt_sk(sk)->flags);
+		else
+			sk->sk_state_change(sk);
+	} else {
+		err = -EINVAL;
+	}
+
+unlock:
+	release_sock(sk);
+	l2cap_chan_unlock_conn(chan, have_conn);
+	return err;
+}
+
 static int l2cap_sock_setsockopt(struct socket *sock, int level, int optname,
 				 sockptr_t optval, unsigned int optlen)
 {
 	struct sock *sk = sock->sk;
 	struct l2cap_chan *chan = l2cap_pi(sk)->chan;
-	struct bt_security sec;
 	struct bt_power pwr;
 	struct l2cap_conn *conn;
 	int err = 0;
@@ -950,79 +1034,13 @@ static int l2cap_sock_setsockopt(struct socket *sock, int level, int optname,
 	if (level != SOL_BLUETOOTH)
 		return -ENOPROTOOPT;
 
+	if (optname == BT_SECURITY)
+		return l2cap_sock_set_security(sk, optval, optlen);
+
 	l2cap_chan_lock(chan);
 	lock_sock(sk);
 
 	switch (optname) {
-	case BT_SECURITY:
-		if (chan->chan_type != L2CAP_CHAN_CONN_ORIENTED &&
-		    chan->chan_type != L2CAP_CHAN_FIXED &&
-		    chan->chan_type != L2CAP_CHAN_RAW) {
-			err = -EINVAL;
-			break;
-		}
-
-		/* mic_len was added at the end of struct bt_security, so
-		 * accept the shorter struct as well, leaving mic_len unset.
-		 */
-		if (optlen < offsetofend(struct bt_security, key_size)) {
-			err = -EINVAL;
-			break;
-		}
-
-		err = copy_struct_from_sockptr(&sec, sizeof(sec), optval,
-					       optlen);
-		if (err)
-			break;
-
-		if (sec.level < BT_SECURITY_LOW ||
-		    sec.level > BT_SECURITY_FIPS) {
-			err = -EINVAL;
-			break;
-		}
-
-		/* BLUETOOTH CORE SPECIFICATION Version 7.0 | Vol 4,
-		 * Part E, Section 7.7.8: MIC_Length 0x00 is 32 bits,
-		 * 0x01 is 64 bits and 0x02 is 128 bits; all other
-		 * values are reserved for future use.
-		 */
-		if (sec.mic_len > 0x02) {
-			err = -EINVAL;
-			break;
-		}
-
-		chan->sec_level = sec.level;
-		chan->mic_len = sec.mic_len;
-
-		conn = l2cap_chan_conn(chan);
-		if (!conn)
-			break;
-
-		/* change security for LE channels */
-		if (chan->scid == L2CAP_CID_ATT) {
-			l2cap_chan_req_mic_len(chan, conn->hcon);
-			if (smp_conn_security(conn->hcon, sec.level)) {
-				err = -EINVAL;
-				break;
-			}
-
-			set_bit(FLAG_PENDING_SECURITY, &chan->flags);
-			sk->sk_state = BT_CONFIG;
-			chan->state = BT_CONFIG;
-
-		/* or for ACL link */
-		} else if ((sk->sk_state == BT_CONNECT2 &&
-			    test_bit(BT_SK_DEFER_SETUP, &bt_sk(sk)->flags)) ||
-			   sk->sk_state == BT_CONNECTED) {
-			if (!l2cap_chan_check_security(chan, true))
-				set_bit(BT_SK_SUSPEND, &bt_sk(sk)->flags);
-			else
-				sk->sk_state_change(sk);
-		} else {
-			err = -EINVAL;
-		}
-		break;
-
 	case BT_DEFER_SETUP:
 		if (sk->sk_state != BT_BOUND && sk->sk_state != BT_LISTEN) {
 			err = -EINVAL;
