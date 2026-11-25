@@ -1055,6 +1055,15 @@ static void iso_sock_kill(struct sock *sk)
 	sock_put(sk);
 }
 
+static void iso_drop_open_bis(struct hci_conn *conn, void *data)
+{
+	struct hci_conn *hcon = data;
+
+	if (conn->role == HCI_ROLE_MASTER &&
+	    conn->iso_qos.bcast.big == hcon->iso_qos.bcast.big)
+		hci_conn_drop(conn);
+}
+
 static void iso_sock_disconn(struct sock *sk)
 {
 	struct sock *bis_sk;
@@ -1078,6 +1087,10 @@ static void iso_sock_disconn(struct sock *sk)
 			sock_put(bis_sk);
 			return;
 		}
+
+		/* Last socket of the BIG, drop the BISes left for rebinding */
+		hci_conn_hash_list_state(hcon->hdev, iso_drop_open_bis,
+					 BIS_LINK, BT_OPEN, hcon);
 	}
 
 	sk->sk_state = BT_DISCONN;
