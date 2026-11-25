@@ -4065,6 +4065,34 @@ static void l2cap_ecred_list_defer(struct l2cap_chan *chan, void *data)
 	}
 }
 
+struct l2cap_ecred_defer_count {
+	int pending;
+	int accepted;
+	int refused;
+};
+
+static void l2cap_ecred_list_count(struct l2cap_chan *chan, void *data)
+{
+	struct l2cap_ecred_defer_count *count = data;
+
+	if (test_bit(FLAG_ECRED_CONN_REQ_SENT, &chan->flags))
+		return;
+
+	switch (chan->state) {
+	case BT_CONNECT2:
+		/* Still pending accept */
+		count->pending++;
+		return;
+	case BT_CONNECTED:
+		count->accepted++;
+		return;
+	default:
+		/* If not connected or pending accept it has been refused */
+		count->refused++;
+		return;
+	}
+}
+
 struct l2cap_ecred_rsp_data {
 	struct l2cap_chan *locked_chan;
 	struct {
@@ -4072,6 +4100,7 @@ struct l2cap_ecred_rsp_data {
 		__le16 scid[L2CAP_ECRED_MAX_CID];
 	} __packed pdu;
 	int count;
+	bool partial;
 };
 
 /* Lock @chan if it is not @locked_chan, and has same or lower nesting level.
@@ -4141,14 +4170,23 @@ static void l2cap_ecred_rsp_defer(struct l2cap_chan *chan, void *data)
 	chan->ident = 0;
 
 	/* Unreachable, check in l2cap_ecred_conn_req. If reached, drop rest */
-	if (WARN_ON_ONCE(rsp->count >= ARRAY_SIZE(rsp->pdu.scid)))
+	if (WARN_ON_ONCE(rsp->count >= ARRAY_SIZE(rsp->pdu.scid))) {
 		rsp->pdu.rsp.result = cpu_to_le16(L2CAP_CR_LE_NO_MEM);
-
-	/* Include all channels pending with the same ident */
-	if (!rsp->pdu.rsp.result)
-		rsp_flex->dcid[rsp->count++] = cpu_to_le16(chan->scid);
-	else
 		l2cap_chan_del(chan, ECONNRESET);
+		goto done;
+	}
+
+	/* Include all channels pending with the same ident, the ones refused
+	 * have no destination CID if only some of them were.
+	 */
+	if (chan->state == BT_CONNECTED) {
+		rsp_flex->dcid[rsp->count++] = cpu_to_le16(chan->scid);
+	} else {
+		if (rsp->partial)
+			rsp_flex->dcid[rsp->count++] = 0;
+
+		l2cap_chan_del(chan, ECONNRESET);
+	}
 
 done:
 	if (locked)
@@ -4161,8 +4199,8 @@ void __l2cap_ecred_conn_rsp_defer(struct l2cap_chan *chan)
 {
 	struct l2cap_conn *conn = chan->conn;
 	struct l2cap_ecred_rsp_data data;
+	struct l2cap_ecred_defer_count count = {};
 	u16 id = chan->ident;
-	int result = 0;
 
 	if (!id)
 		return;
@@ -4181,13 +4219,24 @@ void __l2cap_ecred_conn_rsp_defer(struct l2cap_chan *chan)
 	data.pdu.rsp.result  = cpu_to_le16(L2CAP_CR_LE_SUCCESS);
 
 	/* Verify that all channels are ready */
-	__l2cap_chan_list_id(conn, id, l2cap_ecred_list_defer, &result);
+	__l2cap_chan_list_id(conn, id, l2cap_ecred_list_count, &count);
 
-	if (result > 0)
+	if (count.pending)
 		return;
 
-	if (result < 0)
-		data.pdu.rsp.result = cpu_to_le16(L2CAP_CR_LE_AUTHORIZATION);
+	/* Only some of the channels may have been refused, e.g. if the
+	 * listener limits the number of channels, in which case the others
+	 * are accepted.
+	 */
+	if (count.refused) {
+		if (count.accepted) {
+			data.pdu.rsp.result = cpu_to_le16(L2CAP_CR_LE_NO_MEM);
+			data.partial = true;
+		} else {
+			data.pdu.rsp.result =
+				cpu_to_le16(L2CAP_CR_LE_AUTHORIZATION);
+		}
+	}
 
 	/* Build response */
 	__l2cap_chan_list_id(conn, id, l2cap_ecred_rsp_defer, &data);
