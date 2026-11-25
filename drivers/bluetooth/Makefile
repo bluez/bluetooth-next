@@ -36,6 +36,8 @@ obj-$(CONFIG_BT_HCIRSI)		+= btrsi.o
 btmrvl-y			:= btmrvl_main.o
 btmrvl-$(CONFIG_DEBUG_FS)	+= btmrvl_debugfs.o
 
+btrtl-y				:= btrtl_main.o btrtl_enh.o
+
 hci_uart-y				:= hci_ldisc.o
 hci_uart-$(CONFIG_BT_HCIUART_SERDEV)	+= hci_serdev.o
 hci_uart-$(CONFIG_BT_HCIUART_H4)	+= hci_h4.o
