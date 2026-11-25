@@ -1538,6 +1538,7 @@ struct hci_conn *hci_connect_le(struct hci_dev *hdev, bdaddr_t *dst,
 {
 	struct hci_conn *conn;
 	struct smp_irk *irk;
+	bdaddr_t rpa;
 	int err;
 
 	/* Let's make sure that le is enabled.*/
@@ -1576,11 +1577,14 @@ struct hci_conn *hci_connect_le(struct hci_dev *hdev, bdaddr_t *dst,
 		 * be resolved back into the original identity address
 		 * from the connect request.
 		 */
+		rcu_read_lock();
 		irk = hci_find_irk_by_addr(hdev, dst, dst_type);
 		if (irk && bacmp(&irk->rpa, BDADDR_ANY)) {
-			dst = &irk->rpa;
+			bacpy(&rpa, &irk->rpa);
+			dst = &rpa;
 			dst_type = ADDR_LE_DEV_RANDOM;
 		}
+		rcu_read_unlock();
 	}
 
 	if (conn) {
