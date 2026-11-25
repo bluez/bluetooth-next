@@ -47,6 +47,15 @@ static struct sock *l2cap_sock_alloc(struct net *net, struct socket *sock,
 				     struct l2cap_chan *chan);
 static void l2cap_sock_cleanup_listen(struct sock *parent);
 
+/* Set the security level required by the channel, as opposed to the one of the
+ * link that chan->sec_level follows.
+ */
+static void l2cap_sock_set_sec_level(struct l2cap_chan *chan, __u8 level)
+{
+	chan->sec_level = level;
+	chan->min_sec_level = level;
+}
+
 bool l2cap_is_socket(struct socket *sock)
 {
 	return sock && sock->ops == &l2cap_sock_ops;
@@ -143,15 +152,15 @@ static int l2cap_sock_bind(struct socket *sock, struct sockaddr_unsized *addr, i
 	switch (chan->chan_type) {
 	case L2CAP_CHAN_CONN_LESS:
 		if (__le16_to_cpu(la.l2_psm) == L2CAP_PSM_3DSP)
-			chan->sec_level = BT_SECURITY_SDP;
+			l2cap_sock_set_sec_level(chan, BT_SECURITY_SDP);
 		break;
 	case L2CAP_CHAN_CONN_ORIENTED:
 		if (__le16_to_cpu(la.l2_psm) == L2CAP_PSM_SDP ||
 		    __le16_to_cpu(la.l2_psm) == L2CAP_PSM_RFCOMM)
-			chan->sec_level = BT_SECURITY_SDP;
+			l2cap_sock_set_sec_level(chan, BT_SECURITY_SDP);
 		break;
 	case L2CAP_CHAN_RAW:
-		chan->sec_level = BT_SECURITY_SDP;
+		l2cap_sock_set_sec_level(chan, BT_SECURITY_SDP);
 		break;
 	case L2CAP_CHAN_FIXED:
 		/* Fixed channels default to the L2CAP core not holding a
@@ -867,11 +876,11 @@ static int l2cap_sock_setsockopt_old(struct socket *sock, int optname,
 		}
 
 		if (opt & L2CAP_LM_AUTH)
-			chan->sec_level = BT_SECURITY_LOW;
+			l2cap_sock_set_sec_level(chan, BT_SECURITY_LOW);
 		if (opt & L2CAP_LM_ENCRYPT)
-			chan->sec_level = BT_SECURITY_MEDIUM;
+			l2cap_sock_set_sec_level(chan, BT_SECURITY_MEDIUM);
 		if (opt & L2CAP_LM_SECURE)
-			chan->sec_level = BT_SECURITY_HIGH;
+			l2cap_sock_set_sec_level(chan, BT_SECURITY_HIGH);
 
 		assign_bit(FLAG_ROLE_SWITCH, &chan->flags,
 			   opt & L2CAP_LM_MASTER);
@@ -991,7 +1000,7 @@ static int l2cap_sock_setsockopt(struct socket *sock, int level, int optname,
 			break;
 		}
 
-		chan->sec_level = sec.level;
+		l2cap_sock_set_sec_level(chan, sec.level);
 		chan->mic_len = sec.mic_len;
 
 		conn = l2cap_chan_conn(chan);
@@ -1284,6 +1293,17 @@ static int l2cap_sock_defer(struct sock *sk)
 		if (!have_conn) {
 			release_sock(sk);
 			err = -ENOTCONN;
+		} else if ((chan->mode == L2CAP_MODE_EXT_FLOWCTL ||
+			    bdaddr_type_is_le(chan->src_type)) &&
+			   !l2cap_chan_sec_level_ok(chan)) {
+			/* The link doesn't meet the security level required
+			 * anymore, refuse the connection like closing it would,
+			 * without releasing the channel so it can't be
+			 * authorized meanwhile.
+			 */
+			release_sock(sk);
+			l2cap_chan_close(chan, ECONNREFUSED);
+			err = -ECONNREFUSED;
 		} else if (chan->mode == L2CAP_MODE_EXT_FLOWCTL) {
 			sk->sk_state = BT_CONNECTED;
 			chan->state = BT_CONNECTED;
