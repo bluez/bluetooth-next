@@ -1863,6 +1863,7 @@ struct hci_conn *hci_connect_le_scan(struct hci_dev *hdev, bdaddr_t *dst,
 				     enum conn_reasons conn_reason)
 {
 	struct hci_conn *conn;
+	bdaddr_t id_addr;
 
 	/* Let's make sure that le is enabled.*/
 	if (!hci_dev_test_flag(hdev, HCI_LE_ENABLED)) {
@@ -1871,6 +1872,12 @@ struct hci_conn *hci_connect_le_scan(struct hci_dev *hdev, bdaddr_t *dst,
 
 		return ERR_PTR(-EOPNOTSUPP);
 	}
+
+	/* Connect to the peer as if by its identity, under which its
+	 * connection and parameters are kept. hci_connect_le() puts its RPA
+	 * on air when the controller cannot resolve it.
+	 */
+	hci_rpa_to_identity(hdev, &dst, &dst_type, &id_addr);
 
 	/* Some devices send ATT messages as soon as the physical link is
 	 * established. To be able to handle these ATT messages, the user-
