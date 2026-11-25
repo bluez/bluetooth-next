@@ -3,6 +3,7 @@
 #include <linux/blkdev.h>
 #include <linux/major.h>
 #include <linux/of.h>
+#include <linux/property.h>
 #include <linux/string.h>
 #include "check.h"
 
@@ -61,6 +62,8 @@ static void add_of_partition(struct parsed_partitions *state, int slot,
 	if (!partname)
 		partname = of_get_property(np, "name", &len);
 	strscpy(info->volname, partname, sizeof(info->volname));
+
+	state->parts[slot].fwnode = fwnode_handle_get(of_fwnode_handle(np));
 
 	seq_buf_printf(&state->pp_buf, "(%s)", info->volname);
 }
