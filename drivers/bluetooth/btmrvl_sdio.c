@@ -1379,6 +1379,10 @@ static void btmrvl_sdio_coredump(struct device *dev)
 		goto done;
 	}
 
+	/* Limit the dump count to the memory table size */
+	if (dump_num > ARRAY_SIZE(mem_type_mapping_tbl))
+		dump_num = ARRAY_SIZE(mem_type_mapping_tbl);
+
 	/* Read the length of every memory which will dump */
 	for (idx = 0; idx < dump_num; idx++) {
 		struct memory_type_mapping *entry = &mem_type_mapping_tbl[idx];
