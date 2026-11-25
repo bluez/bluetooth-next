@@ -96,6 +96,7 @@ static void rfcomm_dev_destruct(struct tty_port *port)
 	list_del(&dev->list);
 	mutex_unlock(&rfcomm_dev_lock);
 
+	skb_queue_purge(&dev->pending);
 	kfree(dev);
 
 	/* It's safe to call module_put() here because socket still
@@ -293,12 +294,8 @@ static struct rfcomm_dev *__rfcomm_dev_add(struct rfcomm_dev_req *req,
 			atomic_sub(skb->len, &sk->sk_rmem_alloc);
 		}
 
-		/* Finish RFCOMM_CONNINFO before replacing the callback
-		 * which serializes session teardown with the socket.
-		 */
-		lock_sock(sk);
-		sk->sk_state = BT_CLOSED;
-		release_sock(sk);
+		/* Serialize with the DLC state callback. */
+		WRITE_ONCE(sk->sk_state, BT_CLOSED);
 	}
 
 	dlc->data_ready   = rfcomm_dev_data_ready;
@@ -347,6 +344,8 @@ static int rfcomm_dev_add(struct rfcomm_dev_req *req, struct rfcomm_dlc *dlc)
 			dev->id, NULL);
 	if (IS_ERR(tty)) {
 		err = PTR_ERR(tty);
+		/* Close the DLC while the port still pins it. */
+		rfcomm_dlc_close(dlc, 0);
 		if (!test_and_set_bit(RFCOMM_TTY_OWNED, &dev->status))
 			tty_port_put(&dev->port); /* Drop the initial reference. */
 		tty_port_put(&dev->port); /* Drop the registration reference. */
