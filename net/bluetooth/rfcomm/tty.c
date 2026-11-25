@@ -273,6 +273,8 @@ static struct rfcomm_dev *__rfcomm_dev_add(struct rfcomm_dev_req *req,
 		((1 << RFCOMM_RELEASE_ONHUP) | (1 << RFCOMM_REUSE_DLC));
 
 	tty_port_init(&dev->port);
+	/* Keep a reference until rfcomm_dev_add() completes TTY registration. */
+	tty_port_get(&dev->port);
 	dev->port.ops = &rfcomm_port_ops;
 
 	skb_queue_head_init(&dev->pending);
