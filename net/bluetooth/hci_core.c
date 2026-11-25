@@ -2381,9 +2381,13 @@ void hci_rpa_to_identity(struct hci_dev *hdev, bdaddr_t **addr,
 	rcu_read_unlock();
 }
 
-/* This function requires the caller holds hdev->lock */
-struct hci_conn_params *hci_conn_params_lookup(struct hci_dev *hdev,
-					       bdaddr_t *addr, u8 addr_type)
+/* Like hci_conn_params_lookup(), but without resolving an RPA to its
+ * identity.
+ *
+ * This function requires the caller holds hdev->lock.
+ */
+struct hci_conn_params *__hci_conn_params_lookup(struct hci_dev *hdev,
+						 bdaddr_t *addr, u8 addr_type)
 {
 	struct hci_conn_params *params;
 
@@ -2395,6 +2399,17 @@ struct hci_conn_params *hci_conn_params_lookup(struct hci_dev *hdev,
 	}
 
 	return NULL;
+}
+
+/* This function requires the caller holds hdev->lock */
+struct hci_conn_params *hci_conn_params_lookup(struct hci_dev *hdev,
+					       bdaddr_t *addr, u8 addr_type)
+{
+	bdaddr_t id_addr;
+
+	hci_rpa_to_identity(hdev, &addr, &addr_type, &id_addr);
+
+	return __hci_conn_params_lookup(hdev, addr, addr_type);
 }
 
 /* This function requires the caller holds hdev->lock or rcu_read_lock */
@@ -2436,13 +2451,17 @@ void hci_pend_le_list_add(struct hci_conn_params *param,
 	list_add_rcu(&param->action, list);
 }
 
-/* This function requires the caller holds hdev->lock */
-struct hci_conn_params *hci_conn_params_add(struct hci_dev *hdev,
-					    bdaddr_t *addr, u8 addr_type)
+/* Like hci_conn_params_add(), but without resolving an RPA to its
+ * identity.
+ *
+ * This function requires the caller holds hdev->lock.
+ */
+struct hci_conn_params *__hci_conn_params_add(struct hci_dev *hdev,
+					      bdaddr_t *addr, u8 addr_type)
 {
 	struct hci_conn_params *params;
 
-	params = hci_conn_params_lookup(hdev, addr, addr_type);
+	params = __hci_conn_params_lookup(hdev, addr, addr_type);
 	if (params)
 		return params;
 
@@ -2469,6 +2488,20 @@ struct hci_conn_params *hci_conn_params_add(struct hci_dev *hdev,
 	return params;
 }
 
+/* This function requires the caller holds hdev->lock */
+struct hci_conn_params *hci_conn_params_add(struct hci_dev *hdev,
+					    bdaddr_t *addr, u8 addr_type)
+{
+	bdaddr_t id_addr;
+
+	/* Resolve once, and use the result both to search and as the key
+	 * of a new entry.
+	 */
+	hci_rpa_to_identity(hdev, &addr, &addr_type, &id_addr);
+
+	return __hci_conn_params_add(hdev, addr, addr_type);
+}
+
 void hci_conn_params_free(struct hci_conn_params *params)
 {
 	hci_pend_le_list_del_init(params);
@@ -2482,12 +2515,16 @@ void hci_conn_params_free(struct hci_conn_params *params)
 	kfree(params);
 }
 
-/* This function requires the caller holds hdev->lock */
+/* Unlike hci_conn_params_lookup() and hci_conn_params_add(), this matches
+ * addr exactly.
+ *
+ * This function requires the caller holds hdev->lock.
+ */
 void hci_conn_params_del(struct hci_dev *hdev, bdaddr_t *addr, u8 addr_type)
 {
 	struct hci_conn_params *params;
 
-	params = hci_conn_params_lookup(hdev, addr, addr_type);
+	params = __hci_conn_params_lookup(hdev, addr, addr_type);
 	if (!params)
 		return;
 

@@ -1906,8 +1906,12 @@ void hci_bdaddr_list_clear(struct list_head *list);
 
 void hci_rpa_to_identity(struct hci_dev *hdev, bdaddr_t **addr,
 			 u8 *addr_type, bdaddr_t *id_addr);
+struct hci_conn_params *__hci_conn_params_lookup(struct hci_dev *hdev,
+						 bdaddr_t *addr, u8 addr_type);
 struct hci_conn_params *hci_conn_params_lookup(struct hci_dev *hdev,
 					       bdaddr_t *addr, u8 addr_type);
+struct hci_conn_params *__hci_conn_params_add(struct hci_dev *hdev,
+					      bdaddr_t *addr, u8 addr_type);
 struct hci_conn_params *hci_conn_params_add(struct hci_dev *hdev,
 					    bdaddr_t *addr, u8 addr_type);
 void hci_conn_params_del(struct hci_dev *hdev, bdaddr_t *addr, u8 addr_type);

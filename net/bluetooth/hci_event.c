@@ -7594,6 +7594,8 @@ static void hci_le_remote_conn_param_req_evt(struct hci_dev *hdev, void *data,
 
 	if (hcon->role == HCI_ROLE_MASTER) {
 		struct hci_conn_params *params;
+		bdaddr_t *addr = &hcon->dst;
+		u8 addr_type = hcon->dst_type;
 		u8 store_hint;
 
 		params = hci_conn_params_lookup(hdev, &hcon->dst,
@@ -7604,12 +7606,16 @@ static void hci_le_remote_conn_param_req_evt(struct hci_dev *hdev, void *data,
 			params->conn_latency = latency;
 			params->supervision_timeout = timeout;
 			store_hint = 0x01;
+
+			/* Report the entry updated, the identity's */
+			addr = &params->addr;
+			addr_type = params->addr_type;
 		} else {
 			store_hint = 0x00;
 		}
 
-		mgmt_new_conn_param(hdev, &hcon->dst, hcon->dst_type,
-				    store_hint, min, max, latency, timeout);
+		mgmt_new_conn_param(hdev, addr, addr_type, store_hint, min, max,
+				    latency, timeout);
 	}
 
 	cp.handle = ev->handle;

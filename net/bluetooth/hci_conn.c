@@ -515,8 +515,10 @@ static int le_conn_update_sync(struct hci_dev *hdev, void *data)
 	struct hci_conn *conn = d->conn;
 	struct hci_conn_params *params;
 	struct hci_cp_le_conn_update cp;
+	bdaddr_t addr;
 	u16 timeout;
 	u8 store_hint;
+	u8 addr_type;
 	int err;
 
 	/* Verify connection is still alive and read conn fields under
@@ -554,6 +556,9 @@ static int le_conn_update_sync(struct hci_dev *hdev, void *data)
 	 */
 	hci_dev_lock(hdev);
 
+	bacpy(&addr, &conn->dst);
+	addr_type = conn->dst_type;
+
 	params = hci_conn_params_lookup(hdev, &conn->dst, conn->dst_type);
 	if (params) {
 		params->conn_min_interval = d->min;
@@ -561,13 +566,17 @@ static int le_conn_update_sync(struct hci_dev *hdev, void *data)
 		params->conn_latency = d->latency;
 		params->supervision_timeout = d->to_multiplier;
 		store_hint = 0x01;
+
+		/* Report the entry updated, the identity's for an RPA */
+		bacpy(&addr, &params->addr);
+		addr_type = params->addr_type;
 	} else {
 		store_hint = 0x00;
 	}
 
 	hci_dev_unlock(hdev);
 
-	mgmt_new_conn_param(hdev, &conn->dst, conn->dst_type, store_hint,
+	mgmt_new_conn_param(hdev, &addr, addr_type, store_hint,
 			    d->min, d->max, d->latency, d->to_multiplier);
 
 	return 0;
@@ -1711,9 +1720,14 @@ static int hci_explicit_conn_params_set(struct hci_dev *hdev,
 	if (is_connected(hdev, addr, addr_type))
 		return -EISCONN;
 
-	params = hci_conn_params_lookup(hdev, addr, addr_type);
+	/* hci_connect_le_scan() has resolved addr already. Resolving it
+	 * again in each of the lookup and the add would let an IRK that
+	 * arrives in between make the add return existing params, which
+	 * would then be taken for new ones.
+	 */
+	params = __hci_conn_params_lookup(hdev, addr, addr_type);
 	if (!params) {
-		params = hci_conn_params_add(hdev, addr, addr_type);
+		params = __hci_conn_params_add(hdev, addr, addr_type);
 		if (!params)
 			return -ENOMEM;
 
