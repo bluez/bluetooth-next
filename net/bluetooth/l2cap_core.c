@@ -841,6 +841,14 @@ static void l2cap_chan_ecred_connect_reject(struct l2cap_chan *chan)
 	l2cap_state_change(chan, BT_DISCONN);
 
 	__l2cap_ecred_conn_rsp_defer(chan);
+
+	/* The response is only sent once the other channels of the request are
+	 * authorized or refused, so the channel is kept until then to be
+	 * included in it, but its socket has to be released now so it can be
+	 * freed when its owner closes it.
+	 */
+	if (!test_bit(FLAG_DEL, &chan->flags))
+		chan->ops->teardown(chan, ECONNREFUSED);
 }
 
 static void l2cap_chan_connect_reject(struct l2cap_chan *chan)
