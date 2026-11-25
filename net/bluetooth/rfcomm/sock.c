@@ -448,7 +448,7 @@ static int rfcomm_sock_listen(struct socket *sock, int backlog)
 
 	lock_sock(sk);
 
-	if (sk->sk_state != BT_BOUND) {
+	if (sk->sk_state != BT_BOUND || sk->sk_shutdown) {
 		err = -EBADFD;
 		goto done;
 	}
