@@ -73,6 +73,7 @@ enum btrtl_chip_id {
 	CHIP_ID_8922A = 44,
 	CHIP_ID_8852BT = 47,
 	CHIP_ID_8761C = 51,
+	CHIP_ID_8922D = 55,
 };
 
 static const struct id_table ic_id_table[] = {
@@ -309,6 +310,15 @@ static const struct id_table ic_id_table[] = {
 	  .fw_name  = "rtl_bt/rtl8852btu_fw",
 	  .cfg_name = "rtl_bt/rtl8852btu_config",
 	  .hw_info  = "rtl8852btu" },
+
+	/* 8922DU */
+	{ IC_INFO(RTL_ROM_LMP_8922A, 0xd, 0xe, HCI_USB),
+	  .config_needed = false,
+	  .has_rom_version = true,
+	  .has_msft_ext = true,
+	  .fw_name  = "rtl_bt/rtl8922du_fw",
+	  .cfg_name = "rtl_bt/rtl8922du_config",
+	  .hw_info  = "rtl8922du" },
 
 	};
 
@@ -1211,6 +1221,16 @@ next:
 		return btrtl_dev;
 	}
 
+	/* 8922D always reports its chip id; without it the key id and the
+	 * v3 images cannot be selected.
+	 */
+	if (lmp_subver == RTL_ROM_LMP_8922A && hci_rev == 0x000d &&
+	    !btrtl_dev->project_id) {
+		rtl_dev_err(hdev, "failed to read chip id");
+		ret = -EIO;
+		goto err_free;
+	}
+
 	if (btrtl_dev->ic_info->has_rom_version) {
 		ret = rtl_read_rom_version(hdev, &btrtl_dev->rom_version);
 		if (ret)
@@ -1230,7 +1250,7 @@ next:
 		if (ret < 0)
 			goto err_free;
 		key_id = reg_val[0];
-	} else if (lmp_subver == RTL_ROM_LMP_8922A ||
+	} else if ((lmp_subver == RTL_ROM_LMP_8922A && hci_rev == 0x000a) ||
 		   (lmp_subver == RTL_ROM_LMP_8852A && hci_rev == 0x000b)) {
 		ret = btrtl_vendor_read_reg16(hdev, RTL_SEC_PROJ_V2, reg_val);
 		if (ret < 0)
@@ -1367,6 +1387,7 @@ void btrtl_set_quirks(struct hci_dev *hdev, struct btrtl_device_info *btrtl_dev)
 	case CHIP_ID_8922A:
 	case CHIP_ID_8852BT:
 	case CHIP_ID_8761C:
+	case CHIP_ID_8922D:
 		hci_set_quirk(hdev, HCI_QUIRK_WIDEBAND_SPEECH_SUPPORTED);
 
 		/* RTL8852C needs to transmit mSBC data continuously without
@@ -1643,3 +1664,5 @@ MODULE_FIRMWARE("rtl_bt/rtl8852cu_fw_v2.bin");
 MODULE_FIRMWARE("rtl_bt/rtl8852cu_config.bin");
 MODULE_FIRMWARE("rtl_bt/rtl8922au_fw.bin");
 MODULE_FIRMWARE("rtl_bt/rtl8922au_config.bin");
+MODULE_FIRMWARE("rtl_bt/rtl8922du_fw.bin");
+MODULE_FIRMWARE("rtl_bt/rtl8922du_config.bin");
