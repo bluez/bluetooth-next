@@ -544,7 +544,12 @@ struct l2cap_chan {
 	__u8		chan_type;
 	__u8		chan_policy;
 
+	/* The security level of the link, which sec_level follows once
+	 * encryption is enabled, so it can't tell what the channel requires,
+	 * that is what min_sec_level is for.
+	 */
 	__u8		sec_level;
+	__u8		min_sec_level;
 	__u8		mic_len;
 
 	__u8		ident;
@@ -987,6 +992,8 @@ int l2cap_add_psm(struct l2cap_chan *chan, bdaddr_t *src, __le16 psm);
 int l2cap_add_scid(struct l2cap_chan *chan,  __u16 scid);
 
 struct l2cap_chan *l2cap_chan_create(void);
+bool l2cap_chan_sec_level_ok(struct l2cap_chan *chan);
+void l2cap_chan_close(struct l2cap_chan *chan, int reason);
 void l2cap_chan_close_unlocked(struct l2cap_chan *chan, int reason)
 	__must_not_hold(&chan->lock);
 int l2cap_chan_connect(struct l2cap_chan *chan, __le16 psm, u16 cid,

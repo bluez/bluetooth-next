@@ -551,6 +551,7 @@ void l2cap_chan_set_defaults(struct l2cap_chan *chan, struct l2cap_chan *pchan)
 	chan->remote_tx_win = chan->tx_win;
 	chan->ack_win = L2CAP_DEFAULT_TX_WINDOW;
 	chan->sec_level = BT_SECURITY_LOW;
+	chan->min_sec_level = BT_SECURITY_LOW;
 	chan->flush_to = L2CAP_DEFAULT_FLUSH_TO;
 	chan->retrans_timeout = L2CAP_DEFAULT_RETRANS_TO;
 	chan->monitor_timeout = L2CAP_DEFAULT_MONITOR_TO;
@@ -567,6 +568,7 @@ void l2cap_chan_set_defaults(struct l2cap_chan *chan, struct l2cap_chan *pchan)
 		chan->tx_win = pchan->tx_win;
 		chan->tx_win_max = pchan->tx_win_max;
 		chan->sec_level = pchan->sec_level;
+		chan->min_sec_level = pchan->min_sec_level;
 		chan->mic_len = pchan->mic_len;
 		chan->conf_state = pchan->conf_state;
 		chan->flags = pchan->flags;
@@ -5230,6 +5232,8 @@ static int l2cap_le_connect_rsp(struct l2cap_conn *conn,
 		sec_level = hcon->sec_level + 1;
 		if (chan->sec_level < sec_level)
 			chan->sec_level = sec_level;
+		if (chan->min_sec_level < sec_level)
+			chan->min_sec_level = sec_level;
 
 		/* We'll need to send a new Connect Request */
 		clear_bit(FLAG_LE_CONN_REQ_SENT, &chan->flags);
@@ -5846,6 +5850,8 @@ static inline int l2cap_ecred_conn_rsp(struct l2cap_conn *conn,
 			sec_level = hcon->sec_level + 1;
 			if (chan->sec_level < sec_level)
 				chan->sec_level = sec_level;
+			if (chan->min_sec_level < sec_level)
+				chan->min_sec_level = sec_level;
 
 			/* We'll need to send a new Connect Request */
 			clear_bit(FLAG_ECRED_CONN_REQ_SENT, &chan->flags);
@@ -8152,11 +8158,37 @@ static inline void l2cap_check_encryption(struct l2cap_chan *chan, u8 encrypt)
 	}
 }
 
+/* Check if the link meets the security level required by the channel, which
+ * for anything above BT_SECURITY_LOW needs the link to be encrypted since the
+ * security level of the link is updated when authentication completes, before
+ * encryption is enabled.
+ */
+static bool l2cap_chan_sec_level_met(struct hci_conn *hcon,
+				     struct l2cap_chan *chan)
+{
+	if (chan->min_sec_level <= BT_SECURITY_LOW)
+		return true;
+
+	return test_bit(HCI_CONN_ENCRYPT, hcon->flags) &&
+	       hcon->sec_level >= chan->min_sec_level;
+}
+
+void l2cap_chan_close(struct l2cap_chan *chan, int reason)
+{
+	/* Context analysis: caller holds chan->lock and chan->conn->lock */
+	context_unsafe(__l2cap_chan_close(chan, reason));
+}
+
+bool l2cap_chan_sec_level_ok(struct l2cap_chan *chan)
+{
+	return l2cap_chan_sec_level_met(chan->conn->hcon, chan);
+}
+
 static void l2cap_security_cfm(struct hci_conn *hcon, u8 status, u8 encrypt)
 	__must_hold(&hcon->hdev->lock)
 {
 	struct l2cap_conn *conn = hcon->l2cap_data;
-	struct l2cap_chan *chan;
+	struct l2cap_chan *chan, *tmp;
 
 	if (!conn)
 		return;
@@ -8165,7 +8197,9 @@ static void l2cap_security_cfm(struct hci_conn *hcon, u8 status, u8 encrypt)
 
 	mutex_lock(&conn->lock);
 
-	list_for_each_entry(chan, &conn->chan_l, list) {
+	list_for_each_entry_safe(chan, tmp, &conn->chan_l, list) {
+		bool unmet, encrypting, downgrade = false;
+
 		l2cap_chan_lock(chan);
 
 		lockdep_assert_held(&chan->conn->lock);
@@ -8173,8 +8207,83 @@ static void l2cap_security_cfm(struct hci_conn *hcon, u8 status, u8 encrypt)
 		BT_DBG("chan %p scid 0x%4.4x state %s", chan, chan->scid,
 		       state_to_string(chan->state));
 
-		if (!status && encrypt)
-			chan->sec_level = hcon->sec_level;
+		/* Authentication completing before encryption is enabled
+		 * updates the security level of the link, so it already meets
+		 * the one required, but it is not encrypted yet: encryption is
+		 * expected to follow instead of it having been disabled.
+		 */
+		encrypting = !status && !encrypt &&
+			     chan->min_sec_level > BT_SECURITY_LOW &&
+			     !test_bit(HCI_CONN_ENCRYPT, hcon->flags) &&
+			     hcon->sec_level >= chan->min_sec_level;
+
+		/* The requirement of the channel may change under chan->lock */
+		unmet = !status && !encrypting &&
+			!l2cap_chan_sec_level_met(hcon, chan);
+
+		if (!status && encrypt) {
+			/* Encryption completing with a security level below
+			 * the one the channel requires is a downgrade, don't
+			 * lower the requirement of the channel to match it.
+			 */
+			if (unmet)
+				downgrade = true;
+			else
+				chan->sec_level = hcon->sec_level;
+		} else if (unmet && chan->chan_type != L2CAP_CHAN_CONN_ORIENTED) {
+			/* Unlike the other channels, l2cap_check_encryption()
+			 * doesn't handle fixed ones, so encryption being
+			 * disabled is a downgrade for them as well.
+			 */
+			downgrade = true;
+		}
+
+		/* A channel that is not established yet is refused as soon as
+		 * the link doesn't meet its security level, while an
+		 * established one is only closed on a downgrade since
+		 * l2cap_check_encryption() handles encryption being disabled.
+		 *
+		 * Enhanced Credit Based channels waiting in BT_CONNECT2 are
+		 * refused when userspace authorizes them instead, since the
+		 * response of the request is only sent once all of its
+		 * channels have been authorized or refused.
+		 */
+		if ((downgrade && (chan->chan_type != L2CAP_CHAN_CONN_ORIENTED ||
+				   chan->state == BT_CONNECTED ||
+				   chan->state == BT_CONFIG ||
+				   chan->state == BT_CONNECT)) ||
+		    (unmet && chan->state == BT_CONNECT2 &&
+		     chan->mode == L2CAP_MODE_LE_FLOWCTL)) {
+			/* There is no way to disconnect a fixed channel at
+			 * L2CAP, so drop the link, which takes down the rest
+			 * of the channels as well.
+			 */
+			if (chan->chan_type != L2CAP_CHAN_CONN_ORIENTED) {
+				hci_disconnect(hcon, HCI_ERROR_AUTH_FAILURE);
+				l2cap_chan_unlock(chan);
+				break;
+			}
+
+			/* The channel may be removed from the list */
+			l2cap_chan_hold(chan);
+			__l2cap_chan_close(chan, ECONNREFUSED);
+
+			if (test_bit(FLAG_DEL, &chan->flags))
+				chan->ops->close(chan);
+
+			l2cap_chan_unlock(chan);
+			l2cap_chan_put(chan);
+			continue;
+		}
+
+		/* A channel waiting for the encryption to be enabled has to
+		 * wait for it before being accepted or started.
+		 */
+		if (encrypting && (chan->state == BT_CONNECT ||
+				   chan->state == BT_CONNECT2)) {
+			l2cap_chan_unlock(chan);
+			continue;
+		}
 
 		if (!__l2cap_no_conn_pending(chan)) {
 			l2cap_chan_unlock(chan);
@@ -8183,14 +8292,19 @@ static void l2cap_security_cfm(struct hci_conn *hcon, u8 status, u8 encrypt)
 
 		if (!status && (chan->state == BT_CONNECTED ||
 				chan->state == BT_CONFIG)) {
-			chan->ops->resume(chan);
+			/* Don't resume a channel the link is not secure enough
+			 * for, l2cap_check_encryption() deals with it.
+			 */
+			if (!unmet)
+				chan->ops->resume(chan);
 			l2cap_check_encryption(chan, encrypt);
 			l2cap_chan_unlock(chan);
 			continue;
 		}
 
 		if (chan->state == BT_CONNECT) {
-			if (!status && l2cap_check_enc_key_size(hcon, chan))
+			if (!status && l2cap_chan_sec_level_met(hcon, chan) &&
+			    l2cap_check_enc_key_size(hcon, chan))
 				l2cap_start_connection(chan);
 			else
 				__set_chan_timer(chan, L2CAP_DISC_TIMEOUT);
@@ -8200,7 +8314,8 @@ static void l2cap_security_cfm(struct hci_conn *hcon, u8 status, u8 encrypt)
 			struct l2cap_conn_rsp rsp;
 			__u16 res, stat;
 
-			if (!status && l2cap_check_enc_key_size(hcon, chan)) {
+			if (!status && l2cap_check_enc_key_size(hcon, chan) &&
+			    l2cap_chan_sec_level_met(hcon, chan)) {
 				if (test_bit(FLAG_DEFER_SETUP, &chan->flags)) {
 					res = L2CAP_CR_PEND;
 					stat = L2CAP_CS_AUTHOR_PEND;
