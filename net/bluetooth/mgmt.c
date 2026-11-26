@@ -3422,7 +3422,7 @@ static int unpair_device(struct sock *sk, struct hci_dev *hdev, void *data,
 	set_bit(HCI_CONN_PARAM_REMOVAL_PEND, conn->flags);
 
 	/* Disable auto-connection parameters if present */
-	params = hci_conn_params_lookup(hdev, &cp->addr.bdaddr, addr_type);
+	params = __hci_conn_params_lookup(hdev, &cp->addr.bdaddr, addr_type);
 	if (params) {
 		if (params->explicit_connect)
 			params->auto_connect = HCI_AUTO_CONN_EXPLICIT;
@@ -5492,6 +5492,7 @@ static int set_device_flags(struct sock *sk, struct hci_dev *hdev, void *data,
 	struct mgmt_cp_set_device_flags *cp = data;
 	struct bdaddr_list_with_flags *br_params;
 	struct hci_conn_params *params;
+	struct mgmt_addr_info ev_addr = cp->addr;
 	u8 status = MGMT_STATUS_INVALID_PARAMS;
 	u32 supported_flags;
 	u32 current_flags = __le32_to_cpu(cp->current_flags);
@@ -5526,19 +5527,16 @@ static int set_device_flags(struct sock *sk, struct hci_dev *hdev, void *data,
 		goto unlock;
 	}
 
-	params = hci_conn_params_lookup(hdev, &cp->addr.bdaddr,
-					le_addr_type(cp->addr.type));
+	/* Create a new hci_conn_params if it doesn't exist. One add, which
+	 * resolves an RPA once, rather than a lookup and an add that each
+	 * resolve it and can disagree if the IRK arrives in between.
+	 */
+	params = hci_conn_params_add(hdev, &cp->addr.bdaddr,
+				     le_addr_type(cp->addr.type));
 	if (!params) {
-		/* Create a new hci_conn_params if it doesn't exist */
-		params = hci_conn_params_set(hdev, &cp->addr.bdaddr,
-					     le_addr_type(cp->addr.type),
-					     HCI_AUTO_CONN_DISABLED);
-		if (!params) {
-			bt_dev_warn(hdev, "No such LE device %pMR (0x%x)",
-				    &cp->addr.bdaddr,
-				    le_addr_type(cp->addr.type));
-			goto unlock;
-		}
+		bt_dev_warn(hdev, "No such LE device %pMR (0x%x)",
+			    &cp->addr.bdaddr, le_addr_type(cp->addr.type));
+		goto unlock;
 	}
 
 	supported_flags = hdev->conn_flags;
@@ -5552,6 +5550,10 @@ static int set_device_flags(struct sock *sk, struct hci_dev *hdev, void *data,
 	WRITE_ONCE(params->flags, current_flags);
 	status = MGMT_STATUS_SUCCESS;
 
+	/* Given an RPA, the flags changed are the identity's */
+	bacpy(&ev_addr.bdaddr, &params->addr);
+	ev_addr.type = link_to_bdaddr(LE_LINK, params->addr_type);
+
 	/* Update passive scan if HCI_CONN_FLAG_DEVICE_PRIVACY
 	 * has been set.
 	 */
@@ -5563,7 +5565,7 @@ unlock:
 
 done:
 	if (status == MGMT_STATUS_SUCCESS)
-		device_flags_changed(sk, hdev, &cp->addr.bdaddr, cp->addr.type,
+		device_flags_changed(sk, hdev, &ev_addr.bdaddr, ev_addr.type,
 				     supported_flags, current_flags);
 
 	return mgmt_cmd_complete(sk, hdev->id, MGMT_OP_SET_DEVICE_FLAGS, status,
@@ -8392,6 +8394,7 @@ static int load_conn_param(struct sock *sk, struct hci_dev *hdev, void *data,
 
 	for (i = 0; i < param_count; i++) {
 		struct mgmt_conn_param *param = &cp->params[i];
+		bdaddr_t *addr = &param->addr.bdaddr, id_addr;
 		struct hci_conn_params *hci_param;
 		u16 min, max, latency, timeout;
 		bool update = false;
@@ -8422,21 +8425,22 @@ static int load_conn_param(struct sock *sk, struct hci_dev *hdev, void *data,
 			continue;
 		}
 
+		/* Resolve once, so the lookup and the add below agree */
+		hci_rpa_to_identity(hdev, &addr, &addr_type, &id_addr);
+
 		/* Detect when the loading is for an existing parameter then
 		 * attempt to trigger the connection update procedure.
 		 */
 		if (!i && param_count == 1) {
-			hci_param = hci_conn_params_lookup(hdev,
-							   &param->addr.bdaddr,
-							   addr_type);
+			hci_param = __hci_conn_params_lookup(hdev, addr,
+							     addr_type);
 			if (hci_param)
 				update = true;
 			else
 				hci_conn_params_clear_disabled(hdev);
 		}
 
-		hci_param = hci_conn_params_add(hdev, &param->addr.bdaddr,
-						addr_type);
+		hci_param = __hci_conn_params_add(hdev, addr, addr_type);
 		if (!hci_param) {
 			bt_dev_err(hdev, "failed to add connection parameters");
 			continue;
@@ -8571,7 +8575,7 @@ static int load_conn_subrate(struct sock *sk, struct hci_dev *hdev, void *data,
 
 			conn = hci_conn_hash_lookup_le(hdev,
 						       &hci_param->addr,
-						       addr_type);
+						       hci_param->addr_type);
 			if (conn && conn->state == BT_CONNECTED &&
 			    (conn->le_rate_interval < min ||
 			     conn->le_rate_interval > max ||

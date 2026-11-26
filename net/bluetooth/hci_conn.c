@@ -515,8 +515,10 @@ static int le_conn_update_sync(struct hci_dev *hdev, void *data)
 	struct hci_conn *conn = d->conn;
 	struct hci_conn_params *params;
 	struct hci_cp_le_conn_update cp;
+	bdaddr_t addr;
 	u16 timeout;
 	u8 store_hint;
+	u8 addr_type;
 	int err;
 
 	/* Verify connection is still alive and read conn fields under
@@ -554,6 +556,9 @@ static int le_conn_update_sync(struct hci_dev *hdev, void *data)
 	 */
 	hci_dev_lock(hdev);
 
+	bacpy(&addr, &conn->dst);
+	addr_type = conn->dst_type;
+
 	params = hci_conn_params_lookup(hdev, &conn->dst, conn->dst_type);
 	if (params) {
 		params->conn_min_interval = d->min;
@@ -561,13 +566,17 @@ static int le_conn_update_sync(struct hci_dev *hdev, void *data)
 		params->conn_latency = d->latency;
 		params->supervision_timeout = d->to_multiplier;
 		store_hint = 0x01;
+
+		/* Report the entry updated, the identity's for an RPA */
+		bacpy(&addr, &params->addr);
+		addr_type = params->addr_type;
 	} else {
 		store_hint = 0x00;
 	}
 
 	hci_dev_unlock(hdev);
 
-	mgmt_new_conn_param(hdev, &conn->dst, conn->dst_type, store_hint,
+	mgmt_new_conn_param(hdev, &addr, addr_type, store_hint,
 			    d->min, d->max, d->latency, d->to_multiplier);
 
 	return 0;
@@ -1532,12 +1541,66 @@ u8 hci_conn_set_handle(struct hci_conn *conn, u16 handle)
 	return 0;
 }
 
+/* A connection to a peer the controller cannot resolve is kept under the
+ * peer's RPA until it completes, and the peer may have moved to a new RPA
+ * since. When there is no connection under the address given, find the one
+ * under an RPA of the peer whose identity it is, by the peer's IRK. A
+ * connection returned is therefore found by IRK only if its dst is not the
+ * address given.
+ *
+ * This function requires the caller holds hdev->lock, or rcu_read_lock()
+ * and req_lock as hci_cmd_sync_work() does: matching by IRK uses
+ * hdev->smp_data, which RCU does not protect, and which is set up and
+ * torn down under hdev->lock with req_lock held.
+ */
+struct hci_conn *hci_conn_hash_lookup_le(struct hci_dev *hdev, bdaddr_t *ba,
+					 __u8 ba_type)
+{
+	struct hci_conn_hash *h = &hdev->conn_hash;
+	struct hci_conn *c;
+	struct smp_irk *irk;
+
+	HCI_CONN_HASH_LOCKDEP_CHECK(hdev);
+
+	rcu_read_lock();
+
+	list_for_each_entry_rcu(c, &h->list, list) {
+		if (c->type != LE_LINK)
+			continue;
+
+		if (ba_type == c->dst_type && !bacmp(&c->dst, ba)) {
+			rcu_read_unlock();
+			return c;
+		}
+	}
+
+	irk = hci_find_irk_by_addr(hdev, ba, ba_type);
+	if (irk) {
+		list_for_each_entry_rcu(c, &h->list, list) {
+			if (c->type != LE_LINK ||
+			    !hci_bdaddr_is_rpa(&c->dst, c->dst_type))
+				continue;
+
+			if (smp_irk_matches(hdev, irk->val, &c->dst)) {
+				rcu_read_unlock();
+				return c;
+			}
+		}
+	}
+
+	rcu_read_unlock();
+
+	return NULL;
+}
+EXPORT_SYMBOL(hci_conn_hash_lookup_le);
+
 struct hci_conn *hci_connect_le(struct hci_dev *hdev, bdaddr_t *dst,
 				u8 dst_type, bool dst_resolved, u8 sec_level,
 				u16 conn_timeout, u8 role, u8 phy, u8 sec_phy)
 {
 	struct hci_conn *conn;
 	struct smp_irk *irk;
+	bdaddr_t rpa;
 	int err;
 
 	/* Let's make sure that le is enabled.*/
@@ -1563,6 +1626,17 @@ struct hci_conn *hci_connect_le(struct hci_dev *hdev, bdaddr_t *dst,
 	if (conn && !test_bit(HCI_CONN_SCANNING, conn->flags))
 		return ERR_PTR(-EBUSY);
 
+	/* A connection found by the peer's IRK instead is under one of its
+	 * RPAs. It is refused even while scanning: it has then either been
+	 * started by an earlier advertising report already, or it belongs
+	 * to an explicit connect made before the IRK was known, and so to
+	 * other params. A connection of our own would be dialled to the
+	 * same RPA, and le_conn_complete_evt(), which matches by address,
+	 * would complete the older one.
+	 */
+	if (conn && (conn->dst_type != dst_type || bacmp(&conn->dst, dst)))
+		return ERR_PTR(-EBUSY);
+
 	/* Check if the destination address has been resolved by the controller
 	 * since if it did then the identity address shall be used.
 	 */
@@ -1576,11 +1650,14 @@ struct hci_conn *hci_connect_le(struct hci_dev *hdev, bdaddr_t *dst,
 		 * be resolved back into the original identity address
 		 * from the connect request.
 		 */
+		rcu_read_lock();
 		irk = hci_find_irk_by_addr(hdev, dst, dst_type);
 		if (irk && bacmp(&irk->rpa, BDADDR_ANY)) {
-			dst = &irk->rpa;
+			bacpy(&rpa, &irk->rpa);
+			dst = &rpa;
 			dst_type = ADDR_LE_DEV_RANDOM;
 		}
+		rcu_read_unlock();
 	}
 
 	if (conn) {
@@ -1643,9 +1720,14 @@ static int hci_explicit_conn_params_set(struct hci_dev *hdev,
 	if (is_connected(hdev, addr, addr_type))
 		return -EISCONN;
 
-	params = hci_conn_params_lookup(hdev, addr, addr_type);
+	/* hci_connect_le_scan() has resolved addr already. Resolving it
+	 * again in each of the lookup and the add would let an IRK that
+	 * arrives in between make the add return existing params, which
+	 * would then be taken for new ones.
+	 */
+	params = __hci_conn_params_lookup(hdev, addr, addr_type);
 	if (!params) {
-		params = hci_conn_params_add(hdev, addr, addr_type);
+		params = __hci_conn_params_add(hdev, addr, addr_type);
 		if (!params)
 			return -ENOMEM;
 
@@ -1795,6 +1877,7 @@ struct hci_conn *hci_connect_le_scan(struct hci_dev *hdev, bdaddr_t *dst,
 				     enum conn_reasons conn_reason)
 {
 	struct hci_conn *conn;
+	bdaddr_t id_addr;
 
 	/* Let's make sure that le is enabled.*/
 	if (!hci_dev_test_flag(hdev, HCI_LE_ENABLED)) {
@@ -1803,6 +1886,12 @@ struct hci_conn *hci_connect_le_scan(struct hci_dev *hdev, bdaddr_t *dst,
 
 		return ERR_PTR(-EOPNOTSUPP);
 	}
+
+	/* Connect to the peer as if by its identity, under which its
+	 * connection and parameters are kept. hci_connect_le() puts its RPA
+	 * on air when the controller cannot resolve it.
+	 */
+	hci_rpa_to_identity(hdev, &dst, &dst_type, &id_addr);
 
 	/* Some devices send ATT messages as soon as the physical link is
 	 * established. To be able to handle these ATT messages, the user-
@@ -1814,6 +1903,19 @@ struct hci_conn *hci_connect_le_scan(struct hci_dev *hdev, bdaddr_t *dst,
 	 * and return the object found.
 	 */
 	conn = hci_conn_hash_lookup_le(hdev, dst, dst_type);
+
+	/* Found by the peer's IRK, still scanning under an RPA with params
+	 * of its own there, this is an explicit connect made to the RPA
+	 * before the IRK was known, which is never started. Refuse, as
+	 * hci_connect_le() does, rather than wait on it or dial a second
+	 * connection to the same RPA.
+	 */
+	if (conn && test_bit(HCI_CONN_SCANNING, conn->flags) &&
+	    (conn->dst_type != dst_type || bacmp(&conn->dst, dst)) &&
+	    hci_pend_le_action_lookup(&hdev->pend_le_conns, &conn->dst,
+				      conn->dst_type))
+		return ERR_PTR(-EBUSY);
+
 	if (conn) {
 		if (conn->pending_sec_level < sec_level)
 			conn->pending_sec_level = sec_level;

@@ -1348,31 +1348,8 @@ static inline struct hci_conn *hci_conn_hash_lookup_role(struct hci_dev *hdev,
 	return NULL;
 }
 
-static inline struct hci_conn *hci_conn_hash_lookup_le(struct hci_dev *hdev,
-						       bdaddr_t *ba,
-						       __u8 ba_type)
-{
-	struct hci_conn_hash *h = &hdev->conn_hash;
-	struct hci_conn  *c;
-
-	HCI_CONN_HASH_LOCKDEP_CHECK(hdev);
-
-	rcu_read_lock();
-
-	list_for_each_entry_rcu(c, &h->list, list) {
-		if (c->type != LE_LINK)
-		       continue;
-
-		if (ba_type == c->dst_type && !bacmp(&c->dst, ba)) {
-			rcu_read_unlock();
-			return c;
-		}
-	}
-
-	rcu_read_unlock();
-
-	return NULL;
-}
+struct hci_conn *hci_conn_hash_lookup_le(struct hci_dev *hdev, bdaddr_t *ba,
+					 __u8 ba_type);
 
 static inline struct hci_conn *hci_conn_hash_lookup_cis(struct hci_dev *hdev,
 							bdaddr_t *ba,
@@ -1927,8 +1904,14 @@ int hci_bdaddr_list_del_with_irk(struct list_head *list, bdaddr_t *bdaddr,
 				 u8 type);
 void hci_bdaddr_list_clear(struct list_head *list);
 
+void hci_rpa_to_identity(struct hci_dev *hdev, bdaddr_t **addr,
+			 u8 *addr_type, bdaddr_t *id_addr);
+struct hci_conn_params *__hci_conn_params_lookup(struct hci_dev *hdev,
+						 bdaddr_t *addr, u8 addr_type);
 struct hci_conn_params *hci_conn_params_lookup(struct hci_dev *hdev,
 					       bdaddr_t *addr, u8 addr_type);
+struct hci_conn_params *__hci_conn_params_add(struct hci_dev *hdev,
+					      bdaddr_t *addr, u8 addr_type);
 struct hci_conn_params *hci_conn_params_add(struct hci_dev *hdev,
 					    bdaddr_t *addr, u8 addr_type);
 void hci_conn_params_del(struct hci_dev *hdev, bdaddr_t *addr, u8 addr_type);
