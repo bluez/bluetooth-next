@@ -2242,7 +2242,9 @@ static int rfcomm_add_listener(bdaddr_t *ba)
 	}
 
 	/* Add listening session */
+	rfcomm_lock();
 	s = rfcomm_session_add(sock, BT_LISTEN);
+	rfcomm_unlock();
 	if (!s) {
 		err = -ENOMEM;
 		goto failed;
