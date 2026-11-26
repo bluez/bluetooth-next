@@ -852,6 +852,7 @@ static struct socket *rfcomm_session_connect(bdaddr_t *src, bdaddr_t *dst,
 	/* Set MTU to 0 so L2CAP can auto select the MTU */
 	l2cap_pi(sk)->chan->imtu = 0;
 	l2cap_pi(sk)->chan->sec_level = sec_level;
+	l2cap_pi(sk)->chan->min_sec_level = sec_level;
 	if (l2cap_ertm)
 		l2cap_pi(sk)->chan->mode = L2CAP_MODE_ERTM;
 	release_sock(sk);
