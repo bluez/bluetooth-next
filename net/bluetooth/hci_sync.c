@@ -3670,6 +3670,12 @@ static int hci_passive_scan_sync(struct hci_dev *hdev)
 		filter_dups = LE_SCAN_FILTER_DUP_DISABLE;
 	}
 
+	/* The controller only syncs on a report it doesn't filter as a duplicate,
+	 * and that report can come before the sync is created.
+	 */
+	if (hci_dev_test_flag(hdev, HCI_PA_SYNC))
+		filter_dups = LE_SCAN_FILTER_DUP_DISABLE;
+
 	bt_dev_dbg(hdev, "LE passive scan with acceptlist = %d", filter_policy);
 
 	return hci_start_scan_sync(hdev, LE_SCAN_PASSIVE, interval, window,
