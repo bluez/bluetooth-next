@@ -999,13 +999,76 @@ static void btintel_pcie_yoyo_send_hcmds(struct btintel_pcie_data *data,
 }
 
 static void
+btintel_pcie_yoyo_write_pairs(struct btintel_pcie_data *data,
+			      struct btintel_pcie_yoyo_config_set *config_set,
+			      resource_size_t bar0_len)
+{
+	u32 pair_addr, addr, value;
+	u32 i;
+
+	for (i = 0; i < config_set->num_pairs; i++) {
+		pair_addr = get_unaligned_le32(&config_set->pairs[i].address);
+
+		/* Calculate the effective address by adding the address offset */
+		if (check_add_overflow(pair_addr, config_set->addr_offset, &addr)) {
+			BT_WARN("YoYo: config set address overflow (0x%08x + 0x%08x)",
+				pair_addr, config_set->addr_offset);
+			continue;
+		}
+
+		value = get_unaligned_le32(&config_set->pairs[i].value);
+
+		switch (config_set->config_set_type) {
+		/* Direct Address Access (CSR) */
+		case BTINTEL_PCIE_CFGSET_CSR:
+			/* Validate the effective address for CSR access (Direct Address)
+			 * addr not aligned to 4 bytes or exceeds the BAR0 length
+			 */
+			if ((addr & (sizeof(u32) - 1)) ||
+			    bar0_len < sizeof(u32) ||
+			    addr > bar0_len - sizeof(u32)) {
+				BT_WARN("YoYo: bad CSR address 0x%08x for BAR0 length %llu",
+					addr, (unsigned long long)bar0_len);
+				continue;
+			}
+
+			BT_DBG("YoYo: CSR write [0x%08x] = 0x%08x", addr, value);
+			/* addr may be PRPH_DEV_* or HBUS_TARG_WRPTR */
+			spin_lock(&data->dev_mem_lock);
+			btintel_pcie_wr_reg32(data, addr, value);
+			spin_unlock(&data->dev_mem_lock);
+			break;
+		/* Indirect Address Access (Peripheral MAC and Device Memory) */
+		case BTINTEL_PCIE_CFGSET_PERIPH_MAC:
+		case BTINTEL_PCIE_CFGSET_DEVICE_MEM:
+			/* The config-set TLV comes from an untrusted external file;
+			 * reject null or unaligned targets.
+			 */
+			if (!addr || (addr & (sizeof(u32) - 1))) {
+				BT_WARN("YoYo: bad indirect address 0x%08x for type %u",
+					addr, config_set->config_set_type);
+				continue;
+			}
+
+			btintel_pcie_wr_dev_mem(data, addr, value);
+			BT_DBG("YoYo: indirect write type %u addr 0x%08x value 0x%08x",
+			       config_set->config_set_type, addr, value);
+			break;
+		default:
+			BT_WARN("YoYo: unknown config_set type %u",
+				config_set->config_set_type);
+			break;
+		}
+	}
+}
+
+static void
 btintel_pcie_apply_yoyo_config_sets(struct btintel_pcie_data *data,
 				    u32 time_point)
 {
 	struct btintel_pcie_yoyo_config_set *config_set;
 	resource_size_t bar0_len;
 	int ret;
-	u32 i;
 
 	if (!data)
 		return;
@@ -1017,98 +1080,34 @@ btintel_pcie_apply_yoyo_config_sets(struct btintel_pcie_data *data,
 		return;
 
 	list_for_each_entry(config_set, &data->yoyo.config_set_list, list) {
-		u32 pair_addr, addr, value;
-
 		if (config_set->time_point != time_point)
 			continue;
 
 		switch (config_set->config_set_type) {
 		case BTINTEL_PCIE_CFGSET_CSR:
+			btintel_pcie_yoyo_write_pairs(data, config_set, bar0_len);
+			break;
 		case BTINTEL_PCIE_CFGSET_PERIPH_MAC:
 		case BTINTEL_PCIE_CFGSET_DEVICE_MEM:
+			mutex_lock(&data->mac_access_lock);
+			ret = btintel_pcie_get_mac_access(data);
+			if (ret)
+				BT_WARN("YoYo: MAC access failed for config set (%d), skipping",
+					ret);
+			else
+				btintel_pcie_yoyo_write_pairs(data, config_set,
+							      bar0_len);
+			/* get_mac_access() asserts MAC_ACCESS_REQ before it
+			 * polls, and leaves it set on timeout; drop it in both
+			 * cases so the request bit is not leaked.
+			 */
+			btintel_pcie_release_mac_access(data);
+			mutex_unlock(&data->mac_access_lock);
 			break;
 		default:
 			BT_WARN("YoYo: unknown/unsupported config_set type %u, skipping",
 				config_set->config_set_type);
-			continue;
-		}
-
-		if (config_set->config_set_type == BTINTEL_PCIE_CFGSET_PERIPH_MAC ||
-		    config_set->config_set_type == BTINTEL_PCIE_CFGSET_DEVICE_MEM) {
-			mutex_lock(&data->mac_access_lock);
-			ret = btintel_pcie_get_mac_access(data);
-			if (ret) {
-				BT_WARN("YoYo: MAC access failed for config set (%d), skipping",
-					ret);
-				/* get_mac_access() asserts MAC_ACCESS_REQ before it
-				 * polls, and leaves it set on timeout; drop it so the
-				 * request bit is not leaked.
-				 */
-				btintel_pcie_release_mac_access(data);
-				mutex_unlock(&data->mac_access_lock);
-				continue;
-			}
-		}
-
-		for (i = 0; i < config_set->num_pairs; i++) {
-			pair_addr = get_unaligned_le32(&config_set->pairs[i].address);
-
-			/* Calculate the effective address by adding the address offset */
-			if (check_add_overflow(pair_addr, config_set->addr_offset, &addr)) {
-				BT_WARN("YoYo: config set address overflow (0x%08x + 0x%08x)",
-					pair_addr, config_set->addr_offset);
-				continue;
-			}
-
-			value = get_unaligned_le32(&config_set->pairs[i].value);
-
-			switch (config_set->config_set_type) {
-			/* Direct Address Access (CSR) */
-			case BTINTEL_PCIE_CFGSET_CSR:
-				/* Validate the effective address for CSR access (Direct Address)
-				 * addr not aligned to 4 bytes or exceeds the BAR0 length
-				 */
-				if ((addr & (sizeof(u32) - 1)) ||
-				    bar0_len < sizeof(u32) ||
-				    addr > bar0_len - sizeof(u32)) {
-					BT_WARN("YoYo: bad CSR address 0x%08x for BAR0 length %llu",
-						addr, (unsigned long long)bar0_len);
-					continue;
-				}
-
-				BT_DBG("YoYo: CSR write [0x%08x] = 0x%08x", addr, value);
-				/* addr may be PRPH_DEV_* or HBUS_TARG_WRPTR */
-				spin_lock(&data->dev_mem_lock);
-				btintel_pcie_wr_reg32(data, addr, value);
-				spin_unlock(&data->dev_mem_lock);
-				break;
-			/* Indirect Address Access (Peripheral MAC and Device Memory) */
-			case BTINTEL_PCIE_CFGSET_PERIPH_MAC:
-			case BTINTEL_PCIE_CFGSET_DEVICE_MEM:
-				/* The config-set TLV comes from an untrusted external file;
-				 * reject null or unaligned targets.
-				 */
-				if (!addr || (addr & (sizeof(u32) - 1))) {
-					BT_WARN("YoYo: bad indirect address 0x%08x for type %u",
-						addr, config_set->config_set_type);
-					continue;
-				}
-
-				btintel_pcie_wr_dev_mem(data, addr, value);
-				BT_DBG("YoYo: indirect write type %u addr 0x%08x value 0x%08x",
-				       config_set->config_set_type, addr, value);
-				break;
-			default:
-				BT_WARN("YoYo: unknown config_set type %u",
-					config_set->config_set_type);
-				break;
-			}
-		}
-
-		if (config_set->config_set_type == BTINTEL_PCIE_CFGSET_PERIPH_MAC ||
-		    config_set->config_set_type == BTINTEL_PCIE_CFGSET_DEVICE_MEM) {
-			btintel_pcie_release_mac_access(data);
-			mutex_unlock(&data->mac_access_lock);
+			break;
 		}
 	}
 }
