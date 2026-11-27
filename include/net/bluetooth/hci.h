@@ -659,6 +659,8 @@ enum {
 #define HCI_LE_ISO_BROADCASTER		0x40
 #define HCI_LE_ISO_SYNC_RECEIVER	0x80
 #define HCI_LE_LL_EXT_FEATURE		0x80
+#define HCI_LE_PAWR_ADVERTISER		0x08	/* byte 5 */
+#define HCI_LE_PAWR_SCANNER		0x10	/* byte 5 */
 #define HCI_LE_CS			0x40
 #define HCI_LE_CS_HOST			0x80
 #define HCI_LE_SCI			0x01	/* byte 9 - Shorter Connection Intervals */
@@ -2294,6 +2296,37 @@ struct hci_cp_le_set_host_feature {
 	__u8     bit_value;
 } __packed;
 
+struct hci_le_per_adv_subevent_data {
+	__u8    subevent;
+	__u8    response_slot_start;
+	__u8    response_slot_count;
+	__u8    data_len;
+	__u8    data[] __counted_by(data_len);
+} __packed;
+
+/* What fits one command next to handle and num_subevents */
+#define HCI_MAX_PER_ADV_SUBEVENT_DATA_LEN	253
+
+#define HCI_OP_LE_SET_PER_ADV_SUBEVENT_DATA	0x2082
+struct hci_cp_le_set_per_adv_subevent_data {
+	__u8    handle;
+	__u8    num_subevents;
+	__u8    subevents[];
+} __packed;
+
+#define HCI_OP_LE_SET_PER_ADV_PARAMS_V2		0x2086
+struct hci_cp_le_set_per_adv_params_v2 {
+	__u8    handle;
+	__le16  min_interval;
+	__le16  max_interval;
+	__le16  periodic_properties;
+	__u8    num_subevents;
+	__u8    subevent_interval;
+	__u8    response_slot_delay;
+	__u8    response_slot_spacing;
+	__u8    num_response_slots;
+} __packed;
+
 #define HCI_OP_LE_READ_ALL_LOCAL_FEATURES	0x2087
 struct hci_rp_le_read_all_local_features {
 	__u8    status;
@@ -3378,6 +3411,32 @@ struct hci_evt_le_big_info_adv_report {
 	__u8    phy;
 	__u8    framing;
 	__u8    encryption;
+} __packed;
+
+#define HCI_EV_LE_PER_ADV_SUBEVENT_DATA_REQ	0x27
+struct hci_ev_le_per_adv_subevent_data_req {
+	__u8    handle;
+	__u8    subevent_start;
+	__u8    subevent_data_count;
+} __packed;
+
+struct hci_le_per_adv_response {
+	__s8    tx_power;
+	__s8    rssi;
+	__u8    cte_type;
+	__u8    response_slot;
+	__u8    data_status;
+	__u8    data_len;
+	__u8    data[] __counted_by(data_len);
+} __packed;
+
+#define HCI_EV_LE_PER_ADV_RESPONSE_REPORT	0x28
+struct hci_ev_le_per_adv_response_report {
+	__u8    handle;
+	__u8    subevent;
+	__u8    tx_status;
+	__u8    num_responses;
+	__u8    responses[];
 } __packed;
 
 #define HCI_EVT_LE_ALL_REMOTE_FEATURES_COMPLETE 0x2b

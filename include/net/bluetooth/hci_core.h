@@ -260,6 +260,14 @@ struct adv_info {
 	bool	scan_rsp_changed;
 	__u16	per_adv_data_len;
 	__u8	per_adv_data[HCI_MAX_PER_AD_LENGTH];
+	/* Periodic Advertising with Responses, if num_subevents is not 0 */
+	__u16	per_adv_min_interval;
+	__u16	per_adv_max_interval;
+	__u8	num_subevents;
+	__u8	subevent_interval;
+	__u8	response_slot_delay;
+	__u8	response_slot_spacing;
+	__u8	num_response_slots;
 	__s8	tx_power;
 	__u32   min_interval;
 	__u32   max_interval;
@@ -2140,6 +2148,12 @@ void hci_conn_del_sysfs(struct hci_conn *conn);
 /* Periodic advertising support */
 #define per_adv_capable(dev) (((dev)->le_features[1] & HCI_LE_PERIODIC_ADV))
 
+/* Periodic Advertising with Responses support */
+#define pawr_adv_capable(dev) \
+	((dev)->le_features[5] & HCI_LE_PAWR_ADVERTISER)
+#define pawr_scan_capable(dev) \
+	((dev)->le_features[5] & HCI_LE_PAWR_SCANNER)
+
 /* CIS Master/Slave and BIS support */
 #define iso_capable(dev) (cis_capable(dev) || bis_capable(dev))
 #define iso_enabled(dev) (le_enabled(dev) && iso_capable(dev))
@@ -2647,6 +2661,12 @@ void mgmt_adv_monitor_device_lost(struct hci_dev *hdev, u16 handle,
 				  bdaddr_t *bdaddr, u8 addr_type);
 void mgmt_conn_subrate_notify(struct hci_dev *hdev, struct hci_conn *conn,
 			      u8 status);
+void mgmt_pa_subevent_data_request(struct hci_dev *hdev, u8 instance,
+				   u8 subevent_start, u8 subevent_data_count);
+void mgmt_set_pa_subevent_data_complete(struct hci_dev *hdev, u8 status);
+void mgmt_pa_response_report(struct hci_dev *hdev, u8 instance, u8 subevent,
+			     u8 tx_status, u8 num_responses,
+			     const void *responses, u16 len);
 
 int hci_abort_conn(struct hci_conn *conn, u8 reason);
 void hci_le_conn_update(struct hci_conn *conn, u16 min, u16 max, u16 latency,

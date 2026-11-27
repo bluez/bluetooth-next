@@ -912,6 +912,68 @@ struct mgmt_cp_load_conn_subrate {
 } __packed;
 #define MGMT_LOAD_CONN_SUBRATE_SIZE	2
 
+/* Turn an instance added with Add Extended Advertising Parameters into
+ * periodic advertising; with num_subevents not 0, into Periodic Advertising
+ * with Responses.  The values are those of the HCI command, in its units:
+ *
+ *   min_interval, max_interval	1.25 ms (0x0006 to 0xffff)
+ *   subevent_interval		1.25 ms
+ *   response_slot_delay	1.25 ms
+ *   response_slot_spacing	0.125 ms
+ *   num_subevents, num_response_slots	counts
+ */
+#define MGMT_OP_ADD_PERIODIC_ADV_PARAMS	0x005D
+struct mgmt_cp_add_periodic_adv_params {
+	__u8	instance;
+	__le16	min_interval;
+	__le16	max_interval;
+	__u8	num_subevents;
+	__u8	subevent_interval;
+	__u8	response_slot_delay;
+	__u8	response_slot_spacing;
+	__u8	num_response_slots;
+} __packed;
+#define MGMT_ADD_PERIODIC_ADV_PARAMS_SIZE	10
+struct mgmt_rp_add_periodic_adv_params {
+	__u8	instance;
+} __packed;
+
+/* The data of the periodic advertising train of an instance made periodic
+ * with Add Periodic Advertising Parameters.
+ */
+#define MGMT_OP_ADD_PERIODIC_ADV_DATA	0x005E
+struct mgmt_cp_add_periodic_adv_data {
+	__u8	instance;
+	__u8	data_len;
+	__u8	data[] __counted_by(data_len);
+} __packed;
+#define MGMT_ADD_PERIODIC_ADV_DATA_SIZE	2
+struct mgmt_rp_add_periodic_adv_data {
+	__u8	instance;
+} __packed;
+
+struct mgmt_pa_subevent_data {
+	__u8	subevent;
+	__u8	response_slot_start;
+	__u8	response_slot_count;
+	__u8	data_len;
+	__u8	data[] __counted_by(data_len);
+} __packed;
+
+/* The answer to MGMT_EV_PA_SUBEVENT_DATA_REQUEST: num_subevents entries of
+ * struct mgmt_pa_subevent_data.
+ */
+#define MGMT_OP_SET_PA_SUBEVENT_DATA	0x005F
+struct mgmt_cp_set_pa_subevent_data {
+	__u8	instance;
+	__u8	num_subevents;
+	__u8	subevents[];
+} __packed;
+#define MGMT_SET_PA_SUBEVENT_DATA_SIZE	2
+struct mgmt_rp_set_pa_subevent_data {
+	__u8	instance;
+} __packed;
+
 #define MGMT_EV_CMD_COMPLETE		0x0001
 struct mgmt_ev_cmd_complete {
 	__le16	opcode;
@@ -1235,4 +1297,31 @@ struct mgmt_ev_security_level_changed {
 	struct mgmt_addr_info addr;
 	__u8	tlv_length;
 	__u8	tlv_data[] __counted_by(tlv_length);
+} __packed;
+
+#define MGMT_EV_PA_SUBEVENT_DATA_REQUEST	0x0035
+struct mgmt_ev_pa_subevent_data_request {
+	__u8	instance;
+	__u8	subevent_start;
+	__u8	subevent_data_count;
+} __packed;
+
+struct mgmt_pa_response {
+	__s8	tx_power;
+	__s8	rssi;
+	__u8	cte_type;
+	__u8	response_slot;
+	__u8	data_status;
+	__u8	data_len;
+	__u8	data[] __counted_by(data_len);
+} __packed;
+
+/* num_responses entries of struct mgmt_pa_response */
+#define MGMT_EV_PA_RESPONSE_REPORT		0x0036
+struct mgmt_ev_pa_response_report {
+	__u8	instance;
+	__u8	subevent;
+	__u8	tx_status;
+	__u8	num_responses;
+	__u8	responses[];
 } __packed;
