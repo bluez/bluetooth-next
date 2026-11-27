@@ -6323,14 +6323,27 @@ static void le_conn_update_addr(struct hci_conn *conn, bdaddr_t *bdaddr,
 						  &conn->init_addr_type);
 		}
 	} else {
-		conn->resp_addr_type = conn->hdev->adv_addr_type;
+		/* With own address type 0x02 or 0x03 and no Local RPA, the
+		 * controller had no RPA of its own to use and fell back to the
+		 * public address (0x02) or the random address (0x03).
+		 */
+		switch (conn->hdev->adv_addr_type) {
+		case ADDR_LE_DEV_PUBLIC_RESOLVED:
+			conn->resp_addr_type = ADDR_LE_DEV_PUBLIC;
+			break;
+		case ADDR_LE_DEV_RANDOM_RESOLVED:
+			conn->resp_addr_type = ADDR_LE_DEV_RANDOM;
+			break;
+		default:
+			conn->resp_addr_type = conn->hdev->adv_addr_type;
+		}
 		/* Check if the controller has set a Local RPA then it must be
 		 * used instead or hdev->rpa.
 		 */
 		if (local_rpa && bacmp(local_rpa, BDADDR_ANY)) {
 			conn->resp_addr_type = ADDR_LE_DEV_RANDOM;
 			bacpy(&conn->resp_addr, local_rpa);
-		} else if (conn->hdev->adv_addr_type == ADDR_LE_DEV_RANDOM) {
+		} else if (conn->resp_addr_type == ADDR_LE_DEV_RANDOM) {
 			/* In case of ext adv, resp_addr will be updated in
 			 * Adv Terminated event.
 			 */
@@ -6707,7 +6720,7 @@ static void hci_le_ext_adv_term_evt(struct hci_dev *hdev, void *data,
 		 */
 		conn->adv_instance = adv ? adv->instance : ev->handle;
 
-		if (hdev->adv_addr_type != ADDR_LE_DEV_RANDOM ||
+		if (conn->resp_addr_type != ADDR_LE_DEV_RANDOM ||
 		    bacmp(&conn->resp_addr, BDADDR_ANY))
 			goto unlock;
 
