@@ -1896,7 +1896,7 @@ static int hci_set_per_adv_params_sync(struct hci_dev *hdev, u8 instance,
 				     sizeof(cp), &cp, HCI_CMD_TIMEOUT);
 }
 
-static int hci_set_per_adv_data_sync(struct hci_dev *hdev, u8 instance)
+int hci_set_per_adv_data_sync(struct hci_dev *hdev, u8 instance)
 	__context_unsafe(/* conditional locking */)
 {
 	DEFINE_FLEX(struct hci_cp_le_set_per_adv_data, pdu, data, length,

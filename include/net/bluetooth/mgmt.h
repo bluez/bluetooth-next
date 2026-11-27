@@ -938,6 +938,20 @@ struct mgmt_rp_add_periodic_adv_params {
 	__u8	instance;
 } __packed;
 
+/* The data of the periodic advertising train of an instance made periodic
+ * with Add Periodic Advertising Parameters.
+ */
+#define MGMT_OP_ADD_PERIODIC_ADV_DATA	0x005E
+struct mgmt_cp_add_periodic_adv_data {
+	__u8	instance;
+	__u8	data_len;
+	__u8	data[] __counted_by(data_len);
+} __packed;
+#define MGMT_ADD_PERIODIC_ADV_DATA_SIZE	2
+struct mgmt_rp_add_periodic_adv_data {
+	__u8	instance;
+} __packed;
+
 #define MGMT_EV_CMD_COMPLETE		0x0001
 struct mgmt_ev_cmd_complete {
 	__le16	opcode;

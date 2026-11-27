@@ -131,6 +131,7 @@ static const u16 mgmt_commands[] = {
 	MGMT_OP_MESH_SEND_CANCEL,
 	MGMT_OP_HCI_CMD_SYNC,
 	MGMT_OP_ADD_PERIODIC_ADV_PARAMS,
+	MGMT_OP_ADD_PERIODIC_ADV_DATA,
 };
 
 static const u16 mgmt_events[] = {
@@ -9929,6 +9930,90 @@ unlock:
 	return err;
 }
 
+static void add_periodic_adv_data_complete(struct hci_dev *hdev, void *data,
+					   int err)
+{
+	struct mgmt_pending_cmd *cmd = data;
+	struct mgmt_cp_add_periodic_adv_data *cp = cmd->param;
+	struct mgmt_rp_add_periodic_adv_data rp;
+
+	bt_dev_dbg(hdev, "err %d", err);
+
+	if (err) {
+		mgmt_cmd_status(cmd->sk, hdev->id, cmd->opcode,
+				mgmt_status(err));
+	} else {
+		rp.instance = cp->instance;
+		mgmt_cmd_complete(cmd->sk, hdev->id, cmd->opcode,
+				  MGMT_STATUS_SUCCESS, &rp, sizeof(rp));
+	}
+
+	mgmt_pending_free(cmd);
+}
+
+static int add_periodic_adv_data_sync(struct hci_dev *hdev, void *data)
+{
+	struct mgmt_pending_cmd *cmd = data;
+	struct mgmt_cp_add_periodic_adv_data *cp = cmd->param;
+
+	return hci_set_per_adv_data_sync(hdev, cp->instance);
+}
+
+static int add_periodic_adv_data(struct sock *sk, struct hci_dev *hdev,
+				 void *data, u16 data_len)
+{
+	struct mgmt_cp_add_periodic_adv_data *cp = data;
+	struct mgmt_pending_cmd *cmd;
+	struct adv_info *adv;
+	int err;
+
+	bt_dev_dbg(hdev, "sock %p", sk);
+
+	if (data_len != struct_size(cp, data, cp->data_len) ||
+	    cp->data_len > HCI_MAX_PER_AD_LENGTH)
+		return mgmt_cmd_status(sk, hdev->id,
+				       MGMT_OP_ADD_PERIODIC_ADV_DATA,
+				       MGMT_STATUS_INVALID_PARAMS);
+
+	hci_dev_lock(hdev);
+
+	if (!hdev_is_powered(hdev)) {
+		err = mgmt_cmd_status(sk, hdev->id,
+				      MGMT_OP_ADD_PERIODIC_ADV_DATA,
+				      MGMT_STATUS_REJECTED);
+		goto unlock;
+	}
+
+	/* The data of an instance with subevents is that of its subevents */
+	adv = hci_find_adv_instance(hdev, cp->instance);
+	if (!adv || !adv->periodic || adv->num_subevents) {
+		err = mgmt_cmd_status(sk, hdev->id,
+				      MGMT_OP_ADD_PERIODIC_ADV_DATA,
+				      MGMT_STATUS_INVALID_PARAMS);
+		goto unlock;
+	}
+
+	cmd = mgmt_pending_new(sk, MGMT_OP_ADD_PERIODIC_ADV_DATA, hdev, data,
+			       data_len);
+	if (!cmd) {
+		err = -ENOMEM;
+		goto unlock;
+	}
+
+	adv->per_adv_data_len = cp->data_len;
+	memcpy(adv->per_adv_data, cp->data, cp->data_len);
+
+	err = hci_cmd_sync_queue(hdev, add_periodic_adv_data_sync, cmd,
+				 add_periodic_adv_data_complete);
+	if (err < 0)
+		mgmt_pending_free(cmd);
+
+unlock:
+	hci_dev_unlock(hdev);
+
+	return err;
+}
+
 static void remove_advertising_complete(struct hci_dev *hdev, void *data,
 					int err)
 {
@@ -10191,6 +10276,8 @@ static const struct hci_mgmt_handler mgmt_handlers[] = {
 	{ load_conn_subrate,       MGMT_LOAD_CONN_SUBRATE_SIZE,
 						HCI_MGMT_VAR_LEN },
 	{ add_periodic_adv_params, MGMT_ADD_PERIODIC_ADV_PARAMS_SIZE },
+	{ add_periodic_adv_data,   MGMT_ADD_PERIODIC_ADV_DATA_SIZE,
+						HCI_MGMT_VAR_LEN },
 };
 
 void mgmt_index_added(struct hci_dev *hdev)
