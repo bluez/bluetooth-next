@@ -4598,6 +4598,20 @@ unlock:
 	return rp->status;
 }
 
+static u8 hci_cc_le_set_per_adv_subevent_data(struct hci_dev *hdev, void *data,
+					      struct sk_buff *skb)
+{
+	struct hci_ev_status *rp = data;
+
+	bt_dev_dbg(hdev, "status 0x%2.2x", rp->status);
+
+	hci_dev_lock(hdev);
+	mgmt_set_pa_subevent_data_complete(hdev, rp->status);
+	hci_dev_unlock(hdev);
+
+	return rp->status;
+}
+
 #define HCI_CC_VL(_op, _func, _min, _max) \
 { \
 	.op = _op, \
@@ -4774,6 +4788,10 @@ static const struct hci_cc {
 	HCI_CC_STATUS(HCI_OP_LE_SET_PER_ADV_PARAMS, hci_cc_set_per_adv_param),
 	HCI_CC_STATUS(HCI_OP_LE_SET_PER_ADV_ENABLE,
 		      hci_cc_le_set_per_adv_enable),
+	/* Status and advertising handle */
+	HCI_CC_VL(HCI_OP_LE_SET_PER_ADV_SUBEVENT_DATA,
+		  hci_cc_le_set_per_adv_subevent_data,
+		  sizeof(struct hci_ev_status), HCI_MAX_CC_PLEN),
 	HCI_CC(HCI_OP_LE_READ_TRANSMIT_POWER, hci_cc_le_read_transmit_power,
 	       sizeof(struct hci_rp_le_read_transmit_power)),
 	HCI_CC_STATUS(HCI_OP_LE_SET_PRIVACY_MODE, hci_cc_le_set_privacy_mode),
@@ -8128,6 +8146,69 @@ unlock:
 	hci_dev_unlock(hdev);
 }
 
+static void hci_le_per_adv_subevent_data_req_evt(struct hci_dev *hdev,
+						 void *data,
+						 struct sk_buff *skb)
+{
+	struct hci_ev_le_per_adv_subevent_data_req *ev = data;
+	struct adv_info *adv;
+
+	bt_dev_dbg(hdev, "handle 0x%2.2x start %u count %u", ev->handle,
+		   ev->subevent_start, ev->subevent_data_count);
+
+	hci_dev_lock(hdev);
+
+	adv = hci_le_ext_adv_owner(hdev, ev->handle);
+	if (adv && adv->num_subevents)
+		mgmt_pa_subevent_data_request(hdev, adv->instance,
+					      ev->subevent_start,
+					      ev->subevent_data_count);
+
+	hci_dev_unlock(hdev);
+}
+
+static void hci_le_per_adv_response_report_evt(struct hci_dev *hdev,
+					       void *data, struct sk_buff *skb)
+{
+	struct hci_ev_le_per_adv_response_report *ev = data;
+	struct hci_le_per_adv_response *rsp;
+	struct adv_info *adv;
+	void *responses = skb->data;
+	u16 len = skb->len;
+	u8 i;
+
+	bt_dev_dbg(hdev, "handle 0x%2.2x subevent %u num %u", ev->handle,
+		   ev->subevent, ev->num_responses);
+
+	/* The responses go to user space as they are: check that they are
+	 * all there.
+	 */
+	for (i = 0; i < ev->num_responses; i++) {
+		rsp = hci_le_ev_skb_pull(hdev, skb,
+					 HCI_EV_LE_PER_ADV_RESPONSE_REPORT,
+					 sizeof(*rsp));
+		if (!rsp)
+			return;
+
+		if (!hci_le_ev_skb_pull(hdev, skb,
+					HCI_EV_LE_PER_ADV_RESPONSE_REPORT,
+					rsp->data_len))
+			return;
+	}
+
+	len -= skb->len;
+
+	hci_dev_lock(hdev);
+
+	adv = hci_le_ext_adv_owner(hdev, ev->handle);
+	if (adv && adv->num_subevents)
+		mgmt_pa_response_report(hdev, adv->instance, ev->subevent,
+					ev->tx_status, ev->num_responses,
+					responses, len);
+
+	hci_dev_unlock(hdev);
+}
+
 static void hci_le_read_all_remote_features_evt(struct hci_dev *hdev,
 						void *data, struct sk_buff *skb)
 {
@@ -8436,6 +8517,15 @@ static const struct hci_le_ev {
 	HCI_LE_EV_VL(HCI_EVT_LE_BIG_INFO_ADV_REPORT,
 		     hci_le_big_info_adv_report_evt,
 		     sizeof(struct hci_evt_le_big_info_adv_report),
+		     HCI_MAX_LE_SUBEVT_PLEN),
+	/* [0x27 = HCI_EV_LE_PER_ADV_SUBEVENT_DATA_REQ] */
+	HCI_LE_EV(HCI_EV_LE_PER_ADV_SUBEVENT_DATA_REQ,
+		  hci_le_per_adv_subevent_data_req_evt,
+		  sizeof(struct hci_ev_le_per_adv_subevent_data_req)),
+	/* [0x28 = HCI_EV_LE_PER_ADV_RESPONSE_REPORT] */
+	HCI_LE_EV_VL(HCI_EV_LE_PER_ADV_RESPONSE_REPORT,
+		     hci_le_per_adv_response_report_evt,
+		     sizeof(struct hci_ev_le_per_adv_response_report),
 		     HCI_MAX_LE_SUBEVT_PLEN),
 	/* [0x2b = HCI_EVT_LE_ALL_REMOTE_FEATURES_COMPLETE] */
 	HCI_LE_EV_VL(HCI_EVT_LE_ALL_REMOTE_FEATURES_COMPLETE,

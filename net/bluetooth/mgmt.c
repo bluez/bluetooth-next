@@ -132,6 +132,7 @@ static const u16 mgmt_commands[] = {
 	MGMT_OP_HCI_CMD_SYNC,
 	MGMT_OP_ADD_PERIODIC_ADV_PARAMS,
 	MGMT_OP_ADD_PERIODIC_ADV_DATA,
+	MGMT_OP_SET_PA_SUBEVENT_DATA,
 };
 
 static const u16 mgmt_events[] = {
@@ -180,6 +181,8 @@ static const u16 mgmt_events[] = {
 	MGMT_EV_ADV_MONITOR_DEVICE_FOUND,
 	MGMT_EV_ADV_MONITOR_DEVICE_LOST,
 	MGMT_EV_SECURITY_LEVEL_CHANGED,
+	MGMT_EV_PA_SUBEVENT_DATA_REQUEST,
+	MGMT_EV_PA_RESPONSE_REPORT,
 };
 
 static const u16 mgmt_untrusted_commands[] = {
@@ -10014,6 +10017,122 @@ unlock:
 	return err;
 }
 
+/* The controller's answer to LE Set Periodic Advertising Subevent Data. The
+ * commands are answered in the order they were sent.
+ */
+void mgmt_set_pa_subevent_data_complete(struct hci_dev *hdev, u8 status)
+{
+	struct mgmt_cp_set_pa_subevent_data *cp;
+	struct mgmt_rp_set_pa_subevent_data rp;
+	struct mgmt_pending_cmd *cmd;
+
+	cmd = pending_find(MGMT_OP_SET_PA_SUBEVENT_DATA, hdev);
+	if (!cmd)
+		return;
+
+	cp = cmd->param;
+
+	if (status) {
+		mgmt_cmd_status(cmd->sk, hdev->id, cmd->opcode,
+				mgmt_status(status));
+	} else {
+		rp.instance = cp->instance;
+		mgmt_cmd_complete(cmd->sk, hdev->id, cmd->opcode,
+				  MGMT_STATUS_SUCCESS, &rp, sizeof(rp));
+	}
+
+	mgmt_pending_remove(cmd);
+}
+
+static int set_pa_subevent_data(struct sock *sk, struct hci_dev *hdev,
+				void *data, u16 data_len)
+{
+	DEFINE_RAW_FLEX(struct hci_cp_le_set_per_adv_subevent_data, hci_cp,
+			subevents, HCI_MAX_PER_ADV_SUBEVENT_DATA_LEN);
+	struct mgmt_cp_set_pa_subevent_data *cp = data;
+	struct mgmt_pa_subevent_data *subevent;
+	struct mgmt_pending_cmd *cmd;
+	struct adv_info *adv;
+	u16 len = data_len - sizeof(*cp);
+	u16 left = len;
+	u8 *ptr = cp->subevents;
+	int err;
+	u8 i;
+
+	bt_dev_dbg(hdev, "sock %p", sk);
+
+	BUILD_BUG_ON(sizeof(struct mgmt_pa_subevent_data) !=
+		     sizeof(struct hci_le_per_adv_subevent_data));
+
+	/* One HCI command takes it all, or nothing is sent */
+	if (left > HCI_MAX_PER_ADV_SUBEVENT_DATA_LEN)
+		return mgmt_cmd_status(sk, hdev->id,
+				       MGMT_OP_SET_PA_SUBEVENT_DATA,
+				       MGMT_STATUS_INVALID_PARAMS);
+
+	for (i = 0; i < cp->num_subevents; i++) {
+		subevent = (void *)ptr;
+
+		if (left < sizeof(*subevent) ||
+		    left < sizeof(*subevent) + subevent->data_len)
+			return mgmt_cmd_status(sk, hdev->id,
+					       MGMT_OP_SET_PA_SUBEVENT_DATA,
+					       MGMT_STATUS_INVALID_PARAMS);
+
+		ptr += sizeof(*subevent) + subevent->data_len;
+		left -= sizeof(*subevent) + subevent->data_len;
+	}
+
+	if (!cp->num_subevents || left)
+		return mgmt_cmd_status(sk, hdev->id,
+				       MGMT_OP_SET_PA_SUBEVENT_DATA,
+				       MGMT_STATUS_INVALID_PARAMS);
+
+	hci_dev_lock(hdev);
+
+	if (!hdev_is_powered(hdev)) {
+		err = mgmt_cmd_status(sk, hdev->id,
+				      MGMT_OP_SET_PA_SUBEVENT_DATA,
+				      MGMT_STATUS_REJECTED);
+		goto unlock;
+	}
+
+	adv = hci_find_adv_instance(hdev, cp->instance);
+	if (!adv || !adv->periodic || !adv->num_subevents) {
+		err = mgmt_cmd_status(sk, hdev->id,
+				      MGMT_OP_SET_PA_SUBEVENT_DATA,
+				      MGMT_STATUS_INVALID_PARAMS);
+		goto unlock;
+	}
+
+	cmd = mgmt_pending_add(sk, MGMT_OP_SET_PA_SUBEVENT_DATA, hdev, data,
+			       data_len);
+	if (!cmd) {
+		err = -ENOMEM;
+		goto unlock;
+	}
+
+	/* struct mgmt_pa_subevent_data has the layout of the HCI one */
+	hci_cp->handle = adv->handle;
+	hci_cp->num_subevents = cp->num_subevents;
+	memcpy(hci_cp->subevents, cp->subevents, len);
+
+	/* The controller wants the data within its lead time, a few tens of
+	 * milliseconds. The command is therefore not queued with
+	 * hci_cmd_sync_queue(): it would wait behind sequences which block
+	 * for an event, such as creating a connection.
+	 */
+	err = hci_send_cmd(hdev, HCI_OP_LE_SET_PER_ADV_SUBEVENT_DATA,
+			   struct_size(hci_cp, subevents, len), hci_cp);
+	if (err < 0)
+		mgmt_pending_remove(cmd);
+
+unlock:
+	hci_dev_unlock(hdev);
+
+	return err;
+}
+
 static void remove_advertising_complete(struct hci_dev *hdev, void *data,
 					int err)
 {
@@ -10277,6 +10396,8 @@ static const struct hci_mgmt_handler mgmt_handlers[] = {
 						HCI_MGMT_VAR_LEN },
 	{ add_periodic_adv_params, MGMT_ADD_PERIODIC_ADV_PARAMS_SIZE },
 	{ add_periodic_adv_data,   MGMT_ADD_PERIODIC_ADV_DATA_SIZE,
+						HCI_MGMT_VAR_LEN },
+	{ set_pa_subevent_data,    MGMT_SET_PA_SUBEVENT_DATA_SIZE,
 						HCI_MGMT_VAR_LEN },
 };
 
@@ -11129,6 +11250,47 @@ void mgmt_adv_monitor_device_lost(struct hci_dev *hdev, u16 handle,
 
 	mgmt_event(MGMT_EV_ADV_MONITOR_DEVICE_LOST, hdev, &ev, sizeof(ev),
 		   NULL);
+}
+
+void mgmt_pa_subevent_data_request(struct hci_dev *hdev, u8 instance,
+				   u8 subevent_start, u8 subevent_data_count)
+{
+	struct mgmt_ev_pa_subevent_data_request ev;
+
+	ev.instance = instance;
+	ev.subevent_start = subevent_start;
+	ev.subevent_data_count = subevent_data_count;
+
+	mgmt_event(MGMT_EV_PA_SUBEVENT_DATA_REQUEST, hdev, &ev, sizeof(ev),
+		   NULL);
+}
+
+/* responses: num_responses entries of struct hci_le_per_adv_response, which
+ * has the layout of struct mgmt_pa_response, len octets in total.
+ */
+void mgmt_pa_response_report(struct hci_dev *hdev, u8 instance, u8 subevent,
+			     u8 tx_status, u8 num_responses,
+			     const void *responses, u16 len)
+{
+	struct mgmt_ev_pa_response_report *ev;
+	struct sk_buff *skb;
+
+	BUILD_BUG_ON(sizeof(struct mgmt_pa_response) !=
+		     sizeof(struct hci_le_per_adv_response));
+
+	skb = mgmt_alloc_skb(hdev, MGMT_EV_PA_RESPONSE_REPORT,
+			     sizeof(*ev) + len);
+	if (!skb)
+		return;
+
+	ev = skb_put(skb, sizeof(*ev));
+	ev->instance = instance;
+	ev->subevent = subevent;
+	ev->tx_status = tx_status;
+	ev->num_responses = num_responses;
+	skb_put_data(skb, responses, len);
+
+	mgmt_event_skb(skb, NULL);
 }
 
 static void mgmt_send_adv_monitor_device_found(struct hci_dev *hdev,

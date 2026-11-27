@@ -5099,6 +5099,11 @@ static int hci_le_set_event_mask_sync(struct hci_dev *hdev)
 	if (ll_ext_feature_capable(hdev))
 		events[5] |= BIT(2);
 
+	if (pawr_adv_capable(hdev)) {
+		events[4] |= 0x40;	/* LE PA Subevent Data Request */
+		events[4] |= 0x80;	/* LE PA Response Report */
+	}
+
 	if (le_cs_capable(hdev)) {
 		/* Channel Sounding events */
 		events[5] |= 0x08;	/* LE CS Read Remote Supported Cap Complete event */

@@ -2661,6 +2661,12 @@ void mgmt_adv_monitor_device_lost(struct hci_dev *hdev, u16 handle,
 				  bdaddr_t *bdaddr, u8 addr_type);
 void mgmt_conn_subrate_notify(struct hci_dev *hdev, struct hci_conn *conn,
 			      u8 status);
+void mgmt_pa_subevent_data_request(struct hci_dev *hdev, u8 instance,
+				   u8 subevent_start, u8 subevent_data_count);
+void mgmt_set_pa_subevent_data_complete(struct hci_dev *hdev, u8 status);
+void mgmt_pa_response_report(struct hci_dev *hdev, u8 instance, u8 subevent,
+			     u8 tx_status, u8 num_responses,
+			     const void *responses, u16 len);
 
 int hci_abort_conn(struct hci_conn *conn, u8 reason);
 void hci_le_conn_update(struct hci_conn *conn, u16 min, u16 max, u16 latency,
