@@ -2893,8 +2893,13 @@ static int hci_le_add_accept_list_sync(struct hci_dev *hdev,
 		return 0;
 	}
 
-	/* Host-resolved peers need unfiltered scanning while awake. */
-	if (!force_filter && !hdev->suspended && !ll_privacy_capable(hdev) &&
+	/* Host-resolved peers need unfiltered scanning while awake: with no LL
+	 * privacy, or not marked for address resolution, which keeps them out
+	 * of the resolving list (hci_le_add_resolve_list_sync()).
+	 */
+	if (!force_filter && !hdev->suspended &&
+	    (!ll_privacy_capable(hdev) ||
+	     !(params->flags & HCI_CONN_FLAG_ADDRESS_RESOLUTION)) &&
 	    hci_find_irk_by_addr(hdev, &params->addr, params->addr_type))
 		return -EINVAL;
 
