@@ -2263,6 +2263,13 @@ int hci_remove_ext_adv_instance_sync(struct hci_dev *hdev, u8 instance,
 	if (err)
 		return err;
 
+	/* The controller refuses to remove an advertising set which has
+	 * periodic advertising enabled.
+	 */
+	err = hci_disable_per_advertising_sync(hdev, instance);
+	if (err)
+		return err;
+
 	if (instance) {
 		hci_dev_lock(hdev);
 
@@ -2392,6 +2399,32 @@ int hci_schedule_adv_instance_sync(struct hci_dev *hdev, u8 instance,
 	return hci_start_adv_sync(hdev, instance);
 }
 
+/* The controller refuses to clear the advertising sets while one of them has
+ * periodic advertising enabled.
+ */
+static int hci_disable_per_advertising_all_sync(struct hci_dev *hdev)
+{
+	u8 instances[HCI_MAX_ADV_INSTANCES];
+	struct adv_info *adv;
+	u8 i, n = 0;
+	int err;
+
+	hci_dev_lock(hdev);
+	list_for_each_entry(adv, &hdev->adv_instances, list) {
+		if (adv->periodic_enabled && n < ARRAY_SIZE(instances))
+			instances[n++] = adv->instance;
+	}
+	hci_dev_unlock(hdev);
+
+	for (i = 0; i < n; i++) {
+		err = hci_disable_per_advertising_sync(hdev, instances[i]);
+		if (err)
+			return err;
+	}
+
+	return 0;
+}
+
 static int hci_clear_adv_sets_sync(struct hci_dev *hdev, struct sock *sk)
 {
 	int err;
@@ -2401,6 +2434,10 @@ static int hci_clear_adv_sets_sync(struct hci_dev *hdev, struct sock *sk)
 
 	/* Disable instance 0x00 to disable all instances */
 	err = hci_disable_ext_adv_instance_sync(hdev, 0x00);
+	if (err)
+		return err;
+
+	err = hci_disable_per_advertising_all_sync(hdev);
 	if (err)
 		return err;
 
