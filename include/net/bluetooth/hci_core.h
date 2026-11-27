@@ -260,6 +260,14 @@ struct adv_info {
 	bool	scan_rsp_changed;
 	__u16	per_adv_data_len;
 	__u8	per_adv_data[HCI_MAX_PER_AD_LENGTH];
+	/* Periodic Advertising with Responses, if num_subevents is not 0 */
+	__u16	per_adv_min_interval;
+	__u16	per_adv_max_interval;
+	__u8	num_subevents;
+	__u8	subevent_interval;
+	__u8	response_slot_delay;
+	__u8	response_slot_spacing;
+	__u8	num_response_slots;
 	__s8	tx_power;
 	__u32   min_interval;
 	__u32   max_interval;

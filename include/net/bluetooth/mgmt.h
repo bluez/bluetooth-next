@@ -912,6 +912,32 @@ struct mgmt_cp_load_conn_subrate {
 } __packed;
 #define MGMT_LOAD_CONN_SUBRATE_SIZE	2
 
+/* Turn an instance added with Add Extended Advertising Parameters into
+ * periodic advertising; with num_subevents not 0, into Periodic Advertising
+ * with Responses.  The values are those of the HCI command, in its units:
+ *
+ *   min_interval, max_interval	1.25 ms (0x0006 to 0xffff)
+ *   subevent_interval		1.25 ms
+ *   response_slot_delay	1.25 ms
+ *   response_slot_spacing	0.125 ms
+ *   num_subevents, num_response_slots	counts
+ */
+#define MGMT_OP_ADD_PERIODIC_ADV_PARAMS	0x005D
+struct mgmt_cp_add_periodic_adv_params {
+	__u8	instance;
+	__le16	min_interval;
+	__le16	max_interval;
+	__u8	num_subevents;
+	__u8	subevent_interval;
+	__u8	response_slot_delay;
+	__u8	response_slot_spacing;
+	__u8	num_response_slots;
+} __packed;
+#define MGMT_ADD_PERIODIC_ADV_PARAMS_SIZE	10
+struct mgmt_rp_add_periodic_adv_params {
+	__u8	instance;
+} __packed;
+
 #define MGMT_EV_CMD_COMPLETE		0x0001
 struct mgmt_ev_cmd_complete {
 	__le16	opcode;

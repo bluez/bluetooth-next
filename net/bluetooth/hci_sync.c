@@ -1968,6 +1968,66 @@ static int hci_enable_per_advertising_sync(struct hci_dev *hdev, u8 instance)
 	return 0;
 }
 
+/* Program periodic advertising on an instance and enable it. The extended
+ * advertising parameters are set again first: they may have been chosen
+ * before the instance became periodic, and a periodic instance can neither be
+ * connectable nor use a non-resolvable private address. An instance with
+ * subevents is Periodic Advertising with Responses and takes the [v2]
+ * parameters. The train starts once extended advertising is enabled as well.
+ */
+int hci_setup_per_adv_instance_sync(struct hci_dev *hdev, u8 instance)
+{
+	struct hci_cp_le_set_per_adv_params_v2 cp;
+	struct adv_info *adv;
+	u16 min_interval, max_interval;
+	int err;
+
+	err = hci_disable_per_advertising_sync(hdev, instance);
+	if (err)
+		return err;
+
+	err = hci_setup_ext_adv_instance_sync(hdev, instance);
+	if (err)
+		return err;
+
+	memset(&cp, 0, sizeof(cp));
+
+	hci_dev_lock(hdev);
+
+	adv = hci_find_adv_instance(hdev, instance);
+	if (!adv || !adv->periodic) {
+		hci_dev_unlock(hdev);
+		return -EINVAL;
+	}
+
+	min_interval = adv->per_adv_min_interval;
+	max_interval = adv->per_adv_max_interval;
+
+	cp.handle = adv->handle;
+	cp.min_interval = cpu_to_le16(min_interval);
+	cp.max_interval = cpu_to_le16(max_interval);
+	cp.periodic_properties = 0x0000;
+	cp.num_subevents = adv->num_subevents;
+	cp.subevent_interval = adv->subevent_interval;
+	cp.response_slot_delay = adv->response_slot_delay;
+	cp.response_slot_spacing = adv->response_slot_spacing;
+	cp.num_response_slots = adv->num_response_slots;
+
+	hci_dev_unlock(hdev);
+
+	if (cp.num_subevents)
+		err = __hci_cmd_sync_status(hdev,
+					    HCI_OP_LE_SET_PER_ADV_PARAMS_V2,
+					    sizeof(cp), &cp, HCI_CMD_TIMEOUT);
+	else
+		err = hci_set_per_adv_params_sync(hdev, instance, min_interval,
+						  max_interval);
+	if (err)
+		return err;
+
+	return hci_enable_per_advertising_sync(hdev, instance);
+}
+
 /* Checks if periodic advertising data contains a Basic Announcement and if it
  * does generates a Broadcast ID and add Broadcast Announcement.
  */
