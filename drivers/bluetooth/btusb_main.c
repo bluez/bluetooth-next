@@ -1016,6 +1016,7 @@ struct btqca_data {
 #define BTUSB_HW_SSR_ACTIVE	17
 #define BTUSB_WAKEUP_BROKEN	18
 #define BTUSB_RESET		19
+#define BTUSB_NEEDS_SHUTDOWN_RESET	20
 
 #define BTUSB_PROTO_LEGACY	0x00
 #define BTUSB_PROTO_H4		0x01
@@ -2143,6 +2144,7 @@ static int btusb_open(struct hci_dev *hdev)
 	}
 
 	data->intf->needs_remote_wakeup = 1;
+	set_bit(BTUSB_NEEDS_SHUTDOWN_RESET, &data->flags);
 
 	if (data->proto == BTUSB_PROTO_LEGACY) {
 		if (test_and_set_bit(BTUSB_INTR_RUNNING, &data->flags))
@@ -4721,8 +4723,13 @@ static int btusb_probe(struct usb_interface *intf,
 		hdev->reset = btusb_rtl_reset;
 		hdev->hw_error = btusb_rtl_hw_error;
 
-		/* Realtek devices need to set remote wakeup on auto-suspend */
-		set_bit(BTUSB_WAKEUP_AUTOSUSPEND, &data->flags);
+		if (le16_to_cpu(data->udev->descriptor.idVendor) == 0x0bda &&
+		    le16_to_cpu(data->udev->descriptor.idProduct) == 0xb009) {
+			enable_autosuspend = false;
+		} else {
+			/* Realtek devices need to set remote wakeup on auto-suspend */
+			set_bit(BTUSB_WAKEUP_AUTOSUSPEND, &data->flags);
+		}
 		set_bit(BTUSB_USE_ALT3_FOR_WBS, &data->flags);
 	}
 
@@ -5093,10 +5100,37 @@ static void btusb_coredump(struct device *dev)
 }
 #endif
 
+static void btusb_shutdown(struct usb_interface *intf)
+{
+	struct btusb_data *data = usb_get_intfdata(intf);
+	struct hci_dev *hdev;
+	int err = -1;
+
+	if (!data || intf != data->intf)
+		return;
+
+	hdev = data->hdev;
+	data->intf->needs_remote_wakeup = 0;
+	data->udev->do_remote_wakeup = 0;
+
+	if (test_and_clear_bit(BTUSB_NEEDS_SHUTDOWN_RESET, &data->flags) &&
+	    hdev->shutdown) {
+		err = usb_autopm_get_interface(data->intf);
+		hdev->shutdown(hdev);
+	}
+
+	btusb_stop_traffic(data);
+	usb_kill_anchored_urbs(&data->tx_anchor);
+
+	if (!err)
+		usb_autopm_put_interface(data->intf);
+}
+
 static struct usb_driver btusb_driver = {
 	.name		= "btusb",
 	.probe		= btusb_probe,
 	.disconnect	= btusb_disconnect,
+	.shutdown	= btusb_shutdown,
 	.suspend	= pm_ptr(btusb_suspend),
 	.resume		= pm_ptr(btusb_resume),
 	.id_table	= btusb_table,
