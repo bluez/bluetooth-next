@@ -1408,22 +1408,10 @@ struct link_key *hci_add_link_key(struct hci_dev *hdev, struct hci_conn *conn,
 	return key;
 }
 
-struct smp_ltk *hci_add_ltk(struct hci_dev *hdev, bdaddr_t *bdaddr,
-			    u8 addr_type, u8 type, u8 authenticated,
-			    u8 tk[16], u8 enc_size, __le16 ediv, __le64 rand)
+static void hci_update_ltk(struct smp_ltk *key, bdaddr_t *bdaddr,
+			   u8 addr_type, u8 type, u8 authenticated,
+			   u8 tk[16], u8 enc_size, __le16 ediv, __le64 rand)
 {
-	struct smp_ltk *key, *old_key;
-	u8 role = ltk_role(type);
-
-	old_key = hci_find_ltk(hdev, bdaddr, addr_type, role);
-	if (old_key)
-		key = old_key;
-	else {
-		key = kzalloc_obj(*key);
-		if (!key)
-			return NULL;
-	}
-
 	bacpy(&key->bdaddr, bdaddr);
 	key->bdaddr_type = addr_type;
 	memcpy(key->val, tk, sizeof(key->val));
@@ -1432,9 +1420,63 @@ struct smp_ltk *hci_add_ltk(struct hci_dev *hdev, bdaddr_t *bdaddr,
 	key->rand = rand;
 	key->enc_size = enc_size;
 	key->type = type;
+}
 
-	if (!old_key)
-		list_add_rcu(&key->list, &hdev->long_term_keys);
+struct smp_ltk *hci_new_ltk(bdaddr_t *bdaddr, u8 addr_type, u8 type,
+			    u8 authenticated, u8 tk[16], u8 enc_size,
+			    __le16 ediv, __le64 rand)
+{
+	struct smp_ltk *key;
+
+	key = kzalloc_obj(*key);
+	if (!key)
+		return NULL;
+
+	INIT_LIST_HEAD(&key->list);
+	hci_update_ltk(key, bdaddr, addr_type, type, authenticated, tk,
+		       enc_size, ediv, rand);
+
+	return key;
+}
+
+struct smp_ltk *hci_store_ltk(struct hci_dev *hdev, struct smp_ltk *key)
+{
+	struct smp_ltk *old_key;
+	u8 role = ltk_role(key->type);
+
+	old_key = hci_find_ltk(hdev, &key->bdaddr, key->bdaddr_type, role);
+	if (old_key) {
+		hci_update_ltk(old_key, &key->bdaddr, key->bdaddr_type, key->type,
+			       key->authenticated, key->val, key->enc_size,
+			       key->ediv, key->rand);
+		kfree_rcu(key, rcu);
+		return old_key;
+	}
+
+	list_add_rcu(&key->list, &hdev->long_term_keys);
+
+	return key;
+}
+
+struct smp_ltk *hci_add_ltk(struct hci_dev *hdev, bdaddr_t *bdaddr,
+			    u8 addr_type, u8 type, u8 authenticated,
+			    u8 tk[16], u8 enc_size, __le16 ediv, __le64 rand)
+{
+	struct smp_ltk *key;
+
+	key = hci_find_ltk(hdev, bdaddr, addr_type, ltk_role(type));
+	if (key) {
+		hci_update_ltk(key, bdaddr, addr_type, type, authenticated, tk,
+			       enc_size, ediv, rand);
+		return key;
+	}
+
+	key = hci_new_ltk(bdaddr, addr_type, type, authenticated, tk,
+			  enc_size, ediv, rand);
+	if (!key)
+		return NULL;
+
+	list_add_rcu(&key->list, &hdev->long_term_keys);
 
 	return key;
 }

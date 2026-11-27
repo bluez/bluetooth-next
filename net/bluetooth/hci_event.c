@@ -7495,18 +7495,23 @@ static void hci_le_ltk_request_evt(struct hci_dev *hdev, void *data,
 	if (conn == NULL)
 		goto not_found;
 
-	ltk = hci_find_ltk(hdev, &conn->dst, conn->dst_type, conn->role);
+	rcu_read_lock();
+
+	ltk = rcu_dereference(conn->pending_ltk);
 	if (!ltk)
-		goto not_found;
+		ltk = hci_find_ltk(hdev, &conn->dst, conn->dst_type,
+				   conn->role);
+	if (!ltk)
+		goto not_found_unlock;
 
 	if (smp_ltk_is_sc(ltk)) {
 		/* With SC both EDiv and Rand are set to zero */
 		if (ev->ediv || ev->rand)
-			goto not_found;
+			goto not_found_unlock;
 	} else {
 		/* For non-SC keys check that EDiv and Rand match */
 		if (ev->ediv != ltk->ediv || ev->rand != ltk->rand)
-			goto not_found;
+			goto not_found_unlock;
 	}
 
 	memcpy(cp.ltk, ltk->val, ltk->enc_size);
@@ -7533,10 +7538,13 @@ static void hci_le_ltk_request_evt(struct hci_dev *hdev, void *data,
 		clear_bit(HCI_CONN_STK_ENCRYPT, conn->flags);
 	}
 
+	rcu_read_unlock();
 	hci_dev_unlock(hdev);
 
 	return;
 
+not_found_unlock:
+	rcu_read_unlock();
 not_found:
 	neg.handle = ev->handle;
 	hci_send_cmd(hdev, HCI_OP_LE_LTK_NEG_REPLY, sizeof(neg), &neg);

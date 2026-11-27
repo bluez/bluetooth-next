@@ -742,6 +742,9 @@ static void smp_chan_destroy(struct l2cap_conn *conn)
 
 	crypto_free_kpp(smp->tfm_ecdh);
 
+	if (rcu_access_pointer(hcon->pending_ltk) == smp->ltk)
+		rcu_assign_pointer(hcon->pending_ltk, NULL);
+
 	/* Ensure that we don't leave any debug key around if debug key
 	 * support hasn't been explicitly enabled.
 	 */
@@ -1086,12 +1089,17 @@ notify_csrk:
 	if (smp->ltk) {
 		smp->ltk->bdaddr_type = hcon->dst_type;
 		bacpy(&smp->ltk->bdaddr, &hcon->dst);
+		if (rcu_access_pointer(hcon->pending_ltk) == smp->ltk)
+			rcu_assign_pointer(hcon->pending_ltk, NULL);
+		smp->ltk = hci_store_ltk(hdev, smp->ltk);
 		mgmt_new_ltk(hdev, smp->ltk, persistent);
 	}
 
 	if (smp->responder_ltk) {
 		smp->responder_ltk->bdaddr_type = hcon->dst_type;
 		bacpy(&smp->responder_ltk->bdaddr, &hcon->dst);
+		smp->responder_ltk = hci_store_ltk(hdev,
+						   smp->responder_ltk);
 		mgmt_new_ltk(hdev, smp->responder_ltk, persistent);
 	}
 
@@ -1145,9 +1153,10 @@ static void sc_add_ltk(struct smp_chan *smp)
 	else
 		auth = 0;
 
-	smp->ltk = hci_add_ltk(hcon->hdev, &hcon->dst, hcon->dst_type,
-			       key_type, auth, smp->tk, smp->enc_key_size,
-			       0, 0);
+	smp->ltk = hci_new_ltk(&hcon->dst, hcon->dst_type, key_type, auth,
+			       smp->tk, smp->enc_key_size, 0, 0);
+	if (smp->ltk)
+		rcu_assign_pointer(hcon->pending_ltk, smp->ltk);
 }
 
 static void sc_generate_link_key(struct smp_chan *smp)
@@ -1307,7 +1316,7 @@ static void smp_distribute_keys(struct smp_chan *smp)
 		smp_send_cmd(conn, SMP_CMD_ENCRYPT_INFO, sizeof(enc), &enc);
 
 		authenticated = hcon->sec_level == BT_SECURITY_HIGH;
-		ltk = hci_add_ltk(hdev, &hcon->dst, hcon->dst_type,
+		ltk = hci_new_ltk(&hcon->dst, hcon->dst_type,
 				  SMP_LTK_RESPONDER, authenticated, enc.ltk,
 				  smp->enc_key_size, ediv, rand);
 		smp->responder_ltk = ltk;
@@ -2515,6 +2524,20 @@ bool smp_pairing_in_progress(struct hci_conn *hcon)
 	return pending;
 }
 
+static void smp_free_pending_ltks(struct hci_conn *hcon,
+				  struct smp_chan *smp)
+{
+	if (!smp || test_bit(SMP_FLAG_COMPLETE, &smp->flags))
+		return;
+
+	if (rcu_access_pointer(hcon->pending_ltk) == smp->ltk)
+		rcu_assign_pointer(hcon->pending_ltk, NULL);
+	if (smp->ltk)
+		kfree_rcu(smp->ltk, rcu);
+	if (smp->responder_ltk)
+		kfree_rcu(smp->responder_ltk, rcu);
+}
+
 int smp_cancel_and_remove_pairing(struct hci_dev *hdev, bdaddr_t *bdaddr,
 				  u8 addr_type)
 {
@@ -2544,6 +2567,7 @@ int smp_cancel_and_remove_pairing(struct hci_dev *hdev, bdaddr_t *bdaddr,
 	l2cap_chan_lock(chan);
 
 	smp = chan->data;
+	smp_free_pending_ltks(hcon, smp);
 	if (smp) {
 		/* Set keys to NULL to make sure smp_failure() does not try to
 		 * remove and free already invalidated rcu list entries. */
@@ -2618,7 +2642,7 @@ static int smp_cmd_initiator_ident(struct l2cap_conn *conn, struct sk_buff *skb)
 	skb_pull(skb, sizeof(*rp));
 
 	authenticated = (hcon->sec_level == BT_SECURITY_HIGH);
-	ltk = hci_add_ltk(hdev, &hcon->dst, hcon->dst_type, SMP_LTK,
+	ltk = hci_new_ltk(&hcon->dst, hcon->dst_type, SMP_LTK,
 			  authenticated, smp->tk, smp->enc_key_size,
 			  rp->ediv, rp->rand);
 	smp->ltk = ltk;
