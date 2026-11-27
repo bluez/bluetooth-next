@@ -2140,6 +2140,12 @@ void hci_conn_del_sysfs(struct hci_conn *conn);
 /* Periodic advertising support */
 #define per_adv_capable(dev) (((dev)->le_features[1] & HCI_LE_PERIODIC_ADV))
 
+/* Periodic Advertising with Responses support */
+#define pawr_adv_capable(dev) \
+	((dev)->le_features[5] & HCI_LE_PAWR_ADVERTISER)
+#define pawr_scan_capable(dev) \
+	((dev)->le_features[5] & HCI_LE_PAWR_SCANNER)
+
 /* CIS Master/Slave and BIS support */
 #define iso_capable(dev) (cis_capable(dev) || bis_capable(dev))
 #define iso_enabled(dev) (le_enabled(dev) && iso_capable(dev))
