@@ -22,6 +22,8 @@
 #include <net/bluetooth/bluetooth.h>
 #include <net/bluetooth/hci_core.h>
 
+#include "btbcm.h"
+
 enum bcm4377_chip {
 	BCM4377 = 0,
 	BCM4378,
@@ -689,6 +691,7 @@ static void bcm4377_handle_event(struct bcm4377_data *bcm4377,
 
 	memcpy(skb_put(skb, len), payload, len);
 	hci_skb_pkt_type(skb) = type;
+	btbcm_set_acl_priority_on_connect(bcm4377->hdev, skb);
 	hci_recv_frame(bcm4377->hdev, skb);
 
 out:
