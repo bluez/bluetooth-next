@@ -111,7 +111,7 @@ struct smp_chan {
 	struct smp_csrk	*responder_csrk;
 	struct smp_ltk	*ltk;
 	struct smp_ltk	*responder_ltk;
-	struct smp_irk	*remote_irk;
+	bool		remote_irk_pending;
 	u8		*link_key;
 	unsigned long	flags;
 	u8		method;
@@ -742,6 +742,9 @@ static void smp_chan_destroy(struct l2cap_conn *conn)
 
 	crypto_free_kpp(smp->tfm_ecdh);
 
+	if (rcu_access_pointer(hcon->pending_ltk) == smp->ltk)
+		rcu_assign_pointer(hcon->pending_ltk, NULL);
+
 	/* Ensure that we don't leave any debug key around if debug key
 	 * support hasn't been explicitly enabled.
 	 */
@@ -762,11 +765,6 @@ static void smp_chan_destroy(struct l2cap_conn *conn)
 		if (smp->responder_ltk) {
 			list_del_rcu(&smp->responder_ltk->list);
 			kfree_rcu(smp->responder_ltk, rcu);
-		}
-
-		if (smp->remote_irk) {
-			list_del_rcu(&smp->remote_irk->list);
-			kfree_rcu(smp->remote_irk, rcu);
 		}
 	}
 
@@ -1043,16 +1041,29 @@ static void smp_notify_keys(struct l2cap_conn *conn)
 				SMP_AUTH_BONDING);
 	}
 
-	if (smp->remote_irk) {
-		mgmt_new_irk(hdev, smp->remote_irk, persistent);
+	if (smp->remote_irk_pending) {
+		struct smp_irk *irk;
+		bdaddr_t rpa;
+
+		if (hci_bdaddr_is_rpa(&hcon->dst, hcon->dst_type))
+			bacpy(&rpa, &hcon->dst);
+		else
+			bacpy(&rpa, BDADDR_ANY);
+
+		irk = hci_add_irk(hdev, &smp->id_addr, smp->id_addr_type,
+				  smp->irk, &rpa);
+		if (!irk)
+			goto notify_csrk;
+
+		mgmt_new_irk(hdev, irk, persistent);
 
 		/* Now that user space can be considered to know the
 		 * identity address track the connection based on it
 		 * from now on (assuming this is an LE link).
 		 */
 		if (hcon->type == LE_LINK) {
-			bacpy(&hcon->dst, &smp->remote_irk->bdaddr);
-			hcon->dst_type = smp->remote_irk->addr_type;
+			bacpy(&hcon->dst, &irk->bdaddr);
+			hcon->dst_type = irk->addr_type;
 			/* Use a short delay to make sure the new address is
 			 * propagated _before_ the channels.
 			 */
@@ -1062,6 +1073,7 @@ static void smp_notify_keys(struct l2cap_conn *conn)
 		}
 	}
 
+notify_csrk:
 	if (smp->csrk) {
 		smp->csrk->bdaddr_type = hcon->dst_type;
 		bacpy(&smp->csrk->bdaddr, &hcon->dst);
@@ -1077,12 +1089,17 @@ static void smp_notify_keys(struct l2cap_conn *conn)
 	if (smp->ltk) {
 		smp->ltk->bdaddr_type = hcon->dst_type;
 		bacpy(&smp->ltk->bdaddr, &hcon->dst);
+		if (rcu_access_pointer(hcon->pending_ltk) == smp->ltk)
+			rcu_assign_pointer(hcon->pending_ltk, NULL);
+		smp->ltk = hci_store_ltk(hdev, smp->ltk);
 		mgmt_new_ltk(hdev, smp->ltk, persistent);
 	}
 
 	if (smp->responder_ltk) {
 		smp->responder_ltk->bdaddr_type = hcon->dst_type;
 		bacpy(&smp->responder_ltk->bdaddr, &hcon->dst);
+		smp->responder_ltk = hci_store_ltk(hdev,
+						   smp->responder_ltk);
 		mgmt_new_ltk(hdev, smp->responder_ltk, persistent);
 	}
 
@@ -1136,9 +1153,10 @@ static void sc_add_ltk(struct smp_chan *smp)
 	else
 		auth = 0;
 
-	smp->ltk = hci_add_ltk(hcon->hdev, &hcon->dst, hcon->dst_type,
-			       key_type, auth, smp->tk, smp->enc_key_size,
-			       0, 0);
+	smp->ltk = hci_new_ltk(&hcon->dst, hcon->dst_type, key_type, auth,
+			       smp->tk, smp->enc_key_size, 0, 0);
+	if (smp->ltk)
+		rcu_assign_pointer(hcon->pending_ltk, smp->ltk);
 }
 
 static void sc_generate_link_key(struct smp_chan *smp)
@@ -1298,7 +1316,7 @@ static void smp_distribute_keys(struct smp_chan *smp)
 		smp_send_cmd(conn, SMP_CMD_ENCRYPT_INFO, sizeof(enc), &enc);
 
 		authenticated = hcon->sec_level == BT_SECURITY_HIGH;
-		ltk = hci_add_ltk(hdev, &hcon->dst, hcon->dst_type,
+		ltk = hci_new_ltk(&hcon->dst, hcon->dst_type,
 				  SMP_LTK_RESPONDER, authenticated, enc.ltk,
 				  smp->enc_key_size, ediv, rand);
 		smp->responder_ltk = ltk;
@@ -2506,6 +2524,20 @@ bool smp_pairing_in_progress(struct hci_conn *hcon)
 	return pending;
 }
 
+static void smp_free_pending_ltks(struct hci_conn *hcon,
+				  struct smp_chan *smp)
+{
+	if (!smp || test_bit(SMP_FLAG_COMPLETE, &smp->flags))
+		return;
+
+	if (rcu_access_pointer(hcon->pending_ltk) == smp->ltk)
+		rcu_assign_pointer(hcon->pending_ltk, NULL);
+	if (smp->ltk)
+		kfree_rcu(smp->ltk, rcu);
+	if (smp->responder_ltk)
+		kfree_rcu(smp->responder_ltk, rcu);
+}
+
 int smp_cancel_and_remove_pairing(struct hci_dev *hdev, bdaddr_t *bdaddr,
 				  u8 addr_type)
 {
@@ -2535,12 +2567,12 @@ int smp_cancel_and_remove_pairing(struct hci_dev *hdev, bdaddr_t *bdaddr,
 	l2cap_chan_lock(chan);
 
 	smp = chan->data;
+	smp_free_pending_ltks(hcon, smp);
 	if (smp) {
 		/* Set keys to NULL to make sure smp_failure() does not try to
 		 * remove and free already invalidated rcu list entries. */
 		smp->ltk = NULL;
 		smp->responder_ltk = NULL;
-		smp->remote_irk = NULL;
 
 		if (test_bit(SMP_FLAG_COMPLETE, &smp->flags))
 			smp_failure(conn, 0);
@@ -2610,7 +2642,7 @@ static int smp_cmd_initiator_ident(struct l2cap_conn *conn, struct sk_buff *skb)
 	skb_pull(skb, sizeof(*rp));
 
 	authenticated = (hcon->sec_level == BT_SECURITY_HIGH);
-	ltk = hci_add_ltk(hdev, &hcon->dst, hcon->dst_type, SMP_LTK,
+	ltk = hci_new_ltk(&hcon->dst, hcon->dst_type, SMP_LTK,
 			  authenticated, smp->tk, smp->enc_key_size,
 			  rp->ediv, rp->rand);
 	smp->ltk = ltk;
@@ -2656,7 +2688,6 @@ static int smp_cmd_ident_addr_info(struct l2cap_conn *conn,
 	struct l2cap_chan *chan = conn->smp;
 	struct smp_chan *smp = chan->data;
 	struct hci_conn *hcon = conn->hcon;
-	bdaddr_t rpa;
 
 	bt_dev_dbg(hcon->hdev, "");
 
@@ -2703,13 +2734,7 @@ static int smp_cmd_ident_addr_info(struct l2cap_conn *conn,
 	bacpy(&smp->id_addr, &info->bdaddr);
 	smp->id_addr_type = info->addr_type;
 
-	if (hci_bdaddr_is_rpa(&hcon->dst, hcon->dst_type))
-		bacpy(&rpa, &hcon->dst);
-	else
-		bacpy(&rpa, BDADDR_ANY);
-
-	smp->remote_irk = hci_add_irk(conn->hcon->hdev, &smp->id_addr,
-				      smp->id_addr_type, smp->irk, &rpa);
+	smp->remote_irk_pending = true;
 
 distribute:
 	if (!(smp->remote_key_dist & KEY_DIST_MASK))

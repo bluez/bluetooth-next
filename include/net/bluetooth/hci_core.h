@@ -772,6 +772,7 @@ struct hci_conn {
 	__u8		pending_sec_level;
 	__u8		pin_length;
 	__u8		enc_key_size;
+	struct smp_ltk __rcu *pending_ltk;
 	__u8		mic_len;
 	__u8		req_mic_len;
 	__u8		io_capability;
@@ -1957,6 +1958,10 @@ struct link_key *hci_add_link_key(struct hci_dev *hdev, struct hci_conn *conn,
 struct smp_ltk *hci_add_ltk(struct hci_dev *hdev, bdaddr_t *bdaddr,
 			    u8 addr_type, u8 type, u8 authenticated,
 			    u8 tk[16], u8 enc_size, __le16 ediv, __le64 rand);
+struct smp_ltk *hci_new_ltk(bdaddr_t *bdaddr, u8 addr_type, u8 type,
+			    u8 authenticated, u8 tk[16], u8 enc_size,
+			    __le16 ediv, __le64 rand);
+struct smp_ltk *hci_store_ltk(struct hci_dev *hdev, struct smp_ltk *key);
 struct smp_ltk *hci_find_ltk(struct hci_dev *hdev, bdaddr_t *bdaddr,
 			     u8 addr_type, u8 role);
 int hci_remove_ltk(struct hci_dev *hdev, bdaddr_t *bdaddr, u8 bdaddr_type);
