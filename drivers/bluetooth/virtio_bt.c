@@ -103,7 +103,7 @@ static int virtbt_send_frame(struct hci_dev *hdev, struct sk_buff *skb)
 	err = virtqueue_add_outbuf(vbt->vqs[VIRTBT_VQ_TX], sg, 1, skb,
 				   GFP_KERNEL);
 	if (err) {
-		kfree_skb(skb);
+		skb_pull(skb, 1);
 		return err;
 	}
 
